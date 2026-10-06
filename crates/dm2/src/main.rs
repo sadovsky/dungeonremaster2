@@ -611,13 +611,21 @@ mod screen_tests {
         let mut d = load(&dir);
         d.game_data.as_ref()?;
         let mut g = new_game(&d);
+        let mut paused = false;
         for &c in cmds {
+            // 0x90 pauses: frontend state, as in the screenshot mode.
+            if c == 0x90 {
+                paused = true;
+                continue;
+            }
             if let Some(gc) = input::game_command(c) {
                 g.push_command(gc);
             }
             g.advance();
         }
-        let f = game_frame(&mut d, &g, &ui_view(&g, false));
+        let mut view = ui_view(&g, false);
+        view.paused = paused;
+        let f = game_frame(&mut d, &g, &view);
         Some(fnv(&f.px))
     }
 
@@ -626,7 +634,13 @@ mod screen_tests {
     /// with a new comparison against the original.
     #[test]
     fn pinned_interface_screens() {
-        let cases: [(&str, &[u16], u64); 3] = [("start", &[], 0x23be4bf743c5bd49), ("inventory", &[7], 0xd54bfe305cc1b708), ("action menu", &[0x75], 0x7600a6e0bd246531)];
+        let cases: [(&str, &[u16], u64); 5] = [
+            ("start", &[], 0x23be4bf743c5bd49),
+            ("inventory", &[7], 0xd54bfe305cc1b708),
+            ("action menu", &[0x75], 0x7600a6e0bd246531),
+            ("paused", &[0x90], 0xf6498d891cf26ca8),
+            ("eye, empty hand", &[7, 0x47], 0xe6d8a3c85198e6ad),
+        ];
         for (name, cmds, want) in cases {
             let Some(got) = frame(cmds) else { return };
             assert_eq!(got, want, "{name}: {got:#x}");

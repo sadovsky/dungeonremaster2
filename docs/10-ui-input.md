@@ -452,9 +452,62 @@ bare-hand action menu):
   - A colour-0 copy offset by (2, 2) is drawn first as the shadow.
   - The bar colour becomes 8 below -512 and 0xB below 0.
 
-Not yet compared: the active spell panel, the held-item cursor, dialogs
-(save, slot list, "game loaded"), the paused screen and the inventory
-with the eye pressed.
+- **Paused (command 0x90, inline at 0x22233):** the viewport is cleared
+  to colour 0, and the pause text (1, 0, 0x12) is centred on layout id 6
+  in colour 4. Id 6 resolves inside the viewport bitmap, so the text is
+  drawn there and the bitmap is pasted at (0, 40). The arrows, hand
+  cells, formation cells and the formation grid floor are shaded with
+  the colour-0 checkerboard; the champion boxes are not.
+- **Eye pressed with an empty hand (0x3A12A):** the image (7, 0, 1) is
+  drawn at 0x1EE in place of the food/water panel, then:
+  - from the point of layout id 0x22D, one line per skill class whose
+    level isn't 1: the rank text (7, 0, n), with n from the byte table
+    at 0x75712 indexed by the level capped at 16. The class name enters
+    through escape 17 (class index in byte 0x7F990). Colour 0xD, or 7
+    when the class's level-up flag (0x7FFF8 + 4·champion + class) is set;
+  - from the point of layout id 0x22F (its x for the numbers, the first
+    point's x for the labels): the six stats strength to anti-fire, each
+    as label (7, 0, 0x20 + n), the current value right-aligned in three
+    characters, then "/" and the maximum, also in three characters. The
+    current value is colour 8 below the maximum, 7 above it, else 0xD;
+  - lines step by the word at 0x71738; the second column starts three
+    characters (word at 0x71736) after the numbers' x;
+  - 0x55B14 places text by a point one row below the glyphs'
+    bottom-left corner.
+  - The original reads the current stats through 0x466AB, which can draw
+    random numbers for temporary boosts. The remake shows the stored
+    current value instead, so drawing never touches the game's random
+    numbers; the two agree unless a boost is active.
+
+Both states match the original with 0 differing pixels outside the mouse
+pointer, and their composed screens are pinned by hash in
+`crates/dm2/src/main.rs`.
+
+**Action filter (0x3F9F5).** For each of the item's action strings 8-11
+(at most three kept): it needs a command (code 2); code 0x11 (hand) must
+be 0 or the hand + 1; the champion's level in skill code 0 must reach
+code 1. A held item also needs enough charges (code 8 via 0x1F606): 0x12
+means only when it has none, 0x10 and 0x11 need one, other values need
+that many. Items for which 0x1F2AB or 0x1F309 is true (money containers,
+closed plain containers) are always selectable. Containers whose word 2
+has bits 1-2 equal to 2 also pass 0x3F927, which allows only some of
+commands 0x2C-0x30 depending on their subtype (word 2 >> 13) and on a
+type-14 thing inside; the remake doesn't apply this last rule yet.
+
+**Dialogs (0x1A37D, traced but not drawn by the remake yet).** The
+builder fetches the non-empty lines (26, dialog, 5, 0-19). With no
+dialog image, or one that doesn't fit, it draws a framed box sized from
+the words at 0x71704/0x71708 in colours 1 and 5. Otherwise it draws
+(26, dialog, 1, 0) at layout id 4. It then centres the version string
+on id 0x1C2 in colour 0xC. Each line is centred on a layout id from the
+table at 0x717CE, starting at an offset chosen by the line count (0, 1,
+3 or 6), in colour 0xB. Buttons start from id 0x1D5 (fewer than two
+lines) or 0x1D7, with their labels from (26, dialog, 5, 0x14 and up).
+
+Not yet compared: the active spell panel (the input that selects it
+wasn't found), the held-item cursor and an open container (DOSBox mouse
+clicks on inventory slots didn't register under xdotool), and the
+dialogs.
 
 ## Open questions
 
