@@ -6,6 +6,7 @@
 
 use dm2_formats::dungeon::Dungeon;
 
+use crate::champions::{self, Champion, PartyStatus};
 use crate::events;
 use crate::rng::Rng;
 use crate::timeline::Timeline;
@@ -34,6 +35,10 @@ pub struct GameState {
     pub move_ready: u32,
     /// Map change requested this tick, applied at the start of the next.
     pub pending_map: Option<PartyPos>,
+    /// The party's champions, in recruitment order (at most 4).
+    pub champions: Vec<Champion>,
+    /// Party-wide flags and counters used by the champion formulas.
+    pub party_status: PartyStatus,
     commands: std::collections::VecDeque<Command>,
 }
 
@@ -50,6 +55,8 @@ impl GameState {
             timeline: Timeline::with_capacity(TIMELINE_CAPACITY),
             move_ready: 0,
             pending_map: None,
+            champions: Vec::new(),
+            party_status: PartyStatus::default(),
             commands: Default::default(),
         }
     }
@@ -70,7 +77,8 @@ impl GameState {
             let Some(ev) = self.timeline.pop() else { break };
             events::dispatch(self, ev);
         }
-        // TODO: creature updates (docs/08), per-tick champion updates (docs/06).
+        // TODO: creature updates (docs/08).
+        champions::tick(self);
         while let Some(c) = self.commands.pop_front() {
             self.execute(c);
         }
@@ -94,8 +102,9 @@ impl GameState {
                     } else {
                         self.party = p;
                     }
-                    // TODO(0x46892): half the slowest champion's move time.
-                    self.move_ready = self.tick + 1;
+                    let t = champions::party_move_time(&self.champions, &self.party_status, &mut self.rng);
+                    self.move_ready = self.tick + t as u32;
+                    self.party_status.last_moved = self.tick;
                     crate::events::party_moved(self, before);
                 }
             }

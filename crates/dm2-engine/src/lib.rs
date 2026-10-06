@@ -3,8 +3,11 @@
 //! module follows.
 
 pub mod assets;
+pub mod champions;
 pub mod events;
+pub mod exe;
 pub mod gfx;
+pub mod items;
 pub mod layout;
 pub mod rng;
 pub mod state;
