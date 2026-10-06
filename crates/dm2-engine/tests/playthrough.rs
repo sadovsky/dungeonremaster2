@@ -291,10 +291,9 @@ fn random_open(ctl: &mut Ctl, dg: &Dungeon) -> Option<PartyPos> {
 
 /// Pick this tick's player input: mostly purposeful exploring and
 /// fighting, with random interface actions mixed in.
-fn drive(ctl: &mut Ctl, plan: &mut VecDeque<Command>, g: &mut GameState) {
+fn drive(ctl: &mut Ctl, plan: &mut VecDeque<Command>, g: &GameState) -> Command {
     if let Some(c) = plan.pop_front() {
-        g.push_command(c);
-        return;
+        return c;
     }
     let d = g.party.dir as usize;
     let (map, x, y) = (g.party.map, g.party.x, g.party.y);
@@ -315,7 +314,7 @@ fn drive(ctl: &mut Ctl, plan: &mut VecDeque<Command>, g: &mut GameState) {
                     plan.push_back(Command::Ui(0x65 + (col % 6) as u16));
                 }
                 plan.push_back(Command::Ui(0x6C));
-                return;
+                return plan.pop_front().unwrap();
             }
         }
     }
@@ -323,15 +322,13 @@ fn drive(ctl: &mut Ctl, plan: &mut VecDeque<Command>, g: &mut GameState) {
     let door_shut = g.dungeon.square(map, ahead.0, ahead.1).element() == Element::Door
         && world::blocks(&g.dungeon, map, ahead.0, ahead.1);
     if door_shut && ctl.chance(30) {
-        g.push_command(Command::Move(Move::Forward));
-        return;
+        return Command::Move(Move::Forward);
     }
     // A creature group directly ahead: attack with one of the leader's hands.
     if creatures::group_at(g, map, ahead.0, ahead.1).is_some() && ctl.chance(70) {
         let leader = g.leader.unwrap_or(0) as u16;
         let cmd = if g.hand.menu.is_some() { 0x71 + ctl.below(3) as u16 } else { 0x74 + leader * 2 + ctl.below(2) as u16 };
-        g.push_command(Command::Ui(cmd));
-        return;
+        return Command::Ui(cmd);
     }
     if ctl.chance(70) {
         let dg = &g.dungeon;
@@ -350,14 +347,13 @@ fn drive(ctl: &mut Ctl, plan: &mut VecDeque<Command>, g: &mut GameState) {
         } else {
             Command::TurnLeft
         };
-        g.push_command(cmd);
-        return;
+        return cmd;
     }
-    random_input(ctl, g);
+    random_input(ctl, g)
 }
 
 /// A random player input from the whole command set.
-fn random_input(ctl: &mut Ctl, g: &mut GameState) {
+fn random_input(ctl: &mut Ctl, g: &GameState) -> Command {
     let r = ctl.below(100);
     let cmd = match r {
         0..=29 => Command::Move(Move::Forward),
@@ -393,7 +389,7 @@ fn random_input(ctl: &mut Ctl, g: &mut GameState) {
         96 => Command::Ui(0x5F + ctl.below(4) as u16),
         _ => Command::Move(Move::Forward),
     };
-    g.push_command(cmd);
+    cmd
 }
 
 struct Stats {
@@ -416,6 +412,7 @@ fn run(w: &World, seed: u64, ticks: u32, save_every: u32, jump_every: u32) -> (S
     let mut ctl = Ctl(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let mut g = new_game(w);
     let mut plan = VecDeque::new();
+    let mut recent: VecDeque<(u32, Command)> = VecDeque::new();
     let mut st = Stats {
         ticks: 0,
         saves: 0,
@@ -452,7 +449,12 @@ fn run(w: &World, seed: u64, ticks: u32, save_every: u32, jump_every: u32) -> (S
             st.saves += 1;
             check(&g).unwrap_or_else(|e| panic!("seed {seed} tick {n}: invariant broken after load: {e}"));
         }
-        drive(&mut ctl, &mut plan, &mut g);
+        let cmd = drive(&mut ctl, &mut plan, &g);
+        g.push_command(cmd);
+        recent.push_back((g.tick, cmd));
+        if recent.len() > 8 {
+            recent.pop_front();
+        }
         let (held_before, map_before) = (g.hand.held, g.party.map);
         let start = Instant::now();
         let r = catch_unwind(AssertUnwindSafe(|| g.advance()));
@@ -482,7 +484,7 @@ fn run(w: &World, seed: u64, ticks: u32, save_every: u32, jump_every: u32) -> (S
         st.maps.insert(g.party.map);
         st.ticks = n;
         if let Err(e) = check(&g) {
-            panic!("seed {seed} tick {n} (game tick {}, party {:?}): {e}", g.tick, g.party);
+            panic!("seed {seed} tick {n} (game tick {}, party {:?}): {e}\nlast commands (game tick, command): {recent:?}", g.tick, g.party);
         }
     }
     (st, g)

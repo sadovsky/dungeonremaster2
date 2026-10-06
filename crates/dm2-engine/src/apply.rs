@@ -182,6 +182,7 @@ fn make_potion(g: &mut GameState, idx: usize, kind: u8, power: u8) {
         g.dungeon.set_record_word(p, 1, 0x8000 | (kind as u16 & 0x7F) << 8 | power as u16);
         g.dungeon.free_thing(item);
         g.champions[idx].set_inventory(hand, p.0);
+        crate::party::refresh_load(g, idx);
         return;
     }
 }
@@ -194,6 +195,7 @@ fn create_item_from_spell(g: &mut GameState, idx: usize) {
     if let Some(c) = g.champions.get_mut(idx) {
         if let Some(hand) = (0..2).find(|&h| c.inventory(h) == EMPTY) {
             c.set_inventory(hand, t.0);
+            crate::party::refresh_load(g, idx);
             return;
         }
     }

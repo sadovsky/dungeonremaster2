@@ -98,7 +98,8 @@ pub fn give_item(g: &mut GameState, idx: usize, t: ThingRef) -> bool {
     false
 }
 
-fn refresh_load(g: &mut GameState, idx: usize) {
+/// Recompute a champion's cached load after its inventory changed.
+pub(crate) fn refresh_load(g: &mut GameState, idx: usize) {
     let Some(data) = g.data.clone() else { return };
     let db = data.item_db(&g.dungeon);
     if let Some(c) = g.champions.get_mut(idx) {

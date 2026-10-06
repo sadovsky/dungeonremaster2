@@ -400,6 +400,24 @@ fn explosion_rolls_once_and_hurts_the_party_first() {
     assert!(total(&g) < before, "the party took the blast");
 }
 
+/// Regression: spells that change a hand slot (filling a flask, creating
+/// an item) left the champion's cached load stale.
+#[test]
+fn spell_made_items_update_the_load() {
+    let Some(mut g) = game() else { return };
+    let Some(flask) = crate::actuators::create_item(&mut g, 256 + 0x14) else { return };
+    let hand = (0..2).find(|&h| g.champions[0].inventory(h) == EMPTY).unwrap_or(0);
+    g.champions[0].set_inventory(hand, flask.0 & 0x3FFF);
+    crate::party::refresh_load(&mut g, 0);
+    let before = g.champions[0].load();
+    crate::apply::apply_cast(&mut g, 0, vec![crate::magic::CastEffect::MakePotion { kind: 6, power: 100 }]);
+    assert_ne!(g.champions[0].inventory(hand), flask.0 & 0x3FFF, "the flask was filled");
+    let db = g.data.clone().unwrap();
+    let mut fresh = g.champions[0].clone();
+    crate::champions::recompute_load(&mut fresh, &db.item_db(&g.dungeon));
+    assert_eq!(g.champions[0].load(), fresh.load(), "cached load follows the inventory (was {before})");
+}
+
 /// Regression: shooters launched from the actuator's word 3 read as a
 /// target, but word 3 holds the shot energies (0x57A63). Shots start one
 /// square ahead of the event square in its direction, with attack 100,
