@@ -62,6 +62,21 @@ pub struct InventoryView {
     pub load: (u16, u16),
     /// Name of the held item while the eye is pressed.
     pub info: Option<Vec<u8>>,
+    /// The eye pressed with an empty hand: the champion's skills and
+    /// stats replace the food/water panel (0x3A12A).
+    pub eye_stats: Option<EyeStats>,
+}
+
+/// What the eye panel (0x3A12A) shows.
+#[derive(Clone, Debug, Default)]
+pub struct EyeStats {
+    /// Level of each skill class (fighter, ninja, priest, wizard).
+    pub levels: [u16; 4],
+    /// The class gained a level recently (0x7FFF8 + 4·champion + class).
+    pub recent: [bool; 4],
+    /// Strength, dexterity, wisdom, vitality, anti-magic and anti-fire as
+    /// (current, maximum).
+    pub stats: [(u16, u16); 6],
 }
 
 /// An open action menu (0x43759): the champion and its action names.
@@ -170,6 +185,11 @@ pub struct UiTables {
     /// Separator between a champion's name and title in the inventory
     /// (string pointed to by 0x760E0).
     pub name_sep: [u8; 4],
+    /// Rank text (7, 0, n) for each skill level 0-16 (0x75712).
+    pub rank_text: [u8; 17],
+    /// Eye-panel line height (0x71738) and character width (0x71736).
+    pub line_h: i32,
+    pub char_w: i32,
 }
 
 impl UiTables {
@@ -197,7 +217,13 @@ impl UiTables {
             }
             *b = c;
         }
-        Some(UiTables { champion_colour, shadow, slots, name_sep })
+        let mut rank_text = [0u8; 17];
+        for (k, r) in rank_text.iter_mut().enumerate() {
+            *r = exe.u8_at(0x75712 + k as u32)?;
+        }
+        let line_h = exe.i16_at(0x71738)? as i32;
+        let char_w = exe.i16_at(0x71736)? as i32;
+        Some(UiTables { champion_colour, shadow, slots, name_sep, rank_text, line_h, char_w })
     }
 }
 
@@ -206,7 +232,8 @@ impl Default for UiTables {
     fn default() -> Self {
         // Slot layout ids follow the zone lists; no empty-slot pictures.
         let slots = std::array::from_fn(|k| (if k < 8 { 209 + k as u16 } else { 507 + (k as u16 - 8) }, 0xFF));
-        UiTables { champion_colour: [1, 2, 3, 4], shadow: (1, 1), slots, name_sep: [b' ', 0, 0, 0] }
+        let rank_text = std::array::from_fn(|k| 3 + k as u8);
+        UiTables { champion_colour: [1, 2, 3, 4], shadow: (1, 1), slots, name_sep: [b' ', 0, 0, 0], rank_text, line_h: 7, char_w: 6 }
     }
 }
 
@@ -368,6 +395,9 @@ pub fn inventory_panel(a: &mut Assets, font: &Font, tables: &UiTables, inv: &Inv
     if let Some(info) = &inv.info {
         a.draw(&mut b, 7, 0, 1, id::FOOD_PANEL, 0, None);
         font.draw_at(&mut b, &a.layout, id::FOOD_LABEL, info, col[0xF], None);
+    } else if let Some(es) = &inv.eye_stats {
+        a.draw(&mut b, 7, 0, 1, id::FOOD_PANEL, 0, None);
+        eye_panel(a, font, tables, es, &col, &mut b);
     } else {
         // Food, water and poison bars (0x39A4D).
         a.draw(&mut b, 7, 0, 1, id::FOOD_PANEL, 0, None);
@@ -381,6 +411,42 @@ pub fn inventory_panel(a: &mut Assets, font: &Font, tables: &UiTables, inv: &Inv
         }
     }
     b
+}
+
+/// Anchor point of a layout id (0x19BAE).
+fn point(a: &Assets, rid: u16) -> Option<(i32, i32)> {
+    a.layout.resolve(rid, 1, 1, (1, 1)).map(|p| (p.x, p.y))
+}
+
+/// The eye panel with an empty hand (0x3A12A): a rank line per skill class
+/// above level 1, then the six stats as current/maximum.
+fn eye_panel(a: &mut Assets, font: &Font, tables: &UiTables, es: &EyeStats, col: &[u8; 16], b: &mut Bitmap) {
+    let Some((x, mut y)) = point(a, 0x22D) else { return };
+    // 0x55B14 places text by a point one row below the glyphs' bottom-left
+    // corner (checked against the original in DOSBox).
+    let top = |y: i32| y - (crate::font::GLYPH_H - 2);
+    for class in 0..4 {
+        let lvl = es.levels[class].min(16) as usize;
+        if lvl == 1 {
+            continue;
+        }
+        let ctx = crate::font::TextContext { interface_word: Some(class as u8), ..Default::default() };
+        if let Some(t) = crate::font::text(&a.gdat, 7, 0, tables.rank_text[lvl], &ctx) {
+            let c = if es.recent[class] { col[7] } else { col[0xD] };
+            font.draw(b, x, top(y), &t, c, None);
+        }
+        y += tables.line_h;
+    }
+    let Some((x2, mut y)) = point(a, 0x22F) else { return };
+    for (k, &(cur, max)) in es.stats.iter().enumerate() {
+        if let Some(t) = crate::font::text(&a.gdat, 7, 0, 0x21 + k as u8, &Default::default()) {
+            font.draw(b, x, top(y), &t, col[0xD], None);
+        }
+        let c = if cur < max { col[8] } else if cur > max { col[7] } else { col[0xD] };
+        font.draw(b, x2, top(y), format!("{cur:>3}").as_bytes(), c, None);
+        font.draw(b, x2 + 3 * tables.char_w, top(y), format!("/{max:>3}").as_bytes(), col[0xD], None);
+        y += tables.line_h;
+    }
 }
 
 /// The action area (0x4315D, 0x43759): one panel per champion with its two

@@ -548,7 +548,9 @@ pub fn dispatch(g: &mut GameState, cmd: u16) -> bool {
             return click_slot(g, c, (cmd - 0x1C) as usize);
         }
         0x46 => return eat_held(g),
-        0x47 => g.hand.show_info = held(g).is_some(),
+        // The eye: item details when holding something, else the
+        // champion's skills and stats (0x3A409 / 0x3A12A).
+        0x47 => g.hand.show_info = true,
         0x5F..=0x62 => {
             // Party cell (0x458F4 then 0x3FE03): select the champion standing
             // there; the original then shows that champion's action menu.

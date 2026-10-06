@@ -33,7 +33,7 @@ use dm2_engine::gfx::{Bitmap, SCREEN_H, SCREEN_W};
 use dm2_engine::input::{self, Input, Screen, UiState, BUTTON_LEFT, BUTTON_RIGHT, MOD_ALT, MOD_CTRL, MOD_SHIFT};
 use dm2_engine::state::{Command, GameState};
 use dm2_engine::hand;
-use dm2_engine::ui::{self, ChampionView, Icon, InventoryView, MenuView, UiTables, UiView};
+use dm2_engine::ui::{self, ChampionView, EyeStats, Icon, InventoryView, MenuView, UiTables, UiView};
 use dm2_engine::viewport;
 use dm2_engine::world::{Move, PartyPos};
 use dm2_formats::dungeon::ThingRef;
@@ -221,6 +221,11 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
             water: c.water(),
             poisoned: c.poison_pool() > 0,
             load: (c.load(), dm2_engine::champions::max_load(c, &mut rng)),
+            eye_stats: (g.hand.show_info && g.hand.held == 0xFFFF).then(|| EyeStats {
+                levels: std::array::from_fn(|k| dm2_engine::champions::level(c, &g.party_status, k, true)),
+                recent: std::array::from_fn(|k| g.party_status.level_ups[ci][k] != 0),
+                stats: std::array::from_fn(|k| (c.stat_raw(k + 1, 0) as u16, c.stat_raw(k + 1, 1) as u16)),
+            }),
             info,
         });
     }
