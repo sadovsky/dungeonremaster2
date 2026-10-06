@@ -228,12 +228,19 @@ fn ui_state(screen: Screen, view: &UiView) -> UiState {
     }
 }
 
-/// Viewport inputs from the simulation: each active creature's frame.
+/// Viewport inputs from the simulation: each active creature's frame,
+/// position byte and facing rule.
 fn view_extras(g: &GameState) -> viewport::ViewExtras {
     let mut ex = viewport::ViewExtras { tick: g.tick, ..Default::default() };
     for slot in g.creature_slots.iter().flatten() {
         if let Some(cv) = creatures::view(g, slot.thing) {
-            ex.creature_frames.insert(slot.thing.0 & 0x3FFF, cv.frame);
+            let key = slot.thing.0 & 0x3FFF;
+            ex.creature_frames.insert(key, cv.frame);
+            // Type info word 0 bit 2: always drawn facing the party.
+            let faces_party = g.creature_data.as_ref().is_some_and(|d| {
+                creatures::type_info(g, d, creatures::creature_type(g, slot.thing)).is_some_and(|(i, _)| i.raw[0] & 4 != 0)
+            });
+            ex.creatures.insert(key, viewport::CreatureDraw { position: cv.jitter, faces_party, ..Default::default() });
         }
     }
     ex

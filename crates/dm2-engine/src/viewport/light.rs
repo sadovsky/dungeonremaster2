@@ -107,6 +107,12 @@ impl Light {
     /// any; `ambient` is the ambient darkness (0 = full light). Returns None
     /// when nothing changes.
     pub fn for_depth(&mut self, depth: usize, ambient: i32, key: Option<u8>, set_remap: Option<&[u8]>) -> Option<[u8; 256]> {
+        self.for_depth_with(DEPTH_DARKEN[depth.min(4)], ambient, key, set_remap)
+    }
+
+    /// As `for_depth`, with an explicit depth darkening (64ths); the
+    /// mid-step frame uses its own row (0x75C07).
+    pub fn for_depth_with(&mut self, darken: i32, ambient: i32, key: Option<u8>, set_remap: Option<&[u8]>) -> Option<[u8; 256]> {
         if let Some(t) = set_remap.filter(|t| t.len() >= 256) {
             let mut m = [0u8; 256];
             m.copy_from_slice(&t[..256]);
@@ -118,7 +124,6 @@ impl Light {
             }
             return Some(m);
         }
-        let darken = DEPTH_DARKEN[depth.min(4)];
         let level = 64 - (((64 - darken) * (64 - ambient)) >> 6);
         if level == 0 {
             return None;

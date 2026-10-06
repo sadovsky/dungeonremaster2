@@ -3,7 +3,10 @@
 //! Every image is loaded at runtime from the user's own GRAPHICS.DAT; this
 //! module only holds the traversal and placement rules.
 
+mod creature;
+pub mod hits;
 pub mod light;
+mod walltext;
 
 use std::collections::HashMap;
 
@@ -12,6 +15,7 @@ use dm2_formats::gdat::Key;
 
 use crate::assets::Assets;
 use crate::gfx::{Bitmap, Sprite};
+use crate::layout::Placement;
 
 pub const VP_W: usize = 224;
 pub const VP_H: usize = 136;
@@ -37,6 +41,21 @@ const DEPTH: [usize; 23] = [0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4
 const FACES: [u8; 23] = [0, 2, 2, 1, 3, 3, 1, 3, 3, 2, 2, 1, 3, 3, 3, 3, 1, 1, 1, 1, 1, 0, 0];
 /// Scale per depth in 64ths (0x75B6D).
 const DEPTH_SCALE: [i32; 5] = [96, 64, 43, 28, 19];
+/// Mid-step frame: ceiling and floor y shifts (0x7170A / 0x7170C) and the
+/// inner rectangle placements through the viewport are clipped to (0x7170E).
+const MID_STEP_CEILING_DY: i32 = -2;
+const MID_STEP_FLOOR_DY: i32 = 3;
+const MID_STEP_CLIP: (i32, i32, i32, i32) = (21, 8, 182, 110);
+/// Depth darkening (64ths) in mid-step frames (0x75C07).
+const MID_STEP_DARKEN: [i32; 5] = [0, 0, 5, 19, 36];
+/// Attack lunge from the square ahead, by attack step: sub-square and
+/// scale (0x75BB4 / 0x75BBB).
+const LUNGE_SLOT: [u8; 7] = [2, 14, 22, 22, 22, 10, 12];
+const LUNGE_SCALE: [i32; 7] = [52, 64, 78, 78, 78, 64, 64];
+/// Position nudges selected by 3-bit fields (0x75BC2).
+const NUDGE: [i32; 8] = [0, 1, 2, 3, 0, -3, -2, -1];
+/// Door button position per view cell (0x75ECF); -1 = no button there.
+const DOOR_BUTTON: [i8; 16] = [4, -1, -1, 3, -1, -1, 2, -1, -1, -1, -1, 1, -1, 0, -1, -1];
 /// Does a cell get a contents pass (0x75DCF)?
 const HAS_CONTENTS: [bool; 16] = [true, true, true, true, true, true, true, true, true, false, false, true, true, true, true, true];
 /// Sub-square visiting orders for left, right and centre cells (0x75D84/9D/B6).
@@ -123,6 +142,32 @@ pub struct ViewExtras {
     pub creature_frames: HashMap<u16, u16>,
     /// Missile flight direction per missile thing reference; default: towards the party.
     pub missile_dirs: HashMap<u16, u8>,
+    /// Per-creature drawing state beyond the frame (jitter, alternate
+    /// descriptor, attack lunge, facing rule), keyed like `creature_frames`.
+    pub creatures: HashMap<u16, CreatureDraw>,
+    /// The party is between squares (the step counter 0x7F258 is running):
+    /// draw the mid-step frame (docs/04 "Mid-step frames").
+    pub mid_step: bool,
+}
+
+/// Drawing state of one creature group, filled by the frontend from
+/// `creatures::view` and the creature type info.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CreatureDraw {
+    /// Position byte of the active slot (+7): bits 0-2 x nudge, 3-5 y
+    /// nudge, bit 6 allows the per-view "mirror if flagged" bit.
+    pub position: u8,
+    /// Type info flag 0x0004: always drawn with the front view.
+    pub faces_party: bool,
+    /// Alternate drawing descriptor (slot state 0x13 in the original):
+    /// supplies the sub-square, scale index and shift instead of `frame`.
+    pub alt_frame: Option<u16>,
+    /// Attack step while lunging at the party from the square ahead
+    /// (index into the lunge slot/scale tables), if attacking.
+    pub lunge: Option<u8>,
+    /// In-square position (5×5 sub-square, 12 = centre) once the creature
+    /// module models positions inside a square; None uses the descriptor.
+    pub slot: Option<u8>,
 }
 
 impl Default for ViewExtras {
@@ -135,6 +180,8 @@ impl Default for ViewExtras {
             layers: layers::ALL,
             creature_frames: HashMap::new(),
             missile_dirs: HashMap::new(),
+            creatures: HashMap::new(),
+            mid_step: false,
         }
     }
 }
@@ -178,7 +225,11 @@ struct Ctx<'a> {
     dir: u8,
     par: u8,
     set_flags: u16,
+    px: i32,
+    py: i32,
     rng: u32,
+    hits: hits::HitTable,
+    plan: creature::Plan,
 }
 
 impl Ctx<'_> {
@@ -246,16 +297,19 @@ fn light_map(a: &mut Assets, cx: &Ctx, depth: Option<usize>, key: Option<u8>) ->
     if !cx.ex.lighting {
         return None;
     }
+    // Mid-step frames use the in-between darkening row and the set's
+    // remap tables 10-13 instead of 1-4 (0x4E3D5).
+    let (sub, darken) = if cx.ex.mid_step { (depth as u8 + 9, MID_STEP_DARKEN[depth.min(4)]) } else { (depth as u8, light::DEPTH_DARKEN[depth.min(4)]) };
     let remap = if (1..=4).contains(&depth) {
-        a.gdat.get(Key::new(8, cx.set, 7, depth as u8)).map(|t| t.to_vec())
+        a.gdat.get(Key::new(8, cx.set, 7, sub)).map(|t| t.to_vec())
     } else {
         None
     };
-    a.light.as_mut()?.for_depth(depth, cx.ex.ambient, key, remap.as_deref())
+    a.light.as_mut()?.for_depth_with(darken, cx.ex.ambient, key, remap.as_deref())
 }
 
 /// Place and draw one sprite with offsets, flip and light (0x1B54A/0x1B8E5).
-fn draw_sprite(a: &mut Assets, buf: &mut Bitmap, cx: &Ctx, s: &Sprite, base_off: (i32, i32), r: &Req, xs: i32, ys: i32) -> bool {
+fn draw_sprite(a: &mut Assets, buf: &mut Bitmap, cx: &Ctx, s: &Sprite, base_off: (i32, i32), r: &Req, xs: i32, ys: i32) -> Option<Placement> {
     let mut ox = scale_v(base_off.0 + r.xoff, xs);
     let oy = scale_v(base_off.1 + r.yoff, ys);
     if r.flip & 1 != 0 {
@@ -267,13 +321,36 @@ fn draw_sprite(a: &mut Assets, buf: &mut Bitmap, cx: &Ctx, s: &Sprite, base_off:
     } else {
         a.layout.resolve(r.rid, img.0, img.1, img)
     };
-    let Some(p) = p else { return false };
+    let mut p = p?;
+    if cx.ex.mid_step {
+        p = clip(p, MID_STEP_CLIP)?;
+    }
     let lm = light_map(a, cx, r.depth, r.key);
     s.blit_mapped(buf, &p, r.flip, r.key, lm.as_ref());
-    true
+    Some(p)
 }
 
-fn draw(a: &mut Assets, buf: &mut Bitmap, cx: &Ctx, r: Req) -> bool {
+/// Intersect a placement with a rectangle (x, y, w, h), keeping the source
+/// offsets in step (0x18F57).
+fn clip(mut p: Placement, (cx, cy, cw, ch): (i32, i32, i32, i32)) -> Option<Placement> {
+    let d = cx - p.x;
+    if d > 0 {
+        p.x += d;
+        p.skip_x += d;
+        p.w -= d;
+    }
+    let d = cy - p.y;
+    if d > 0 {
+        p.y += d;
+        p.skip_y += d;
+        p.h -= d;
+    }
+    p.w = p.w.min(cx + cw - p.x);
+    p.h = p.h.min(cy + ch - p.y);
+    (p.w > 0 && p.h > 0).then_some(p)
+}
+
+fn draw(a: &mut Assets, buf: &mut Bitmap, cx: &Ctx, r: Req) -> Option<Placement> {
     let mut xs = r.xs;
     // Per-image aspect override at depths 2 and 3 when x and y scales differ.
     if r.xs != r.ys {
@@ -288,8 +365,8 @@ fn draw(a: &mut Assets, buf: &mut Bitmap, cx: &Ctx, r: Req) -> bool {
             }
         }
     }
-    let Some(orig) = a.sprite(r.cat, r.idx, r.sub) else { return false };
-    let Some(s) = a.sprite_scaled(r.cat, r.idx, r.sub, xs, r.ys) else { return false };
+    let orig = a.sprite(r.cat, r.idx, r.sub)?;
+    let s = a.sprite_scaled(r.cat, r.idx, r.sub, xs, r.ys)?;
     draw_sprite(a, buf, cx, &s, orig.off, &r, xs, r.ys)
 }
 
@@ -348,14 +425,17 @@ fn summarise(cx: &Ctx, x: i32, y: i32) -> Cell {
             }
             if kind == 2 {
                 let w1 = word(dg, t, 1);
-                match (w1 & 7) >> 1 {
-                    0 => {
+                // Mode 0, and mode 1 with bits 11-15 = 14, are wall writing
+                // (shown when bit 0 is set); other mode-1 things name an
+                // ornament (0x1E4EE).
+                match ((w1 & 7) >> 1, w1 >> 11) {
+                    (0, _) | (1, 14) => {
                         c.faces[rel] = 0;
                         if rel == 2 && w1 & 1 != 0 {
                             c.wall_text = Some(t);
                         }
                     }
-                    1 => c.faces[rel] = (w1 >> 3) as u8,
+                    (1, _) => c.faces[rel] = (w1 >> 3) as u8,
                     _ => {}
                 }
             } else if kind == 3 {
@@ -401,6 +481,17 @@ pub fn render(a: &mut Assets, dg: &Dungeon, map: usize, px: i32, py: i32, dir: u
 }
 
 pub fn render_ex(a: &mut Assets, dg: &Dungeon, map: usize, px: i32, py: i32, dir: u8, ex: &ViewExtras) -> Bitmap {
+    render_full(a, dg, map, px, py, dir, ex).bitmap
+}
+
+/// A rendered view and the clickable things drawn into it.
+pub struct Rendered {
+    pub bitmap: Bitmap,
+    pub hits: hits::HitTable,
+}
+
+/// Render the view and collect the drawn-things hit table (0x7F2EC).
+pub fn render_full(a: &mut Assets, dg: &Dungeon, map: usize, px: i32, py: i32, dir: u8, ex: &ViewExtras) -> Rendered {
     let mut buf = Bitmap::new(VP_W, VP_H);
     let set = dg.maps[map].tileset;
     let par = parity(dg, map, px, py, dir);
@@ -413,13 +504,25 @@ pub fn render_ex(a: &mut Assets, dg: &Dungeon, map: usize, px: i32, py: i32, dir
         dir,
         par,
         set_flags,
+        px,
+        py,
         rng: ex.visual_seed.wrapping_mul(0x9E37_79B9) ^ ex.tick.wrapping_add(1).wrapping_mul(0x85EB_CA6B) | 1,
+        hits: hits::HitTable::default(),
+        plan: creature::Plan::default(),
     };
     // Ceiling and floor (0x4E32A); only the parity-driven flips are modelled.
     let ceil_flip = if set_flags & 2 != 0 && set_flags & 4 == 0 { 1 - par } else { 0 };
     let floor_flip = if set_flags & 8 != 0 && set_flags & 0x10 == 0 { par } else { 0 };
-    for (sub, rid, fl) in [(1u8, LAYOUT_CEILING, ceil_flip), (0, LAYOUT_FLOOR, floor_flip)] {
-        a.draw(&mut buf, 8, set, sub, rid, fl, None);
+    for (sub, rid, fl, dy) in [(1u8, LAYOUT_CEILING, ceil_flip, MID_STEP_CEILING_DY), (0, LAYOUT_FLOOR, floor_flip, MID_STEP_FLOOR_DY)] {
+        if ex.mid_step {
+            // Shifted by a few pixels for the in-between position (0x4E32A).
+            let r = Req { flip: fl, yoff: dy, ..Req::new(8, set, sub, rid) };
+            if let Some(s) = a.sprite(8, set, sub) {
+                draw_sprite(a, &mut buf, &cx, &s, s.off, &r, 64, 64);
+            }
+        } else {
+            a.draw(&mut buf, 8, set, sub, rid, fl, None);
+        }
     }
     let floor_orn_default = a.gdat.lookup(Key::new(8, set, 11, 0x6B)).unwrap_or(0);
     let d = dir as usize;
@@ -437,11 +540,12 @@ pub fn render_ex(a: &mut Assets, dg: &Dungeon, map: usize, px: i32, py: i32, dir
             c.floor_orn = floor_orn_default as u8;
         }
     }
+    cx.plan = creature::Plan::build(a, &cx, &cells);
     for &c in DRAW_ORDER.iter() {
         draw_cell(a, &mut buf, &mut cx, &cells[c], c);
     }
     draw_party_cell(a, &mut buf, &mut cx, &cells[0]);
-    buf
+    Rendered { bitmap: buf, hits: cx.hits }
 }
 
 fn draw_cell(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c: usize) {
@@ -539,16 +643,15 @@ fn draw_wall_ornament(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cel
         return;
     }
     let depth = DEPTH[c];
+    let ds = DEPTH_SCALE[depth];
+    // Side faces seen obliquely at depths 2 and 3 are narrowed.
+    let xs = match (side.abs() > 1, depth) {
+        (true, 2) => 114,
+        (true, 3) => 76,
+        _ => ds,
+    };
     if orn == 0 {
-        // Wall writing: the writing panel of the map set. TODO: glyphs from
-        // the 8×8 wall font (8, set, 3) laid out per docs/04 section 7.
-        if side == 0 && cell.wall_text.is_some() {
-            let mut r = Req::new(8, cx.set, 0xFC, 3100 + 25 * c as u16 + 12);
-            r.xs = DEPTH_SCALE[depth];
-            r.ys = DEPTH_SCALE[depth];
-            r.depth = Some(depth);
-            draw(a, buf, cx, r);
-        }
+        draw_wall_writing(a, buf, cx, cell, c, side, xs, ds);
         return;
     }
     let key = key_attr(a, 9, orn, None, true);
@@ -564,29 +667,90 @@ fn draw_wall_ornament(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cel
             _ => return,
         }
     };
-    let ds = DEPTH_SCALE[depth];
-    let mut xs = ds;
-    if side.abs() > 1 {
-        match depth {
-            2 => xs = 114,
-            3 => xs = 76,
-            _ => {}
-        }
-    }
+    // Animated ornaments add 4 per frame to the sub (0x1E3DA).
+    let step = (ornament_frame(a, 9, orn, cx.ex.tick, 0) << 2) as u8;
     let (sub, flip) = if side == 0 {
         (1u8, 0u8)
     } else if side > 0 {
-        if a.has_image(9, orn, 2) { (2, 0) } else { (0, 1) }
+        if a.has_image(9, orn, 2u8.wrapping_add(step)) { (2, 0) } else { (0, 1) }
     } else {
         (0, 0)
     };
-    let mut r = Req::new(9, orn, sub, rid);
+    let mut r = Req::new(9, orn, sub.wrapping_add(step), rid);
     r.flip = flip;
     r.xs = xs;
     r.ys = ds;
     r.depth = Some(depth);
     r.key = key;
-    draw(a, buf, cx, r);
+    let placed = draw(a, buf, cx, r);
+    // Alcoves (attribute 10) show the items lying in them.
+    if side == 0 && attr(a, 9, orn, 10) != 0 && !a.has_image(9, orn, 0x0F) {
+        draw_alcove_items(a, buf, cx, cell, c, rid);
+    }
+    // Ornaments on the three nearest wall cells are clickable (kind 6).
+    if let (Some(p), 1..=3) = (placed, c) {
+        cx.hits.push(hits::Hit { x: p.x, y: p.y, w: p.w, h: p.h, thing: None, cell: c as u8, kind: hits::HitKind::WallOrnament });
+    }
+}
+
+/// Animation frame of an ornament (0x1E3DA): the frame count attribute
+/// (cat, orn, 11, 0x0D), bit 15 meaning frames start at 1, cycles with
+/// the tick; otherwise an optional frame string (cat, orn, 5, 0x0D) is
+/// indexed by the tick, digits giving frames 0-9 and letters
+/// `char − 0x4B`. Frames keep 6 bits, as in the cell summary word.
+fn ornament_frame(a: &Assets, cat: u8, orn: u8, tick: u32, phase: u32) -> u32 {
+    let n = attr(a, cat, orn, 0x0D) as u32;
+    let t = tick.wrapping_add(phase);
+    if n != 0 {
+        let (count, base) = (n & 0x7FFF, (n >> 15) & 1);
+        return if count == 0 { 0 } else { (t % count + base) & 0x3F };
+    }
+    let Some(seq) = crate::font::text(&a.gdat, cat, orn, 0x0D, &crate::font::TextContext::default()) else { return 0 };
+    if seq.is_empty() {
+        return 0;
+    }
+    let ch = seq[(t % seq.len() as u32) as usize] as u32;
+    let f = match ch {
+        0x30..=0x39 => ch - 0x30,
+        0x41..=0x5A => ch.wrapping_sub(0x4B),
+        _ => ch,
+    };
+    f & 0x3F
+}
+
+/// Wall writing: the map set's writing panel, then the text composed at
+/// 1:1 on a panel-sized bitmap and placed the same way (0x4F3DF).
+#[allow(clippy::too_many_arguments)]
+fn draw_wall_writing(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c: usize, side: i32, xs: i32, ys: i32) {
+    let depth = DEPTH[c];
+    let key = a.gdat.lookup(Key::new(8, cx.set, 11, 100)).unwrap_or(0) as u8;
+    // Panel sub: 0xFC front; 0xFD on the left; on the right 0xFE, or 0xFD mirrored.
+    let (sub, flip) = match side.signum() {
+        0 => (0xFCu8, 0u8),
+        -1 => (0xFD, 0),
+        _ if a.has_image(8, cx.set, 0xFE) => (0xFE, 0),
+        _ => (0xFD, 1),
+    };
+    let rid = if side == 0 {
+        3100 + 25 * c as u16 + 12
+    } else {
+        match SIDE_ORN_BASE.get(c) {
+            Some(&b) if b > 0 => b as u16 + 12,
+            _ => return,
+        }
+    };
+    let r = Req { flip, xs, ys, depth: Some(depth), key: Some(key), ..Req::new(8, cx.set, sub, rid) };
+    let placed = draw(a, buf, cx, r);
+    if side != 0 || placed.is_none() {
+        return;
+    }
+    let Some(t) = cell.wall_text else { return };
+    let Some(panel) = a.sprite(8, cx.set, sub) else { return };
+    let Some(text) = walltext::text_of(a, cx.dg, t) else { return };
+    let Some(img) = walltext::compose(a, cx.set, &text, panel.w, panel.h, key) else { return };
+    let Some(scaled) = img.scaled(xs, ys) else { return };
+    let r = Req { xs, ys, depth: Some(depth), key: Some(key & 15), ..Req::new(8, cx.set, sub, rid) };
+    draw_sprite(a, buf, cx, &scaled, panel.off, &r, xs, ys);
 }
 
 /// Floor ornament (0x50081).
@@ -699,6 +863,7 @@ fn draw_door(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c: usi
     }
     let state = cell.sq & 7;
     let Some(t) = cell.door else { return };
+    draw_door_button(a, buf, cx, t, c);
     if state == 0 {
         return;
     }
@@ -807,6 +972,29 @@ fn compose(
     Some((Sprite { w: base.w, h: base.h, px: bm.px, cmap: None, off: base.off }, Some(tkey)))
 }
 
+/// Door button (0x530D1, category-12 branch): doors whose record has
+/// word 1 bit 6 set show button image (12, 0, 1, 5·bit 11) beside the
+/// frame at layout 1950 + 5·attr(12, 0, 11, 8) + the cell's button
+/// position. Buttons within reach (positions 3 and 4) are clickable.
+/// TODO: buttons drawn from a door-button ornament (the other branch,
+/// selected by the cell summary) are not modelled.
+fn draw_door_button(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usize) {
+    let w1 = word(cx.dg, t, 1);
+    let pos = DOOR_BUTTON[c];
+    if w1 & 0x40 == 0 || pos < 0 {
+        return;
+    }
+    let depth = DEPTH[c];
+    let sub = 5 * ((w1 >> 11) & 1) as u8;
+    let rid = 1950 + 5 * attr(a, 12, 0, 8) + pos as u16;
+    let key = a.gdat.lookup(Key::new(8, cx.set, 11, 100)).map(|k| k as u8);
+    let sc = DEPTH_SCALE[depth];
+    let r = Req { xs: sc, ys: sc, depth: Some(depth), key, ..Req::new(12, 0, sub, rid) };
+    if let (Some(p), 3 | 4) = (draw(a, buf, cx, r), pos) {
+        cx.hits.push(hits::Hit { x: p.x, y: p.y, w: p.w, h: p.h, thing: Some(t.0), cell: c as u8, kind: hits::HitKind::DoorButton });
+    }
+}
+
 /// Teleporter shimmer (0x509E6): the noise texture shown through a per-depth
 /// mask at a random offset each frame. Visual randomness only.
 fn draw_teleporter(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, c: usize) {
@@ -815,8 +1003,10 @@ fn draw_teleporter(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, c: usize) {
     }
     let (phase, mask, w, h) = TELEPORTER[c];
     let Some(noise) = a.sprite(24, 0, 20) else { return };
+    // One random byte for the column, one random bit plus the cell's phase
+    // for the row (0x509E6; the original takes both from the game RNG).
     let rx = (cx.rand() & 0xFF) as usize;
-    let ry = (((cx.rand() & 0xFF) + phase as u32) * 16) as usize;
+    let ry = (((cx.rand() & 1) + phase as u32) * 16) as usize;
     let (w, h) = (w as usize, h as usize);
     let m = if mask & 0x7F == 0x7F { None } else { a.sprite(24, 0, mask & 0x7F) };
     let mirror = mask & 0x80 != 0;
@@ -827,8 +1017,10 @@ fn draw_teleporter(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, c: usize) {
             let visible = match &m {
                 None => true,
                 Some(ms) => {
-                    let mx = if mirror { ms.w.saturating_sub(1 + x) } else { x };
-                    mx < ms.w && y < ms.h && ms.px[y * ms.w + mx] != key
+                    // A mirrored mask of odd width is shifted by a pixel.
+                    let mw = if mirror { ms.w - (ms.w & 1) } else { ms.w };
+                    let mx = if mirror { mw.wrapping_sub(1 + x) } else { x };
+                    mx < mw && y < ms.h && ms.px[y * ms.w + mx] != key
                 }
             };
             if visible {
@@ -885,25 +1077,46 @@ fn draw_contents(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c:
     };
     let order = if c == 0 { &order[..15] } else { order };
     let depth = DEPTH[c];
-    for &s in order {
+    let wall = cell.vt == vt::WALL;
+    for (i, &s) in order.iter().enumerate() {
         if !filter(s) {
             continue;
         }
-        for &t in &cell.things {
-            let kind = t.kind() as u16;
-            if (5..=10).contains(&kind) && !creatures_only && c < 16 && cx.on(layers::ITEMS) {
-                let slot = QUAD_SLOT[(t.cell().wrapping_sub(cx.dir) & 3) as usize];
-                if slot == s {
-                    draw_item(a, buf, cx, t, c, slot, depth);
-                }
-            } else if kind == 4 && cx.on(layers::CREATURES) {
-                draw_creature(a, buf, cx, t, c, s, depth);
-            } else if kind == 14 && !creatures_only && c < 16 && cx.on(layers::MISSILES) {
-                let slot = QUAD_SLOT[(t.cell().wrapping_sub(cx.dir) & 3) as usize];
-                if slot == s {
-                    draw_missile(a, buf, cx, t, c, slot, depth);
+        if !creatures_only && c < 16 && cx.on(layers::ITEMS) {
+            for &t in &cell.things {
+                if (5..=10).contains(&(t.kind() as u16)) && QUAD_SLOT[(t.cell().wrapping_sub(cx.dir) & 3) as usize] == s {
+                    draw_item(a, buf, cx, t, c, s, depth);
                 }
             }
+        }
+        // Creatures held at this sub-square's grid point (0x52518).
+        if cx.on(layers::CREATURES) && c < 16 {
+            let held = cx.plan.take(c, s, wall);
+            if !held.is_empty() {
+                for p in &held {
+                    creature::draw_creature(a, buf, cx, p.thing, p.cell);
+                }
+                // Missiles in the seven sub-squares before this one go on top.
+                if !creatures_only {
+                    for &ps in &order[i.saturating_sub(7)..i] {
+                        draw_missiles_at(a, buf, cx, cell, c, ps, depth);
+                    }
+                }
+            }
+        }
+        if !creatures_only && c < 16 {
+            draw_missiles_at(a, buf, cx, cell, c, s, depth);
+        }
+    }
+}
+
+fn draw_missiles_at(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c: usize, s: u8, depth: usize) {
+    if !cx.on(layers::MISSILES) {
+        return;
+    }
+    for &t in &cell.things {
+        if t.kind() as u16 == 14 && QUAD_SLOT[(t.cell().wrapping_sub(cx.dir) & 3) as usize] == s {
+            draw_missile(a, buf, cx, t, c, s, depth);
         }
     }
 }
@@ -917,66 +1130,55 @@ fn draw_item(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usi
     let sc = ITEM_SCALE[depth * 4 + 4 - row];
     let key = key_attr(a, cat, idx, Some(10), false);
     let r = Req { xs: sc, ys: sc, depth: Some(depth), key, ..Req::new(cat, idx, 0, 5000 + 25 * c as u16 + slot as u16) };
-    draw(a, buf, cx, r);
+    let placed = draw(a, buf, cx, r);
+    // Items within reach (the party's square and the one ahead) are
+    // clickable; a pile in one quadrant shares a record (0x522A7, 0x51CC6).
+    if let (Some(p), 0 | 3) = (placed, c) {
+        let quadrant = (t.cell().wrapping_sub(cx.dir) & 3) as u8;
+        cx.hits.item(hits::HitKind::FloorItem, c as u8, quadrant, t.0, (p.x, p.y, p.w, p.h));
+    }
 }
 
-/// Creature (0x51203 -> 0x50DEE), drawn from its drawing descriptor.
-fn draw_creature(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usize, pass_slot: u8, depth: usize) {
-    let Some(rec) = cx.dg.record(t) else { return };
-    let ctype = rec[4];
-    let facing = ((u16::from_le_bytes([rec[14], rec[15]]) >> 8) & 3) as u8;
-    let view = cx.dir.wrapping_sub(facing) & 3;
-    let frame = cx.ex.creature_frames.get(&t.0).copied().unwrap_or(0) as usize;
-    let Some(desc) = a.gdat.get(Key::new(15, ctype, 7, 253)).and_then(|d| d.get(frame * 8..frame * 8 + 8)).map(|d| d.to_vec()) else {
-        return;
-    };
-    let slot = rotate_slot(desc[4], view);
-    if slot != pass_slot {
+/// Items lying in a wall alcove ahead (0x528C5): only on front faces at
+/// depth 1, for items in the wall's quadrant that faces the party. The
+/// square ahead records one merged hit (kind 3) for taking or placing.
+fn draw_alcove_items(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c: usize, rid: u16) {
+    if !cx.on(layers::ITEMS) || DEPTH[c] != 1 {
         return;
     }
-    // Image for the view, with the documented fallbacks.
-    let mut flip = 0u8;
-    let mut sub = desc[view as usize];
-    if a.has_image(15, ctype, sub) {
-        if (desc[7] >> ((3 - view) * 2)) & 1 != 0 {
-            flip = 1;
-        }
-    } else {
-        let opp = (view + 2) & 3;
-        sub = desc[opp as usize];
-        flip = opp & 1;
-        if !a.has_image(15, ctype, sub) {
-            sub = desc[2];
-            flip = 0;
+    let facing_cell = (cx.dir + 2) & 3;
+    let items: Vec<ThingRef> = cell.things.iter().copied().filter(|t| (5..=10).contains(&(t.kind() as u16)) && t.cell() == facing_cell).collect();
+    for t in items {
+        let (cat, idx) = item_key(cx.dg, t);
+        let key = key_attr(a, cat, idx, Some(10), false);
+        let sc = DEPTH_SCALE[1];
+        let r = Req { xs: sc, ys: sc, depth: Some(1), key, ..Req::new(cat, idx, 0, rid) };
+        if let (Some(p), 3) = (draw(a, buf, cx, r), c) {
+            cx.hits.item(hits::HitKind::AlcoveItem, 3, 4, t.0, (p.x, p.y, p.w, p.h));
         }
     }
-    if !a.has_image(15, ctype, sub) {
-        sub = view.wrapping_sub(6);
-        flip = 0;
-        if !a.has_image(15, ctype, sub) {
-            let alt = ((view + 2) & 3).wrapping_sub(6);
-            if view & 1 != 0 && a.has_image(15, ctype, alt) {
-                sub = alt;
-                flip = 1;
-            } else {
-                sub = 0xFC;
-            }
-        }
+}
+
+/// Quadrant index of a 5×5 sub-square (0x159C3): 0-3 for the floor
+/// quadrants, 4 for the centre.
+fn quadrant_of(slot: u8) -> Option<u8> {
+    match slot {
+        6 => Some(0),
+        8 => Some(1),
+        18 => Some(2),
+        16 => Some(3),
+        12 => Some(4),
+        _ => None,
     }
-    let ds = DEPTH_SCALE[depth];
-    let per_frame = a
-        .gdat
-        .get(Key::new(15, ctype, 7, 0xFE))
-        .and_then(|tb| tb.get(desc[5] as usize * 4 + view as usize).copied())
-        .unwrap_or(64) as i32;
-    let sc = scale_v(per_frame, ds);
-    let key = key_attr(a, 15, ctype, Some(4), true);
-    let r = Req { flip, xs: sc, ys: sc, depth: Some(depth), key, ..Req::new(15, ctype, sub, 5000 + 25 * c as u16 + slot as u16) };
-    draw(a, buf, cx, r);
 }
 
 /// Missile or spell effect in flight (0x518B0).
 fn draw_missile(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usize, slot: u8, depth: usize) {
+    let Some(quad) = quadrant_of(slot) else { return };
+    // In the party's own square only the front half is visible.
+    if depth == 0 && quad >= 2 {
+        return;
+    }
     let carried = ThingRef(word(cx.dg, t, 1));
     let (cat, idx) = if carried.0 >= 0xFF80 {
         (13u8, (carried.0 - 0xFF80) as u8)
@@ -985,27 +1187,100 @@ fn draw_missile(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: 
     } else {
         return;
     };
-    // Sub by flight direction relative to the view: 8 head-on, 10 across, 12 from behind.
-    let mdir = cx.ex.missile_dirs.get(&t.0).copied().unwrap_or((cx.dir + 2) & 3);
-    let rel = mdir.wrapping_sub(cx.dir) & 3;
-    let sub = match rel {
-        2 => 8,
-        0 => 12,
-        _ => 10,
+    // Which images the carried thing has decides how it flies (0x151E6).
+    let kind: i8 = if !a.has_image(cat, idx, 8) {
+        -1
+    } else if !a.has_image(cat, idx, 12) {
+        3
+    } else if a.has_image(cat, idx, 10) {
+        1
+    } else if a.has_image(cat, idx, 9) {
+        0
+    } else {
+        2
     };
-    let sub = if a.has_image(cat, idx, sub) { sub } else { 8 };
-    let si = (depth as i32 * 2 - (slot as i32 / 5) / 2).clamp(0, 6) as usize;
-    let mut sc = MISSILE_SCALE[si];
-    if cat == 13 {
-        let power = cx.dg.record(t).map(|r| r[4] as i32).unwrap_or(255);
-        let f = ((power * 128 / 255) + 1) / 2;
-        sc = scale_v(sc, f).max(8);
+    let rid = 5000 + 25 * c as u16 + slot as u16;
+    if kind < 0 {
+        // No flight images: the item itself, at chest height.
+        let sc = ITEM_SCALE[(depth * 4 + 4 - slot as usize / 5).min(ITEM_SCALE.len() - 1)];
+        let key = key_attr(a, cat, idx, Some(10), false);
+        let r = Req { xs: sc, ys: sc, yoff: -92, depth: Some(depth), key, ..Req::new(cat, idx, 0, rid) };
+        draw(a, buf, cx, r);
+        return;
+    }
+    // Scale by depth and quadrant row; spells also by their power.
+    let power = cx.dg.record(t).map(|r| r[4]).unwrap_or(0xFF);
+    let spell = cat == 13 && power != 0xFF;
+    let sc = if spell || depth != 0 {
+        let si = depth as i32 * 2 - (quad as i32 >> 1);
+        if si < 0 {
+            return;
+        }
+        let base = MISSILE_SCALE[(si as usize).min(MISSILE_SCALE.len() - 1)];
+        if cat == 13 {
+            let p = if carried.0 == 0xFF82 { (power as i32 >> 1) + 0x80 } else { power as i32 };
+            scale_v(((p << 7) / 255 + 1) >> 1, base).max(8)
+        } else {
+            base
+        }
+    } else {
+        64
+    };
+    // Sub and flips from the flight direction against the view.
+    let mdir = cx.ex.missile_dirs.get(&(t.0 & 0x3FFF)).copied().unwrap_or((cx.dir + 2) & 3);
+    let side = CELLS[c].0;
+    let odd = (cx_cell_xy(cx, c).0 + cx_cell_xy(cx, c).1) & 1 != 0;
+    let mut flip = 0u8;
+    let sub;
+    if kind == 3 {
+        sub = 8;
+    } else if mdir & 1 == cx.dir & 1 {
+        // Flying along the line of sight.
+        if kind == 0 {
+            if odd {
+                flip = 2;
+                sub = if quad > 1 { 9 } else { 8 };
+            } else {
+                sub = if quad < 2 { 9 } else { 8 };
+            }
+        } else if kind == 2 || (kind == 1 && mdir != cx.dir) {
+            sub = 8;
+        } else {
+            sub = 10;
+        }
+        if side < 0 || (side == 0 && quad != 1 && quad != 2) {
+            flip |= 1;
+        }
+        if quad & 1 != 0 && cat == 13 {
+            flip |= 2;
+        }
+    } else {
+        // Flying across the view.
+        sub = 12;
+        if kind == 0 {
+            if quad == 0 || quad == 3 {
+                flip = 1;
+            }
+            if odd {
+                flip |= 2;
+            } else {
+                flip ^= 1;
+            }
+        } else if (cx.dir + 1) & 3 == mdir {
+            flip = 1;
+        }
     }
     let fmask = if cat == 13 { attr(a, 13, idx, 1) as u8 } else { 3 };
-    let flip = if rel == 1 { 1 & fmask } else { 0 };
     let key = key_attr(a, cat, idx, Some(10), true);
-    let r = Req { flip, xs: sc, ys: sc, yoff: -92, depth: Some(depth), key, ..Req::new(cat, idx, sub, 5000 + 25 * c as u16 + slot as u16) };
+    let r = Req { flip: flip & fmask, xs: sc, ys: sc, yoff: -92, depth: Some(depth), key, ..Req::new(cat, idx, sub, rid) };
     draw(a, buf, cx, r);
+}
+
+/// Map position of view cell `c`.
+fn cx_cell_xy(cx: &Ctx, c: usize) -> (i32, i32) {
+    let (lat, fwd) = CELLS[c];
+    let d = cx.dir as usize;
+    (cx.px + DX[d] * fwd + DX[(d + 1) & 3] * lat, cx.py + DY[d] * fwd + DY[(d + 1) & 3] * lat)
 }
 
 /// The party's own square (0x54117).

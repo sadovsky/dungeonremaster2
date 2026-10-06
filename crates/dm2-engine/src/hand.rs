@@ -282,6 +282,29 @@ fn ahead_open(g: &GameState) -> bool {
     !crate::world::blocks(&g.dungeon, m, x, y) && creatures::group_at(g, m, x, y).is_none()
 }
 
+/// Handle a click that landed on a drawn thing (the viewport hit table,
+/// 0x22A68): with an empty hand, take exactly the floor or alcove item
+/// that was clicked. Returns false when the hit does not apply, so the
+/// caller can fall back to `viewport_click`.
+pub fn viewport_hit(g: &mut GameState, hit: &crate::viewport::hits::Hit) -> bool {
+    use crate::viewport::hits::HitKind;
+    let (Some(t), None) = (hit.thing, held(g)) else { return false };
+    let (m, x, y) = match (hit.kind, hit.cell) {
+        (HitKind::FloorItem, 0) => (g.party.map, g.party.x, g.party.y),
+        (HitKind::FloorItem, 3) | (HitKind::AlcoveItem, _) => square_ahead(g),
+        _ => return false,
+    };
+    let Some(t) = g.dungeon.things_at(m, x, y).into_iter().find(|s| s.0 & 0x3FFF == t & 0x3FFF && is_item(*s)) else {
+        return false;
+    };
+    movement::move_thing(g, t, Some((m, x, y)), None);
+    g.hand.held = t.0 & 0x3FFF;
+    if let Some(l) = leader(g) {
+        refresh_load(g, l);
+    }
+    true
+}
+
 /// Handle a click in the 3D view. Returns true if something happened.
 pub fn viewport_click(g: &mut GameState, r: ViewRegion) -> bool {
     let p = g.party;
