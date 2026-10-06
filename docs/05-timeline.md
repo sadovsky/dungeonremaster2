@@ -131,6 +131,14 @@ should use 7.5 Hz as the default and keep it configurable until the
 increment is confirmed (in DOSBox, read 0x7EFAC or count 0x7F22C over a
 minute). The fast-mode threshold of 1 would then be 60 ticks per second.
 
+**Measured in DOSBox (confirmed).** Running the original under DOSBox 0.74
+and holding the party's forward move on map 0 from the start square, the
+viewport redraws once per tick while walking. Timestamped window captures
+gave redraw intervals of 0.12-0.15 s, averaging 0.134 s over ten steps
+(capture jitter about ±20 ms). The tick is therefore 133 ms (7.5 Hz),
+consistent with an increment of 1. The tick is driven by the launcher's
+timer, so DOSBox CPU cycles don't change it.
+
 ## Selecting a map (0x1C724, code)
 
 Most code works on "the current map", a set of globals that point at one
@@ -754,7 +762,6 @@ that cell:
 
 ## Open questions
 
-- The tick increment returned by launcher service 0x0F (expected 1, giving 7.5 ticks per second).
 - New-game RNG seed: confirm it stays 0, or comes from a header.
 
 - The charges that alcove 0x1A gives a newly
