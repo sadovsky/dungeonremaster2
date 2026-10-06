@@ -438,7 +438,8 @@ fn floor_actuator(g: &mut GameState, ev: Event, t: ThingRef) {
         0x3A => creatures::floor_signal(g, map, ev.x as i32, ev.y as i32, ev.b9 == SET),
         0x3B | 0x40 | 0x47 | 0x48 | 0x49 => item_relay(g, ev, &a),
         0x3D => relay(g, ev, &a, a.data() as u32),
-        // TODO: 0x2C (0x56F11), 0x32 (0x570B1), 0x42-0x44.
+        0x2C => animated_ornament(g, ev, &a, false),
+        // TODO: 0x32 (0x570B1), 0x42-0x44.
         _ => {}
     }
 }
@@ -581,9 +582,78 @@ pub(crate) fn wall_actuator(g: &mut GameState, ev: Event, t: ThingRef) {
                 set_w(g, u, 1, w & !0x2000 | (v as u16) << 13);
             }
         }
-        // TODO: 0x2C (0x56F11), 0x32 (0x570B1), 0x41 (randomise from an
-        // ornament attribute), 0x42-0x44.
+        0x2C => animated_ornament(g, ev, &a, true),
+        // TODO: 0x32 (0x570B1), 0x41 (randomise from an ornament
+        // attribute), 0x42-0x44.
         _ => {}
+    }
+}
+
+/// The ornament an actuator shows: word 2 bits 12-15 index the map's wall
+/// (or floor) ornament list, 0 meaning none (0x1FC2C / 0x1FC82).
+fn ornament_of(g: &GameState, map: usize, a: &Actuator, wall: bool) -> Option<(u8, u8)> {
+    let slot = (a.w2 >> 12) as usize;
+    if slot == 0 {
+        return None;
+    }
+    let lists = g.dungeon.map_lists(map);
+    let list = if wall { &lists.wall_ornaments } else { &lists.floor_ornaments };
+    list.get(slot - 1).map(|&o| (if wall { 9 } else { 10 }, o))
+}
+
+/// An ornament's animation cycle length (0x56CF4): its number attribute
+/// 0x0D, else the length of its frame-digit text (type 5, sub 0x0D), else 1.
+fn ornament_cycle(g: &GameState, map: usize, a: &Actuator, wall: bool) -> u32 {
+    let Some((cat, orn)) = ornament_of(g, map, a, wall) else { return 1 };
+    let n = g.attrs.get(cat, orn, 0x0D) & 0x7FFF;
+    if n != 0 {
+        return n as u32;
+    }
+    let Some(data) = g.data.as_ref() else { return 1 };
+    crate::font::text(&data.gdat, cat, orn, 0x0D, &Default::default()).map_or(1, |t| (t.len() as u32).max(1))
+}
+
+/// Actuator 0x2C (0x56F11): an animated ornament switched on and off.
+/// Word 2 bit 2 holds the switch, bit 0 "animating", and word 1 bits 7-14
+/// the animation phase. Switching on starts the animation aligned to the
+/// tick; switching off lets the current cycle finish (event 0x59 clears
+/// bit 0 at the end of the cycle unless it was switched on again). An
+/// inverted actuator whose action is "follow" also passes the event on.
+fn animated_ornament(g: &mut GameState, ev: Event, a: &Actuator, wall: bool) {
+    let map = ev.map as usize;
+    let old = a.w2 & 4 != 0;
+    let new = resolve_action(ev.b9, old);
+    let mut w2 = a.w2 & !4 | u16::from(new) << 2;
+    let mut w1 = a.w1;
+    if new != old {
+        let n = ornament_cycle(g, map, a, wall).max(1);
+        if !new {
+            let phase = ((w1 >> 7 & 0xFF) as u32 + g.tick) % n;
+            if phase == 0 {
+                w2 &= !1;
+            } else {
+                let mut e = Event::new(0x59, map as u8, g.tick.wrapping_add(n - phase));
+                e.set_w8(a.thing.0);
+                g.schedule(e);
+            }
+        } else if w2 & 1 == 0 {
+            w2 |= 1;
+            let start = ((n - g.tick % n) % n) as u16;
+            w1 = (w1 & 0x807F) | (start & 0xFF) << 7;
+            // The original also schedules a repeating ornament sound
+            // (event 0x5A, attribute 0x88) when the sound bit is set; the
+            // first one plays now.
+            if a.sound() {
+                if let Some((cat, idx)) = ornament_of(g, map, a, wall) {
+                    g.effects.push(Effect::Sound { cat, idx, sub: 0x88, map, x: ev.x as i32, y: ev.y as i32 });
+                }
+            }
+        }
+    }
+    set_w(g, a.thing, 1, w1);
+    set_w(g, a.thing, 2, w2);
+    if a.inverted() && a.action() == FOLLOW {
+        fire(g, map, a, ev.b9, 0);
     }
 }
 

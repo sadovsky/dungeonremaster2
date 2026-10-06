@@ -221,3 +221,28 @@ fn floor_text_shows_on_entry_and_items_trigger_item_plates() {
     movement::move_thing(&mut g, placed, Some((m, x, y)), None);
     assert_eq!(g.timeline.len(), before + 1);
 }
+
+#[test]
+fn animated_ornament_finishes_its_cycle_when_switched_off() {
+    let Some(mut g) = game() else { return };
+    // Actuator 0x2C on map 0 showing the map's first wall ornament.
+    let t = actuators::alloc_thing(&mut g, ThingType::Actuator).unwrap();
+    g.dungeon.set_record_word(t, 1, 0x2C);
+    g.dungeon.set_record_word(t, 2, 1 << 12);
+    g.dungeon.set_record_word(t, 3, 0);
+    let mut ev = crate::timeline::Event::new(4, 0, 0);
+    ev.b9 = SET;
+    actuators::wall_actuator(&mut g, ev, t);
+    assert_eq!(Actuator::load(&g, t).w2 & 5, 5, "switched on and animating");
+    run(&mut g, 3);
+    ev.b9 = actuators::CLEAR;
+    actuators::wall_actuator(&mut g, ev, t);
+    let w2 = Actuator::load(&g, t).w2;
+    assert_eq!(w2 & 4, 0, "switched off");
+    if w2 & 1 != 0 {
+        // Mid-cycle: event 0x59 ends the animation later.
+        assert!(g.timeline.iter().any(|(_, e)| e.kind == 0x59));
+        run(&mut g, 300);
+        assert_eq!(Actuator::load(&g, t).w2 & 1, 0, "animation stops at the end of the cycle");
+    }
+}
