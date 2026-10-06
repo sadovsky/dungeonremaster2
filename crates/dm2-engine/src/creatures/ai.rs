@@ -11,10 +11,11 @@ use crate::viewport::{DX, DY};
 use super::anim::{Anim, NO_FRAME};
 use super::data::{CreatureData, Row, WANDER_LISTS};
 use super::fight;
+use super::goals;
 use super::kinds;
 use super::ops;
 use super::merchant;
-use super::planner::{self, Goal, Searcher};
+use super::planner::{self, Searcher};
 use super::slot::{Packed, NO_ACTION};
 use super::{creature_type, facing, group_at, hp, rec_u16, set_facing, set_rec_u16, status, type_info, Ctx, ACTION_DIE};
 
@@ -164,6 +165,18 @@ pub fn begin_action(g: &mut GameState, d: &CreatureData, ctx: &Ctx) {
     }
 }
 
+/// Dungeon-script condition `n` (0x150AE): 0-0x3F test a flag bit,
+/// 0x40-0x7F a byte variable, 0x80-0xBF a word variable; non-zero = true.
+pub fn script_condition(g: &GameState, n: u16) -> bool {
+    let v = &g.legacy;
+    match n {
+        0..=0x3F => v.flags[(n >> 3) as usize] & (1 << (n & 7)) != 0,
+        0x40..=0x7F => v.byte_vars[(n - 0x40) as usize] != 0,
+        0x80..=0xBF => v.word_vars[(n - 0x80) as usize] != 0,
+        _ => false,
+    }
+}
+
 /// Refresh status bit 3 ("badly hurt") and choose the behaviour set
 /// (0x25962 / 0x259CC). Returns the behaviour list address.
 fn select_set(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> u32 {
@@ -187,7 +200,12 @@ fn select_set(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> u32 {
             break;
         }
         if mask & 0xC000 == 0xC000 {
-            continue; // special condition tests (0x150AE) not modelled
+            // A dungeon-script condition picks this set outright (0x150AE).
+            if script_condition(g, mask & 0x3FFF) {
+                exact = Some(i);
+                break;
+            }
+            continue;
         }
         if overlap.is_none() && mask & st != 0 {
             overlap = Some(i);
@@ -230,21 +248,22 @@ fn pick_behaviour(g: &mut GameState, d: &CreatureData, ctx: &Ctx, list: u32) -> 
         }
         let step = if cur >= 0 && e.program as i8 == cur { ctx.slot(g).step } else { 0 };
         let Some(row) = d.row(e.program, step) else { continue };
-        goals.push(Goal { kind: row.goal_kind(), arg: row.goal_arg, program: e.program, limit: planner::DEFAULT_LIMIT, data: e.goal_data });
+        for mut gl in goals::build(g, d, ctx, e.program, row.goal_kind(), row.goal_arg, e.goal_data) {
+            gl.data = e.goal_data;
+            goals.push(gl);
+        }
     }
     let found = planner::search(g, &searcher(ctx), &goals)?;
     let gl = goals[found.goal];
-    // The chosen behaviour's goal data also supplies default item kinds
-    // (0x25C59 copies words +8 and +10 into 0x7F7D8 / 0x7F7DA).
-    let (ka, kb) = if gl.data != 0 {
-        (d.word_at(gl.data + 8).unwrap_or(0xFFFF), d.word_at(gl.data + 10).unwrap_or(0xFFFF))
-    } else {
-        (0xFFFF, 0xFFFF)
-    };
+    // Starting the chosen program (0x25C59) copies the goal record's words
+    // +8 and +10 (spec words +4 and +6) into the default item kinds that
+    // `N` and `]` fall back to (0x7F7D8, 0x7F7DA).
     let s = ctx.slot_mut(g);
-    s.kind_a = ka;
-    s.kind_b = kb;
-    ctx.slot_mut(g).target = Packed::new(ctx.map, found.x, found.y);
+    s.kind_a = gl.mode;
+    s.kind_b = gl.value;
+    // A goal on another layer is approached through the stairs leading there.
+    let (tx, ty) = if found.map != ctx.map { found.via.unwrap_or((found.x, found.y)) } else { (found.x, found.y) };
+    ctx.slot_mut(g).target = Packed::new(ctx.map, tx, ty);
     Some(gl.program)
 }
 
@@ -748,7 +767,8 @@ pub fn frame_delay(g: &mut GameState, ctx: &Ctx, an: &Anim) -> u16 {
     if s.action == ACTION_DIE && g.party_status.counter_0b != 0 && ctx.info.flags1() & 0x10 == 0 {
         delay *= 3;
     } else if off_map && st & 0x8000 != 0 && st & 2 == 0 {
-        // TODO(0x3023F): exact roll; approximately four times slower.
+        // 0x3023F: away from the party's map, a creature in this state runs
+        // four times slower plus a random tick.
         delay = delay * 4 + g.rng.bit();
     } else if g.party_status.asleep {
         delay *= if ctx.map != g.party.map { 4 } else { 2 };

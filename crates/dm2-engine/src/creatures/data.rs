@@ -171,9 +171,9 @@ impl CreatureData {
     fn u16_at(&self, addr: u32) -> u16 {
         self.bytes(addr, 2).map(|b| u16::from_le_bytes([b[0], b[1]])).unwrap_or(0)
     }
-    /// Little-endian word at a data-object address.
-    pub fn word_at(&self, addr: u32) -> Option<u16> {
-        self.bytes(addr, 2).map(|b| u16::from_le_bytes([b[0], b[1]]))
+    /// Raw bytes at a data-object address (small lookup tables).
+    pub fn bytes_at(&self, addr: u32, n: usize) -> Option<&[u8]> {
+        self.bytes(addr, n)
     }
 
     fn ptr_at(&self, addr: u32) -> Option<u32> {

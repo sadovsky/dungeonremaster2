@@ -35,22 +35,83 @@ pub fn creature_vs_creature(att: &Info, def: &Info, rng: &mut Rng) -> Option<u16
     Some(dmg.max(0) as u16)
 }
 
-/// Body part hit, from the info +0x1A nibbles (tentative mapping of the
-/// selector to parts: torso, head, legs, feet).
-fn hit_parts(info: &Info, rng: &mut Rng) -> u16 {
-    const PARTS: [u16; 4] =
-        [champions::part::TORSO, champions::part::HEAD, champions::part::LEGS, champions::part::FEET];
+/// Body-part masks indexed by the info +0x1A selector (table at 0x716F4,
+/// read from the user's SKULL.EXE: feet, legs, torso, head in this release).
+const PART_TABLE: u32 = 0x716F4;
+
+/// Body part hit (0x18884): with chance 7/8 (rnd bits 4-6 not all clear)
+/// and a non-zero selector word, walk its nibbles against rnd & 15 and
+/// take the table entry; otherwise one of the hands, (rnd & 1) + 1.
+fn hit_parts(info: &Info, data: &CreatureData, rng: &mut Rng) -> u16 {
     let r = rng.rnd();
-    let mut sel = 0usize;
-    let mut nib = info.hit_parts();
-    if r & 0x70 != 0 && nib != 0 {
+    let nib0 = info.hit_parts();
+    if r & 0x70 != 0 && nib0 != 0 {
         let t = ((r & 15) as u16).max(1);
+        let (mut sel, mut nib) = (0usize, nib0);
         while sel < 3 && nib & 15 < t {
             sel += 1;
             nib >>= 4;
         }
+        if let Some(&m) = data.bytes_at(PART_TABLE + sel as u32, 1).and_then(|b| b.first()) {
+            return m as u16;
+        }
     }
-    PARTS[sel]
+    ((r & 1) + 1) as u16
+}
+
+/// Per-charge light table (0x756FA) and darkness thresholds (0x7570E).
+const LIGHT_TABLE: u32 = 0x756FA;
+const DARK_THRESHOLDS: u32 = 0x7570E;
+
+/// The party's darkness step, 0 (bright) to 5 (0x389C2, global 0x7F282).
+/// Maps whose descriptor nibble (word +0x0C bits 12-15) is 0 are fixed at
+/// step 1. Otherwise the brightest-first light sources (the leader's hand
+/// and every champion's two hands, items with flag 0x10) add their table
+/// values with weights halving from 1, plus the party light (0x7FFEC) and
+/// the map set's attribute 0x67; the step counts the thresholds that sum
+/// does not exceed, floored at the map set's attribute 0x68. Not modelled:
+/// the light bonus word at 0x7F970 and the time-of-day term (0x8047B).
+pub fn darkness_level(g: &GameState, data: &CreatureData) -> u16 {
+    let map = &g.dungeon.maps[g.party.map];
+    if map.difficulty == 0 {
+        return 1;
+    }
+    let Some(gd) = g.data.as_ref() else { return 0 };
+    let db = gd.item_db(&g.dungeon);
+    let mut levels: Vec<i32> = Vec::new();
+    let mut hands = vec![g.hand.held];
+    for c in &g.champions {
+        hands.push(c.inventory(0));
+        hands.push(c.inventory(1));
+    }
+    for t in hands {
+        let t = dm2_formats::dungeon::ThingRef(t);
+        if t.0 != 0xFFFF && db.attr(t, crate::items::ATTR_FLAGS) & 0x10 != 0 {
+            levels.push(db.charges(t) as i32);
+        }
+    }
+    // One bubble pass, as in the original.
+    for i in 0..levels.len().saturating_sub(1) {
+        if levels[i + 1] < levels[i] {
+            levels.swap(i, i + 1);
+        }
+    }
+    let mut sum: i32 = 0;
+    let mut shift = 6;
+    for &v in &levels {
+        let b = data.bytes_at(LIGHT_TABLE + (v + 4).max(0) as u32, 1).map_or(0, |b| b[0] as i32);
+        sum += (b << shift) >> 6;
+        shift = (shift - 1).max(0);
+    }
+    let set = map.tileset;
+    let attr = |n: u8| data.gdat.lookup(dm2_formats::gdat::Key::new(8, set, 11, n)).unwrap_or(0) as i16 as i32;
+    sum += g.light as i32 + attr(0x67);
+    let thr = data.bytes_at(DARK_THRESHOLDS, 5).map(|b| b.to_vec()).unwrap_or_default();
+    let mut step = 0u16;
+    while (step as usize) < thr.len() && sum <= thr[step as usize] as i8 as i32 {
+        step += 1;
+    }
+    step.max(attr(0x68).max(0) as u16)
 }
 
 /// One creature blow against champion `idx` (0x18758). Returns damage dealt.
@@ -59,8 +120,18 @@ pub fn attack_champion(g: &mut GameState, data: &CreatureData, info: &Info, idx:
         return 0;
     }
     let atype = info.attack_type();
-    // Light-dependent bonus terms (0x7F3BC / 0x7F282) are not modelled.
-    let boost = 0i32;
+    // Twice the map's level nibble (descriptor word +0x0C bits 12-15).
+    let boost = 2 * g.dungeon.maps[g.party.map].difficulty as i32;
+    // Seeing the party: 16 while it is invisible (counter 0x7FFEE) to a
+    // creature without info flag 0x04; 0 for creatures with flag 0x08;
+    // otherwise twice the darkness step.
+    let sight = if g.magic_counter != 0 && info.flags1() & 4 == 0 {
+        0x10
+    } else if info.flags1() & 8 != 0 {
+        0
+    } else {
+        2 * darkness_level(g, data) as i32
+    };
     let dex = match atype {
         9 => (info.dexterity() as u16 * 2).min(0xFF),
         8 => 0xFF,
@@ -68,14 +139,14 @@ pub fn attack_champion(g: &mut GameState, data: &CreatureData, info: &Info, idx:
     };
     if !g.party_status.asleep && dex != 0xFF {
         let r = (g.rng.rnd() & 0x1F) as i32;
-        let target = dex as i32 + r + boost;
+        let target = dex as i32 + r + boost + sight;
         let cdex = champions::dexterity(&g.champions[idx], &g.party_status, &mut g.rng) as i32;
-        let dodged = (cdex > target - 16 && g.rng.bit() != 0) || champions::lucky(&mut g.champions[idx], 60, &mut g.rng);
+        let dodged = (cdex >= target - 16 && g.rng.bit() != 0) || champions::lucky(&mut g.champions[idx], 60, &mut g.rng);
         if dodged {
             return 0;
         }
     }
-    let parts = hit_parts(info, &mut g.rng);
+    let parts = hit_parts(info, data, &mut g.rng);
     let s = info.attack() as i32;
     let mut s = s + s.min((g.rng.rnd() & 15) as i32 + boost);
     if atype != 8 {

@@ -75,9 +75,9 @@ pub struct Slot {
     pub mode: u8,
     /// +0x21: frame events stay armed.
     pub armed: u8,
-    /// Default item kinds of the running behaviour (goal data words +8 and
-    /// +10, globals 0x7F7D8/0x7F7DA): used by `N` and `]` when their
-    /// arguments are −1. 0xFFFF = none.
+    /// Default item kinds of the running program: the chosen goal's mode
+    /// and value words (globals 0x7F7D8/0x7F7DA), used by `N` and `]` when
+    /// their arguments are −1. 0xFFFF = none.
     pub kind_a: u16,
     pub kind_b: u16,
     /// Where the group currently stands (the original finds this from the

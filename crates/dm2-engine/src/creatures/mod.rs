@@ -10,6 +10,7 @@ pub mod ai;
 pub mod anim;
 pub mod data;
 pub mod fight;
+pub mod goals;
 pub mod kinds;
 pub mod merchant;
 pub mod ops;
@@ -133,6 +134,11 @@ impl Ctx {
 
 // ---------------------------------------------------------------------------
 // Hooks used by the dungeon mechanics
+
+/// Home square of an active creature (slot +0x0C).
+pub fn home_of(g: &GameState, c: ThingRef) -> Option<slot::Packed> {
+    slot_of(g, c).and_then(|si| g.creature_slots[si].as_ref()).map(|s| s.home)
+}
 
 /// The creature group on a square, if any (0x2FBA9).
 pub fn group_at(g: &GameState, map: usize, x: i32, y: i32) -> Option<ThingRef> {

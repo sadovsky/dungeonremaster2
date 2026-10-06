@@ -190,17 +190,93 @@ creature's thing index: the bit is set when HP is under 25% of the base
 HP, cleared otherwise. Status bit 1 is then cleared. The chosen set is
 the first whose mask equals the status word; failing that, the first
 whose bits are all present in it; failing that, the first that shares
-any bit with it. Masks with both top bits set (0xC000) call a separate
-condition test (0x150AE, not traced). Changing set resets the current
+any bit with it. A mask with both top bits set (0xC000) is instead a dungeon-script
+condition (0x150AE) on the low 14 bits: 0-0x3F test a flag bit (0x7F100),
+0x40-0x7F a byte variable (0x7F080 + n) and 0x80-0xBF a word variable
+(0x7F008 + 2n); if it holds, that set is chosen outright. Changing set resets the current
 program.
 
 **Goal building (0x25EF0).** Each list entry that passes its probability
-roll (the entry for the program already running always passes) becomes
-a goal: the goal kind and argument come from bytes 5 and 6 of that
-program's current row. The builder 0x26873 dispatches on the goal kind
-through a 32-entry table at 0x75248; those routines aren't traced yet,
-so the goal data's layout (distance limit and so on) is still open. If
-the planner finds nothing, think falls back to program 0x11.
+roll (the entry for the program already running always passes) is handed
+to a *builder* chosen by bits 0-4 of byte 5 of that program's current
+row, through the table at 0x75248 (dispatcher 0x26873). Only builders
+0-0x10 exist; the table's later slots run into unrelated data and no row
+uses them. The entry's bytes 2-5 point at its *goal data*: a list of
+14-byte target specs, byte +0x0D non-zero meaning another spec follows.
+
+| Spec byte | Meaning |
+|-----------|---------|
+| 0 | Planner goal type (see "Planner goal types") |
+| 1 | Condition code (bits 0-5); 0x40 = always true while this program is already running; 0x80 = invert |
+| 2-3 | Condition parameter |
+| 4-5 | Goal mode or first argument |
+| 6-7 | Goal value or second argument; ANDed with a per-search mask (0x7F57C) |
+| 8 | Distance limit; quartered when the creature is off the party's map and its class lacks flag 0x40 |
+| 9 | Copied into the goal record |
+| 0x0A, 0x0B | Used by the distance-analysis builders (0x26A67) |
+| 0x0C | Tag the builders select on |
+| 0x0D | Non-zero: another spec follows |
+
+Builders select the specs whose tag matches and whose condition holds
+(0x26D16), and write one goal record per spec (0x26896). Builder 1 uses
+the row's argument (byte 6) as the tag, and a negative argument zeroes
+the distance limit. The others use fixed tags, which match the shipped
+data for every behaviour that uses them:
+
+| Builder | Tag | Notes |
+|---------|-----|-------|
+| 0 | none | one fixed spec at 0x731D2: "stay here" (goal type 0) |
+| 1 | row argument | the general case (0x2759E) |
+| 2, 6 | 2 | 6 adds a distance analysis of the party (0x26A67) |
+| 3, 7 | 4 | as above |
+| 4 | 1 | distance-limited by the analysis (0x276F2) |
+| 5 | 3 | as 4 |
+| 8 | 5 | passes the previous goal's target when its type was 0x0D |
+| 9 | 6 | skipped while the creature stands on its post |
+| 0x0A | 7 | |
+| 0x0B | 0x12 | with a possession test (0x2FF1E) |
+| 0x0C | 0x0F | |
+| 0x0D | 0x10 | |
+| 0x0E | none | special: draws random numbers and adds fixed-spec goals (0x4DB9B) |
+| 0x0F | 0x15 | |
+| 0x10 | 0x16 | |
+
+When the planner picks a goal, 0x25C59 starts its program from the goal
+record (22 bytes at 0x7F674 + 22n): +0 limit, +1 spec byte 9, +4 the
+target found, +7 goal type, +8 spec word +4 (mode), +10 spec word +6
+(value, masked), +0x11 a flag, +0x12 the spec's address. Words +8 and +10
+become the default item kinds that `N` and `]` fall back to (globals
+0x7F7D8 and 0x7F7DA), and byte +7 and word +4 are kept for builder 8.
+
+**Spec conditions (0x26D16).** The "party" here is the party as projected
+onto the creature's map (0x2FE35 swaps in a projected position when the
+creature is elsewhere).
+
+| Code | True when |
+|------|-----------|
+| 0 | always |
+| 1 | on the party's map and in the direction the party faces (0x1863D, which breaks diagonal ties with a random bit) |
+| 0x16 | as 1, and within the parameter's distance with a clear line (0x2BBAD) |
+| 2 | on the party's square |
+| 3 | carrying an item of kind *param* |
+| 4 | a global byte (0x7F589 area) is set |
+| 5 | standing on its post (thing record word +0x0C) |
+| 0x0D | as 5, and carrying kind *param* |
+| 6 | status bit *param* set |
+| 7 | on the party's map |
+| 8 | a champion holds an item of kind 0x0B in either hand |
+| 9 | a party value (0x461E8) is at least *param* |
+| 0x0A | next to the party, facing a door in a particular state |
+| 0x0B | a door-side check when planner flag 0x20 is set |
+| 0x0C | a group ahead whose type has flag 0x01, near a particular actuator |
+| 0x0E | health at or below *param* percent of the type's base |
+| 0x0F | fewer creatures of type *param* on the map than min(4, n + 1), n counting types 0x31 and 0x34 |
+| 0x10 | on the post's map |
+| 0x11 | a square test through 0x31724 |
+| 0x12 | on the map in 0x7F260 |
+| 0x13 | status bit *param* clear and not on that map |
+| 0x14 | status bit *param* set (and, by symmetry, on that map) |
+| 0x15 | standing on the square packed in program variable *param* |
 
 ### Programs and the interpreter
 
@@ -250,8 +326,8 @@ Opcodes (dispatch at 0x27CD2, index = letter − 0x3F):
 | `G` | 0x28138 | Drop or throw a carried item (needs possessions and info+0x0C bit 3) |
 | `H` | 0x28DF0 | Guard check two squares straight ahead: done when a creature without type flag 0x01 stands there or the party does; otherwise queue action 0x1D (wait) and stay. |
 | `I` | 0x28574 | Merchant waiting for a customer (see Merchants): done when the creature or party ahead holds coins (kind 0x10) or gems (kind 7); otherwise count down +0x0E and idle (actions 0x1D, 0x1E, 0x1F). |
-| `J` | 0x28711 | Merchant haggling over goods placed on the counter (see Merchants). |
-| `K` | 0x28E99 | Merchant settling a sale: compares the money on one half of the counter with the price of the goods on the other (see Merchants). |
+| `J` | 0x28711 | Merchant haggling with the group ahead: money is that group's possessions in the cell facing the merchant, goods the ones in the cell behind (see Merchants). |
+| `K` | 0x28E99 | Merchant settling a sale with the group ahead, on the same two cells (see Merchants). |
 | `L` | 0x280AC | Set the target to the square ahead and queue action 0x15, or 0x16 when arg = 1 |
 | `M` | 0x281F3 | Target the square ahead (target facing = opposite of own) with item kind arg 3 (default 0x3F); if the creature there holds that kind, queue action 0x18 (take it from them) and stay; done if it holds none. |
 | `N` | 0x2905A | Possession transfer: first discard kind arg 4 (or the global default at 0x7F7DA; −2 skips this), then if a possession of kind arg 3 (default 0x7F7D8) exists, put it on the creature's own square through 0x2EA68 mode 0x81. Failed when nothing matches. |
@@ -300,8 +376,12 @@ Other checks in the same function:
 - The square must not hold another creature group (a group-merging
   exception applies).
 - Moves next to the party are handled separately.
-- The four positions within a square are tracked (offset tables at
-  0x752AC and 0x752AE, chosen by the creature's size, info+0x23).
+- The offset tables at 0x752AC/0x752AE (and 0x752CC, with radii at
+  0x752DC) belong to 0x2FBE0, which walks the squares around a point in
+  a facing-dependent spiral to find the next creature group (used by area
+  effects). They are not positions within a square: a group occupies its
+  whole square, and the per-creature spots seen on screen come from the
+  drawing descriptors (docs/04).
 
 ## Frame events (0x2B75E, code)
 
@@ -337,6 +417,30 @@ direction, facing and mode in the slot. A step that needs a full
 turn-around queues a turn (0x2C005) instead.
 
 ## Damage and death
+
+**A blow on a champion (0x18758).** The dodge target is
+`(rnd & 31) + dexterity + 2·L + sight`, where L is the map descriptor's
+nibble at word +0x0C bits 12-15 and *sight* is 16 while the party is
+invisible (counter 0x7FFEE) to a creature without info flag 0x04, 0 for a
+creature with flag 0x08, and otherwise twice the darkness step (0x7F282,
+below). The champion dodges when its dexterity is at least target − 16
+and a random bit is set, or on a luck test of 60. Attack type 9 doubles
+the dexterity (capped at 255) and type 8 never misses. The body part comes
+from the info +0x1A nibbles and a 4-entry mask table at 0x716F4, or one
+of the hands, `(rnd & 1) + 1`, when the roll's bits 4-6 are clear. The
+strength roll is `attack + min(attack, (rnd & 15) + 2·L)`.
+
+**Darkness step (0x389C2).** 0 is bright, 5 darkest. A map whose nibble
+L is 0 is fixed at step 1. Otherwise the light sources in the leader's
+hand and every champion's hands (items with flag 0x10) are taken
+brightest-last after a single bubble pass, each adding its entry from the
+table at 0x756FA (indexed by charge count + 4) scaled by a weight that
+halves from 1. The party light (0x7FFEC), the light bonus word at 0x7F970
+and the map set's attribute (8, set, 11, 0x67) are added, plus a
+time-of-day term when 0x8047B is set. The step counts how many of the
+thresholds at 0x7570E the sum does not exceed, and is at least the map
+set's attribute 0x68.
+
 
 - **Creature vs creature (0x31113):**
   1. The hit lands if `rand(32) + attacker.dex ≥ rand(32) + defender.dex`;
@@ -446,6 +550,31 @@ What's established so far:
   attribute numbers 0 to 4 (present on 90 to 190 items each). One of
   these is probably the trade value.
 
+### Item kinds (0x2F636)
+
+Programs name items by *kind*: bits 0-5 pick a set, bit 7 inverts the
+answer. Set 0x3F is "anything". 0x3E is "anything but a money
+container", 0x29 is "a money container, otherwise set 7", and 0x28 is "a
+money container, otherwise set 0x10" (a money container is a container
+whose (20, idx, 5, 0x40) text exists, 0x1F2AB). Sets 0x10-0x12 (and 0x28)
+are shifted by three times the creature record's word +8, so one creature
+type can carry several variants.
+
+Every other set is defined per creature type by a text entry
+(15, type, 5, set + 0x10), parsed once and cached as a 512-bit table of
+item numbers (0x1538D). The text is a run of numbers and `a-b` ranges,
+each added to a base chosen by the letter before it: W weapons (0),
+A clothing (0x80), J misc (0x100), P potions (0x180), C containers
+(0x1E0; or 0 when the thing being tested is a creature, so the same
+letter lists creature types), S scrolls (0x1FC). Items are looked up by
+their global item number (0x1EF0C) and creatures by their type.
+0x2FF1E walks a thing chain for the first item of a kind, optionally only
+in one cell; 0x2FF89 destroys every possession of a kind, emptying money
+containers that match.
+
+Coin denominations (0x154E0) are the misc items (category 21) whose flags
+attribute has bit 0x4000, valued by attribute 2 and sorted ascending.
+
 ### Merchants (traced)
 
 A merchant stands facing a counter square. The two halves of that square
@@ -526,16 +655,23 @@ opcode `T` and by two other AI helpers.
   been passed.
 - **Results:** a match writes the target (map, x, y) and the distance
   back into the goal record (bytes 2-6) and returns the goal's index.
-- **Goal kinds matched in the final switch:**
+- **Goal types matched in the final switch** (goal record byte 7 =
+  spec byte 0; "the party" is the projected party):
 
-| Kind | Satisfied when |
+| Type | Satisfied when |
 |------|----------------|
-| 2 | The square is the party's. Argument mode 1 also requires the party to face one of the directions in a 4-bit mask; mode 3 requires the next square in the goal direction to be an open, real pit. |
-| 3 | The square is the party's. |
-| 8, 9 | A thing search (0x2C0A2) finds a matching item or object at the square, filtered by the item mask at 0x7F574. Kind 9 is a variant flag. |
-| 0x0F, 0x11 | The creature can interact with the square (0x2EA68 mode 0), such as an actuator or an item on the floor. |
-| 0x12 | A creature of type +8 stands there. Mode 1 matches any such creature. Otherwise the square ahead of it must hold the party or a creature without flag 0x01. |
-| 0x13-0x1A | Other branches exist but are not traced. |
+| 0 | Always, so the start square matches |
+| 1 | The square is the creature's post (thing record word +0x0C), or its map-edge alias |
+| 2 | Party, by mode (spec +4): 0 its square; 1 its square while it faces a direction in the value mask; 2 in the line it faces, within the value (spec +6) and with a clear line (0x2BBAD); 4 exactly the value away in the same row or column with a clear line |
+| 3 | The square is the slot's home (+0x0C), or its map-edge alias |
+| 4 | Two squares from the party |
+| 5 | Flee: keeps the square farthest from the party (distances on other layers doubled), optionally gated by a 16-bit LFSR at 0x752E8 |
+| 6, 7 | A path toward the party exists (0x2C404, move flags 1 and 0), filtered by the item mask |
+| 8, 9 | A thing search (0x2C0A2) finds a matching item or object at the square, filtered by the item mask at 0x7F574; it also records where |
+| 0x0A | On the party's map, when the current action allows it: a path in the creature's own facing (0x2C404) |
+| 0x0B | A square remembered in the search's scratch record, or its map-edge alias |
+| 0x0C-0x10, 0x14, 0x15, 0x17-0x19, 0x1B | Further branches of the same switch, not yet described |
+| 0x11-0x13, 0x16, 0x1A | Not handled (never match) |
 
 - **Scoring:** there is no separate score. Since the search is
   breadth-first, the first match is the nearest one. Ties are broken by
@@ -548,24 +684,32 @@ opcode `T` and by two other AI helpers.
 
 - **Data:** read from the user's SKULL.EXE and GRAPHICS.DAT at runtime
   (`data.rs`), never embedded.
-- **Done:** the slot pool and activation (on arriving on a map, on
-  spawn and when hit); the step event; animation stepping and timing;
-  think with behaviour-set selection, behaviour picking, the planner
-  (BFS on one map) and the program interpreter; movement legality; moves
-  through the shared move routine; turns; melee attacks on the party,
-  doors and other creatures; death; transforms; merchant pricing and the
-  `I`/`J`/`K` rules (`merchant.rs`, with the money classifier still a
-  stand-in).
-- **Partial:** goal kinds beyond 0-3, 8, 9, 0x0F, 0x11 and 0x12; the
-  opcodes `F`, `J`, `K` (on real counters), `M`, `N`, `W`, `Y`, `[`,
-  `\`, `]` fail so that programs fall through; groups occupy whole
-  squares (no in-square positions or group merging); the planner doesn't
-  cross maps.
+- **Done:** the slot pool and activation; the step event; animation
+  stepping and timing (including the exact off-map slowdown: delay × 4
+  plus a random tick); think with behaviour-set selection (including the
+  0xC000 script conditions) and behaviour picking; goal building from the
+  goal data specs with the builder tags and spec conditions (`goals.rs`);
+  the planner with goal types 0-9, 0x0F, 0x11 and 0x12, crossing stairs
+  into adjacent layers (`planner.rs`); the program interpreter with every
+  opcode (`ai.rs`, `ops.rs`); item kinds (`kinds.rs`); movement legality;
+  creature attacks with the darkness and map-level terms (`fight.rs`);
+  death; transforms; merchants on the group ahead's cells
+  (`merchant.rs`, `ops.rs`).
+- **Partial:** spec conditions 4, 9, 0x0A-0x0C and 0x11; goal types 5
+  (flee keeps "farther than here" rather than the farthest square), 6, 7
+  and 0x0A-0x1B; builders 2-7 use the plain tag rule without the distance
+  analysis, and 0x0E adds nothing; the planner doesn't follow pits or
+  map-edge links; `Y` only covers argument 0 (the payout modes 0x29598 and
+  0x15958 are not modelled); pile values use the item value attribute in
+  place of the per-creature valuation 0x15737; the light bonus word at
+  0x7F970 and the time-of-day term are left out of the darkness step;
+  group merging (an exception in 0x2D792) is not modelled.
 
 ## Open questions
 
-- Planner goal kinds 0x13-0x1A and the exact visiting order of the search.
-- The `Y` trade handler (0x296D5) in detail.
+- Planner goal types 0x0C-0x1B and the exact visiting order of the search.
+- The group-merging exception in 0x2D792.
+- The `Y` payout modes (arguments 1-2: 0x29598 coin exchange, 0x15958 pricing script).
 - The full list of action codes. Known ones: 6 and 7 (turn), 0x11, 0x13,
   0x15 and 0x16, 0x1D, 0x23 to 0x25, 0x27 and 0x28, 0x32 to 0x34 (wait),
   0x3B and 0x3C (transform), 0x3D and up, and 0x55.

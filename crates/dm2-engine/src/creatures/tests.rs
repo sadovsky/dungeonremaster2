@@ -155,3 +155,93 @@ fn damage_owed_kills_and_removes() {
     assert!(gone, "a creature dealt more than its HP is removed after its death action");
     assert!(g.effects.iter().any(|e| matches!(e, Effect::CreatureDied { .. })) || gone);
 }
+
+#[test]
+fn kind_sets_parse_for_every_placed_type() {
+    let Some((g, _)) = load() else { return };
+    let mut defined = 0;
+    for (_, _, _, c) in groups(&g) {
+        let ty = creature_type(&g, c);
+        for set in 0..0x30u8 {
+            if kinds::set_for(&g, ty, set, false).is_some() {
+                defined += 1;
+            }
+        }
+    }
+    // Structural only: at least some creature types define item-kind sets.
+    assert!(defined > 0);
+}
+
+#[test]
+fn goal_data_builds_goals_for_every_class() {
+    let Some((g, d)) = load() else { return };
+    let Some(&(si_map, x, y, c)) = groups(&g).first() else { return };
+    let mut g = g;
+    let Some(si) = activate(&mut g, &d, c, si_map, x, y) else { return };
+    let Some(ctx) = Ctx::load(&g, &d, si) else { return };
+    let mut built = 0;
+    for class in 0..64u16 {
+        for (_, list) in d.behaviour_sets(class) {
+            for e in d.behaviour_list(list) {
+                let Some(row) = d.row(e.program, 0) else { continue };
+                let goals = goals::build(&g, &d, &ctx, e.program, row.goal_kind(), row.goal_arg, e.goal_data);
+                for gl in &goals {
+                    assert!(gl.kind < 0x1C, "goal type out of range");
+                    assert!(gl.limit <= 0x7F);
+                }
+                built += goals.len();
+            }
+        }
+    }
+    assert!(built > 0);
+}
+
+#[test]
+fn darkness_step_is_in_range() {
+    let Some((g, d)) = load() else { return };
+    assert!(fight::darkness_level(&g, &d) <= 5);
+}
+
+#[test]
+fn script_conditions_read_flags_bytes_and_words() {
+    let Some((mut g, _)) = load() else { return };
+    assert!(!ai::script_condition(&g, 3));
+    g.legacy.flags[0] |= 1 << 3;
+    assert!(ai::script_condition(&g, 3));
+    g.legacy.byte_vars[2] = 9;
+    assert!(ai::script_condition(&g, 0x42));
+    g.legacy.word_vars[5] = 1;
+    assert!(ai::script_condition(&g, 0x85));
+    assert!(!ai::script_condition(&g, 0xC0));
+}
+
+#[test]
+fn close_bracket_queues_scripted_action_with_defaults() {
+    let Some((mut g, d)) = load() else { return };
+    let Some(&(m, x, y, c)) = groups(&g).first() else { return };
+    let Some(si) = activate(&mut g, &d, c, m, x, y) else { return };
+    let Some(ctx) = Ctx::load(&g, &d, si) else { return };
+    {
+        let s = ctx.slot_mut(&mut g);
+        s.kind_a = 0x12;
+        s.kind_b = 0x34;
+    }
+    assert_eq!(ops::op_close_bracket(&mut g, &ctx, 2), ai::Res::Done);
+    let s = ctx.slot(&g);
+    assert_eq!((s.action, s.mode, s.arg), (0x3F, 0x12, 0x34));
+}
+
+#[test]
+fn open_bracket_rolls_are_deterministic() {
+    let Some((g0, d)) = load() else { return };
+    let Some(&(m, x, y, c)) = groups(&g0).first() else { return };
+    let run = |seed: u32| {
+        let mut g = g0.clone();
+        g.rng = crate::rng::Rng::new(seed);
+        let si = activate(&mut g, &d, c, m, x, y)?;
+        let ctx = Ctx::load(&g, &d, si)?;
+        let r = ops::op_open_bracket(&mut g, &ctx);
+        Some((r, g.rng.state, ctx.slot(&g).vars[0]))
+    };
+    assert_eq!(run(77), run(77));
+}
