@@ -145,3 +145,33 @@ reversed here, because they live in `HMIMDRV.386`, not in SKULL.EXE.
 - `TEST.RAW` (40,320 bytes): the setup program's digital test sample.
 - `HMI*.386`: HMI SOS driver modules (detect, digital, MIDI). Not needed.
 - `SKULL.CFG`: the chosen digital and MIDI devices (Sound Blaster settings).
+
+## Implementation (crates/dm2-engine/src/audio)
+
+| Module | Role |
+|--------|------|
+| `bnk.rs` | BNK bank parser (128 patches per bank) |
+| `hmp.rs` | HMP parser into per-track event lists |
+| `opl.rs` | Two-operator FM voice written from the OPL2 datasheet behaviour (pitch quantised to F-number/block, envelope rates, KSL, feedback, the four waveforms, LFOs) |
+| `midi.rs` | MIDI-to-FM driver, 18 voices |
+| `music.rs` | Sequencer with HMI loop controllers 110/111, and song selection from SONGLIST.DAT |
+| `sfx.rs` | Sample decoding, positional placement and the effect voices |
+| `mod.rs` | `Audio` mixer: `render(&mut [f32])` produces interleaved stereo |
+
+The frontend (`crates/dm2/src/sound.rs`) feeds a cpal stream from the
+mixer and drains `Effect::Sound` requests after each tick. `DM2_MUTE=1`
+disables it. `cargo run --release -p dm2-engine --example songwav -- N`
+renders song N to `re/audio/` for listening checks.
+
+Not from the original (tentative):
+- **Voice allocation, volume curve and pan:** HMI's driver isn't reversed.
+  Pan routes a voice left, right or to both sides, as OPL3 does.
+- **Drum pitch:** channel 9 plays DRUM.BNK patch *note* at that note's pitch.
+- **Loop controllers:** 110/111 are treated as loop start/end, with the
+  110 value as a repeat count (0 or 127 means forever). Finished songs restart.
+- **Song numbering:** SONGLIST values are used directly as the song index,
+  with 0 as silence.
+- **Fade length:** the fade between songs is 1 s.
+- **Sound effects:** attenuation is linear with distance over an 8-square
+  range, and each level of map difference counts as 2 squares. Effects
+  carry no volume, so all play at one level.

@@ -13,6 +13,7 @@
 //! maps (debug), Tab toggles the debug overlay.
 
 mod png;
+mod sound;
 
 use std::path::{Path, PathBuf};
 
@@ -248,6 +249,7 @@ fn main() {
 async fn play(args: Vec<String>) {
     let mut d = load(&data_dir(args.first().cloned()));
     let mut game = new_game(&d);
+    let mut sound = sound::Sound::start(&data_dir(args.first().cloned()));
     let demo = std::env::var_os("DM2_DEMO_CHAMPION").is_some();
     // Real-time tick length is not yet known (docs/05); configurable.
     let tick_secs = std::env::var("DM2_TICK_MS").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(133.3) / 1000.0;
@@ -322,6 +324,9 @@ async fn play(args: Vec<String>) {
             while acc >= tick_secs {
                 acc -= tick_secs;
                 game.advance();
+            }
+            if let Some(s) = sound.as_mut() {
+                s.update(&mut game);
             }
         }
         if is_key_pressed(KeyCode::Tab) {

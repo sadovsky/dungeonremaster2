@@ -11,6 +11,7 @@ pub mod actuators;
 pub mod apply;
 pub mod assets;
 pub mod attrs;
+pub mod audio;
 pub mod champions;
 pub mod combat;
 pub mod creatures;

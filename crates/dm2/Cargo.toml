@@ -7,3 +7,4 @@ edition = "2024"
 dm2-engine = { version = "0.1.0", path = "../dm2-engine" }
 dm2-formats = { version = "0.1.0", path = "../dm2-formats" }
 macroquad = "0.4"
+cpal = "0.15"
