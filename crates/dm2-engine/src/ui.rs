@@ -8,7 +8,7 @@ use dm2_formats::gdat::Key;
 use crate::assets::Assets;
 use crate::font::Font;
 use crate::gfx::{Bitmap, Sprite, SCREEN_H, SCREEN_W};
-use crate::viewport::VP_SCREEN_POS;
+use crate::viewport::{VP_H, VP_SCREEN_POS, VP_W};
 
 /// What the interface shows for one champion.
 #[derive(Clone, Debug, Default)]
@@ -105,6 +105,8 @@ pub struct UiView {
     pub asleep: bool,
     /// Hand cell drawn with the highlighted tile (champion, hand).
     pub hand_highlight: Option<(usize, usize)>,
+    /// Game paused (command 0x90, 0x7F244 cleared).
+    pub paused: bool,
 }
 
 /// Layout ids used below.
@@ -425,7 +427,7 @@ fn action_area(a: &mut Assets, font: &Font, view: &UiView, col: &[u8; 16], s: &m
         for h in 0..2 {
             let rid = if h == 1 { id::HAND1 } else { id::HAND0 } + rel;
             let lit = view.hand_highlight == Some((i, h));
-            hand_cell(a, s, col, c.dead, view.hands[i][h], h, rid, lit, view.busy[i][h] || view.asleep);
+            hand_cell(a, s, col, c.dead, view.hands[i][h], h, rid, lit, view.busy[i][h] || view.asleep || view.paused);
         }
         if c.dead {
             continue;
@@ -433,12 +435,12 @@ fn action_area(a: &mut Assets, font: &Font, view: &UiView, col: &[u8; 16], s: &m
         let flip = u8::from(rel == 1 || rel == 2);
         let (back, front) = if rel < 2 { (6, 10) } else { (8, 12) };
         a.draw(s, 1, 4, back, id::CELL_BACK + rel, flip, Some(CELL_KEY));
-        if view.asleep || c.damage.is_some() {
+        if view.asleep || view.paused || c.damage.is_some() {
             shade_at(a, s, 1, 4, back, id::CELL_BACK + rel, col[0]);
         }
         let lead = u8::from(view.leader == Some(i));
         a.draw(s, 1, 4, front + lead, id::CELL_FRONT + rel, flip, Some(CELL_KEY));
-        if view.asleep {
+        if view.asleep || view.paused {
             shade_at(a, s, 1, 4, front + lead, id::CELL_FRONT + rel, col[0]);
         }
     }
@@ -456,6 +458,11 @@ fn action_area(a: &mut Assets, font: &Font, view: &UiView, col: &[u8; 16], s: &m
                 fig.blit(s, &p, 0, Some(ICON_KEY));
             }
         }
+    }
+    // Pausing shades the whole action area, the formation grid included
+    // (checked against the original in DOSBox).
+    if view.paused {
+        shade_at(a, s, 8, view.map_set, 0xF5, id::FORMATION, col[0]);
     }
 }
 
@@ -566,6 +573,18 @@ pub fn compose(a: &mut Assets, font: &Font, tables: &UiTables, view: &UiView, vp
         None => s.paste(vp, VP_SCREEN_POS.0, VP_SCREEN_POS.1),
     }
     let col = colours(a);
+    // Pause (command 0x90 at 0x22233): clear the viewport to colour 0
+    // (0x13AAB), then centre text (1,0,0x12) on layout id 6 in colour 4
+    // (0x55B70).
+    if view.paused {
+        // Layout id 6 is relative to the viewport bitmap, so draw there.
+        let mut v = Bitmap::new(VP_W, VP_H);
+        v.fill(col[0]);
+        if let Some(t) = crate::font::text(&a.gdat, 1, 0, 0x12, &Default::default()) {
+            font.draw_at(&mut v, &a.layout, 6, &t, col[4], None);
+        }
+        s.paste(&v, VP_SCREEN_POS.0, VP_SCREEN_POS.1);
+    }
 
     // Movement arrows (0x42AE4): six images at ids 40-45.
     let base = if view.alt_arrows { 14 } else { 2 };
@@ -574,7 +593,7 @@ pub fn compose(a: &mut Assets, font: &Font, tables: &UiTables, view: &UiView, vp
     }
     // Opening an inventory (0x3A464) shades the arrows panel, layout id 9
     // sized as its rectangle 8, with colour 0 (0x13B7C).
-    if view.inventory.is_some() {
+    if view.inventory.is_some() || view.paused {
         if let Some(r) = a.layout.get(8) {
             let (w, h) = (r.x as i32, r.y as i32);
             if let Some(p) = a.layout.resolve(9, w, h, (w, h)) {

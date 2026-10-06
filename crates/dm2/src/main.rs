@@ -344,7 +344,13 @@ fn screenshot(args: &[String], title: bool) {
                 _ => panic!("unknown option {a}"),
             }
         }
+        let mut paused = false;
         for c in cmds {
+            // 0x90 pauses: a frontend state, not a game command.
+            if c == 0x90 {
+                paused = true;
+                continue;
+            }
             if let Some(gc) = input::game_command(c) {
                 g.push_command(gc);
             }
@@ -354,7 +360,9 @@ fn screenshot(args: &[String], title: bool) {
             g.advance();
         }
         let demo = std::env::var_os("DM2_DEMO_CHAMPION").is_some();
-        game_frame(&mut d, &g, &ui_view(&g, demo))
+        let mut view = ui_view(&g, demo);
+        view.paused = paused;
+        game_frame(&mut d, &g, &view)
     };
     let png = png::encode_rgb(SCREEN_W as u32, SCREEN_H as u32, &to_rgb(&d.assets.palette, &frame));
     std::fs::write(out, png).expect("write screenshot");
@@ -436,7 +444,8 @@ async fn play(args: Vec<String>) {
     tex.set_filter(FilterMode::Nearest);
 
     loop {
-        let view = ui_view(&game, demo);
+        let mut view = ui_view(&game, demo);
+        view.paused = screen == Screen::Paused;
         // Commands from the original key and zone tables.
         let mut cmds: Vec<u16> = Vec::new();
         let mut game_cmds: Vec<Command> = Vec::new();
