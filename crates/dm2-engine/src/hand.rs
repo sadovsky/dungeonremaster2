@@ -324,6 +324,21 @@ pub fn viewport_click(g: &mut GameState, r: ViewRegion) -> bool {
 
 /// Throw the held item into the view (0x22942 → 0x478A1), from the left
 /// or right half of the party square.
+/// Stamina a throw costs for an item of `weight` (0x4663A): with h = w/2,
+/// clamp(h, 1, 10), plus half of every positive h − 10k.
+pub fn throw_stamina_cost(weight: i32) -> i16 {
+    let mut h = weight >> 1;
+    let mut cost = h.clamp(1, 10);
+    loop {
+        h -= 10;
+        if h <= 0 {
+            break;
+        }
+        cost += h >> 1;
+    }
+    cost as i16
+}
+
 pub fn throw_held(g: &mut GameState, right: bool) -> bool {
     let (Some(l), Some(t)) = (leader(g), held(g)) else { return false };
     let Some(data) = g.data.clone() else { return false };
@@ -341,8 +356,8 @@ pub fn throw_held(g: &mut GameState, right: bool) -> bool {
     let attack = ((g.rng.rnd() & 31) as i32 + level * 8).clamp(40, 200) as u8;
     let a12 = db.attr(t, 0x0C);
     let step = if a12 != 0 { a12 as u8 } else { (11 - level).max(5) as u8 };
-    let weight = db.weight(t) as i16;
-    champions::stamina_loss(&mut g.champions, &mut g.party_status, l, (weight / 10).max(1));
+    let cost = throw_stamina_cost(db.weight(t) as i32);
+    champions::stamina_loss(&mut g.champions, &mut g.party_status, l, cost);
     g.hand.held = EMPTY;
     let cell = (p.dir + u8::from(right)) & 3;
     crate::missiles::launch(g, t.0 & 0x3FFF, p.map, p.x, p.y, cell, p.dir, energy, attack, step, false);

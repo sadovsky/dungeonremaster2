@@ -229,6 +229,12 @@ Taking, dropping and throwing all go through the viewport click handler
 (see `10-ui-input.md`). Items dropped in the far half of the view are
 thrown (0x227EA); the missile code then reads attributes 9, 0x0A and 0x0C.
 
+**Throw cost (0x478A1).** Throwing costs the thrower stamina through
+0x47707, with the amount from 0x4663A: let h = weight / 2 (weight in tenths
+of a kg, contents included); the cost is clamp(h, 1, 10) plus half of each
+positive value of h − 10, h − 20, ... So light items cost a little and
+heavy ones rise steeply (a 5 kg item costs 19, a 12 kg item 85).
+
 ## Special items
 
 - **Keys:** misc kinds 9-24. Locks are actuators that test the item

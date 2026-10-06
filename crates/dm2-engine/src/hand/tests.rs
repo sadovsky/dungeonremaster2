@@ -160,3 +160,15 @@ fn runes_are_entered_and_removed() {
         assert!(crate::magic::runes(&g.champions[0]).is_empty());
     }
 }
+
+#[test]
+fn throw_stamina_cost_follows_weight() {
+    use super::throw_stamina_cost as c;
+    assert_eq!(c(0), 1);
+    assert_eq!(c(8), 4);
+    assert_eq!(c(20), 10);
+    // h = 25: 10 + (15 >> 1) + (5 >> 1) = 19.
+    assert_eq!(c(50), 19);
+    // h = 60: 10 + 25 + 20 + 15 + 10 + 5 = 85.
+    assert_eq!(c(120), 85);
+}
