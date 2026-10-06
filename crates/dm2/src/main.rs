@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use dm2_engine::assets::{self, Assets};
 use dm2_engine::gfx::{Bitmap, SCREEN_H, SCREEN_W};
 use dm2_engine::viewport::{self, VP_SCREEN_POS};
+use dm2_engine::state::{Command, GameState};
 use dm2_engine::world::{Move, PartyPos};
 use macroquad::prelude::*;
 
@@ -33,11 +34,11 @@ fn data_dir() -> PathBuf {
 }
 
 /// First walkable square of a map, for debug map cycling.
-fn first_open(a: &Assets, map: usize) -> Option<(i32, i32)> {
-    let m = &a.dungeon.maps[map];
+fn first_open(dg: &dm2_formats::dungeon::Dungeon, map: usize) -> Option<(i32, i32)> {
+    let m = &dg.maps[map];
     for x in 0..m.width as i32 {
         for y in 0..m.height as i32 {
-            if !dm2_engine::world::blocks(&a.dungeon, map, x, y) {
+            if !dm2_engine::world::blocks(dg, map, x, y) {
                 return Some((x, y));
             }
         }
@@ -55,8 +56,10 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let s = &a.dungeon.start;
-    let mut party = PartyPos { map: 0, x: s.x as i32, y: s.y as i32, dir: s.facing };
+    let mut game = GameState::new_game(&a.dungeon);
+    // Real-time tick length is not yet known (docs/05); configurable.
+    let tick_secs = std::env::var("DM2_TICK_MS").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(166.0) / 1000.0;
+    let mut acc = 0.0f64;
     let mut screen = Bitmap::new(SCREEN_W, SCREEN_H);
     let mut rgba = vec![0u8; SCREEN_W * SCREEN_H * 4];
     let tex = Texture2D::from_rgba8(SCREEN_W as u16, SCREEN_H as u16, &rgba);
@@ -64,32 +67,36 @@ async fn main() {
     let mut debug = true;
 
     loop {
-        if is_key_pressed(KeyCode::W) || is_key_pressed(KeyCode::Up) {
-            party.step(&a.dungeon, Move::Forward);
+        let keys = [
+            (KeyCode::W, Command::Move(Move::Forward)),
+            (KeyCode::Up, Command::Move(Move::Forward)),
+            (KeyCode::S, Command::Move(Move::Back)),
+            (KeyCode::Down, Command::Move(Move::Back)),
+            (KeyCode::A, Command::Move(Move::Left)),
+            (KeyCode::D, Command::Move(Move::Right)),
+            (KeyCode::Q, Command::TurnLeft),
+            (KeyCode::Left, Command::TurnLeft),
+            (KeyCode::E, Command::TurnRight),
+            (KeyCode::Right, Command::TurnRight),
+        ];
+        for (k, c) in keys {
+            if is_key_pressed(k) {
+                game.push_command(c);
+            }
         }
-        if is_key_pressed(KeyCode::S) || is_key_pressed(KeyCode::Down) {
-            party.step(&a.dungeon, Move::Back);
-        }
-        if is_key_pressed(KeyCode::A) {
-            party.step(&a.dungeon, Move::Left);
-        }
-        if is_key_pressed(KeyCode::D) {
-            party.step(&a.dungeon, Move::Right);
-        }
-        if is_key_pressed(KeyCode::Q) || is_key_pressed(KeyCode::Left) {
-            party.turn_left();
-        }
-        if is_key_pressed(KeyCode::E) || is_key_pressed(KeyCode::Right) {
-            party.turn_right();
+        acc += get_frame_time() as f64;
+        while acc >= tick_secs {
+            acc -= tick_secs;
+            game.advance();
         }
         let n = a.dungeon.maps.len();
         for (key, delta) in [(KeyCode::PageDown, 1), (KeyCode::PageUp, n - 1)] {
             if is_key_pressed(key) {
-                let mut m = party.map;
+                let mut m = game.party.map;
                 for _ in 0..n {
                     m = (m + delta) % n;
-                    if let Some((x, y)) = first_open(&a, m) {
-                        party = PartyPos { map: m, x, y, dir: party.dir };
+                    if let Some((x, y)) = first_open(&game.dungeon, m) {
+                        game.party = PartyPos { map: m, x, y, dir: game.party.dir };
                         break;
                     }
                 }
@@ -100,7 +107,7 @@ async fn main() {
         }
 
         screen.fill(0);
-        let vp = viewport::render(&mut a, party.map, party.x, party.y, party.dir);
+        let vp = viewport::render(&mut a, &game.dungeon, game.party.map, game.party.x, game.party.y, game.party.dir);
         screen.paste(&vp, VP_SCREEN_POS.0, VP_SCREEN_POS.1);
         for (i, &c) in screen.px.iter().enumerate() {
             let [r, g, b] = a.palette[c as usize];
@@ -118,12 +125,13 @@ async fn main() {
         );
         if debug {
             let label = format!(
-                "map {} ({},{}) facing {}  layer {}",
-                party.map,
-                party.x,
-                party.y,
-                ["N", "E", "S", "W"][party.dir as usize],
-                a.dungeon.maps[party.map].depth
+                "map {} ({},{}) facing {}  layer {}  tick {}",
+                game.party.map,
+                game.party.x,
+                game.party.y,
+                ["N", "E", "S", "W"][game.party.dir as usize],
+                game.dungeon.maps[game.party.map].depth,
+                game.tick
             );
             draw_text(&label, 8.0, 20.0, 22.0, YELLOW);
         }

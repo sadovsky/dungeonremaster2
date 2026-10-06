@@ -433,6 +433,116 @@ impl Dungeon {
     }
 }
 
+/// Runtime mutation, used by the engine's game state.
+impl Dungeon {
+    fn square_index(&self, map: usize, x: i32, y: i32) -> Option<usize> {
+        let m = &self.maps[map];
+        if x < 0 || y < 0 || x >= m.width as i32 || y >= m.height as i32 {
+            return None;
+        }
+        Some(m.data_offset as usize + x as usize * m.height as usize + y as usize)
+    }
+
+    /// Overwrite a square byte. The "has things" bit (4) is managed by
+    /// `add_thing`/`remove_thing` and is preserved here.
+    pub fn set_square(&mut self, map: usize, x: i32, y: i32, value: u8) {
+        if let Some(i) = self.square_index(map, x, y) {
+            self.map_data[i] = (value & !0x10) | (self.map_data[i] & 0x10);
+        }
+    }
+
+    pub fn record_mut(&mut self, r: ThingRef) -> Option<&mut [u8]> {
+        let size = r.kind().record_size();
+        let start = r.index() * size;
+        self.things[r.kind() as usize].get_mut(start..start + size)
+    }
+
+    pub fn set_record_word(&mut self, r: ThingRef, n: usize, v: u16) {
+        if let Some(rec) = self.record_mut(r) {
+            if let Some(w) = rec.get_mut(2 * n..2 * n + 2) {
+                w.copy_from_slice(&v.to_le_bytes());
+            }
+        }
+    }
+
+    /// Position in `object_list` of a square's first-thing slot, whether or
+    /// not the square currently has things.
+    fn list_slot(&self, map: usize, x: i32, y: i32) -> usize {
+        let m = &self.maps[map];
+        let col_start = m.data_offset as usize + x as usize * m.height as usize;
+        let before = self.map_data[col_start..col_start + y as usize].iter().filter(|&&b| b & 0x10 != 0).count();
+        self.column_first[self.map_first_column[map] + x as usize] as usize + before
+    }
+
+    /// Append a thing to the end of a square's list (its `next` is set to END).
+    pub fn add_thing(&mut self, map: usize, x: i32, y: i32, t: ThingRef) {
+        let Some(sq) = self.square_index(map, x, y) else { return };
+        // Strip the cell bits when comparing references to the list.
+        self.set_record_word(t, 0, ThingRef::END.0);
+        if self.map_data[sq] & 0x10 == 0 {
+            let slot = self.list_slot(map, x, y);
+            self.object_list.insert(slot, t);
+            // Keep the list length fixed by consuming a spare NONE slot at the end.
+            if let Some(p) = self.object_list.iter().rposition(|r| *r == ThingRef::NONE) {
+                self.object_list.remove(p);
+            }
+            let col = self.map_first_column[map] + x as usize;
+            for c in self.column_first.iter_mut().skip(col + 1) {
+                *c += 1;
+            }
+            self.map_data[sq] |= 0x10;
+            return;
+        }
+        let mut cur = self.first_thing(map, x, y);
+        loop {
+            let next = ThingRef(self.record_word(cur, 0).unwrap_or(ThingRef::END.0));
+            if !next.is_thing() {
+                self.set_record_word(cur, 0, t.0);
+                return;
+            }
+            cur = next;
+        }
+    }
+
+    /// Unlink a thing from a square's list. Returns false if it wasn't there.
+    pub fn remove_thing(&mut self, map: usize, x: i32, y: i32, t: ThingRef) -> bool {
+        let Some(sq) = self.square_index(map, x, y) else { return false };
+        if self.map_data[sq] & 0x10 == 0 {
+            return false;
+        }
+        let same = |a: ThingRef, b: ThingRef| a.0 & 0x3FFF == b.0 & 0x3FFF;
+        let first = self.first_thing(map, x, y);
+        let after = ThingRef(self.record_word(t, 0).unwrap_or(ThingRef::END.0));
+        if same(first, t) {
+            let slot = self.list_slot(map, x, y);
+            if after.is_thing() {
+                self.object_list[slot] = after;
+            } else {
+                self.object_list.remove(slot);
+                self.object_list.push(ThingRef::NONE);
+                let col = self.map_first_column[map] + x as usize;
+                for c in self.column_first.iter_mut().skip(col + 1) {
+                    *c -= 1;
+                }
+                self.map_data[sq] &= !0x10;
+            }
+            self.set_record_word(t, 0, ThingRef::END.0);
+            return true;
+        }
+        let mut cur = first;
+        while cur.is_thing() {
+            let next = ThingRef(self.record_word(cur, 0).unwrap_or(ThingRef::END.0));
+            if same(next, t) {
+                self.set_record_word(cur, 0, after.0);
+                self.set_record_word(t, 0, ThingRef::END.0);
+                return true;
+            }
+            cur = next;
+        }
+        false
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,6 +634,41 @@ mod tests {
                 for y in 0..desc.height as i32 {
                     if d.square(m, x, y).element() == Element::Door {
                         assert!(d.things_at(m, x, y).iter().any(|r| r.kind() == ThingType::Door));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn add_and_remove_things_round_trip() {
+        let Some(b) = original() else { return };
+        let orig = Dungeon::parse(&b).unwrap();
+        let mut d = orig.clone();
+        // Move the first thing of some populated square onto an empty floor
+        // square and back again; every list in the dungeon must be unchanged.
+        let m = 0usize;
+        let (sx, sy) = (0..7)
+            .flat_map(|x| (0..10).map(move |y| (x, y)))
+            .find(|&(x, y)| d.square(m, x, y).has_things())
+            .unwrap();
+        let t = d.first_thing(m, sx, sy);
+        let empty = (0..7).flat_map(|x| (0..10).map(move |y| (x, y)))
+            .find(|&(x, y)| d.square(0, x, y).element() == Element::Floor && !d.square(0, x, y).has_things())
+            .unwrap();
+        let before_src = d.things_at(m, sx, sy);
+        assert!(d.remove_thing(m, sx, sy, t));
+        assert_eq!(d.things_at(m, sx, sy), before_src[1..].to_vec());
+        d.add_thing(m, empty.0, empty.1, t);
+        assert_eq!(d.things_at(m, empty.0, empty.1), vec![t]);
+        assert!(d.remove_thing(m, empty.0, empty.1, t));
+        assert!(!d.square(0, empty.0, empty.1).has_things());
+        // Every other square's list is intact throughout.
+        for (mi, md) in orig.maps.iter().enumerate() {
+            for x in 0..md.width as i32 {
+                for y in 0..md.height as i32 {
+                    if (mi, x, y) != (m, sx, sy) {
+                        assert_eq!(d.things_at(mi, x, y), orig.things_at(mi, x, y), "map {mi} ({x},{y})");
                     }
                 }
             }

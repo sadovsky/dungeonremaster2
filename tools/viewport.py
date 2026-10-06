@@ -5,8 +5,10 @@
   viewport.py walk MAP X Y DIR N      render N steps forward
 
 Output goes under re/ (gitignored): it is built from the local game data.
-This is a verification tool, not the engine; only the pieces documented as
-'verified' in docs/04 are implemented (no ornaments, items or creatures).
+This is a verification tool, not the engine. It draws walls, floor and
+ceiling, pits, ceiling holes, stairs, doors (closed, destroyed or partly open
+when the panel slides vertically) and floor items. Ornaments, creatures,
+missiles, split doors and teleporter fields are documented but not drawn.
 """
 import struct
 import sys
@@ -69,6 +71,23 @@ class Src:
         self.off = (self.off[0] + s8(base >> 8), self.off[1] + s8(base & 0xFF))
 
 
+def scale_src(src, sx, sy):
+    """Nearest-neighbour scaler (0x1424B): sizes via (v*s + s/2) >> 6, then
+    source column (S + 2*S*i) >> 8 with S = (w << 7) // new_w and source row
+    (T//2 + j*T) >> 7 with T = (h << 7) // new_h."""
+    nw, nh = (src.w * sx + sx // 2) >> 6, (src.h * sy + sy // 2) >> 6
+    if nw <= 0 or nh <= 0:
+        return None
+    S, T = (src.w << 7) // nw, (src.h << 7) // nh
+    cols = [min(src.w - 1, (S + 2 * S * i) >> 8) for i in range(nw)]
+    rows = [min(src.h - 1, (T // 2 + j * T) >> 7) for j in range(nh)]
+    out = Src.__new__(Src)
+    out.w, out.h, out.cmap = nw, nh, src.cmap
+    out.px = [src.px[r * src.w + c] for r in rows for c in cols]
+    out.off = ((src.off[0] * sx + sx // 2) >> 6, (src.off[1] * sy + sy // 2) >> 6)
+    return out
+
+
 def s8(v):
     v &= 0xFF
     return v - 256 if v >= 128 else v
@@ -118,6 +137,125 @@ def view_type(sq):
     return e == 0 or (e == 6 and not sq & 4)
 
 
+# Per-cell tables from SKULL.EXE (see docs/04 "Cell content").
+DEPTH = [0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4]
+DEPTH_SCALE = [96, 64, 43, 28, 19]
+PIT_LAYOUT = [862, 861, 863, 859, 858, 860, 856, 855, 857, -1, -1, 853, 852, 854, 850, 851]
+PIT_FLIP = [0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1]
+PIT_SUB = [107, 108, 108, 110, 111, 111, 113, 114, 114, -1, -1, 118, 119, 119, 121, 121]
+HOLE_LAYOUT = [871, 870, 872, 868, 867, 869, 865, 864, 866]
+HOLE_SUB = [153, 154, 154, 156, 157, 157, 159, 160, 160]
+HOLE_FLIP = [0, 0, 1, 0, 0, 1, 0, 0, 1]
+STAIR_FRONT_SUB = [-1, -1, -1, -1, -1, -1, 79, 59, 80, 60, 81, 61, 82, 62, 83, 63, 84, 64,
+                   -1, -1, -1, -1, 85, 65, 86, 66, 87, 67, 88, 68, 89, 69]
+STAIR_FRONT_ALT = [-1, -1, -1, -1, -1, -1, 79, 59, 80, 60, 80, 60, 82, 62, 83, 63, 83, 63,
+                   -1, -1, -1, -1, 85, 65, 86, 66, 86, 66, 88, 68, 88, 68]
+STAIR_FRONT_LAYOUT = [-1, -1, -1, -1, -1, -1, 822, 809, 821, 808, 823, 810, 819, 806, 818,
+                      805, 820, 807, -1, -1, -1, -1, 816, 803, 815, 802, 817, 804, 800, 800,
+                      801, 801]
+STAIR_SIDE_SUB = [-1, -1, 205, 199, 206, 200, -1, -1, 207, 201, 208, 202, -1, -1, 209, 203,
+                  210, 204]
+STAIR_SIDE_LAYOUT = [-1, -1, 832, 832, 833, 833, -1, -1, 830, 828, 831, 829, -1, -1, 826,
+                     826, 827, -1]
+DOOR_LAYOUT = [3810, -1, -1, 3790, 3780, 3800, 3760, 3750, 3770, -1, -1, 3730, 3720, 3740,
+               3700, 3710]
+DOOR_CELLS = {0, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15}
+ITEM_SCALE = [87, 78, 71, 64, 58, 52, 47, 43, 39, 35, 31, 28, 26, 23, 21, 19, 17, 15]
+QUAD_SLOT = [6, 8, 18, 16]  # item quadrant (relative to facing) -> 5x5 slot
+
+
+def try_src(g, cat, idx, sub):
+    try:
+        return Src(g, cat, idx, sub)
+    except KeyError:
+        return None
+
+
+def item_key(dg, ref):
+    """(category, index) of a floor item, per docs/09 (types 5-10 only)."""
+    t, i = ref >> 10 & 15, ref & 0x3FF
+    rec = dg.things[t][i]
+    w1 = struct.unpack_from('<H', rec, 2)[0]
+    if t in (5, 6, 10):
+        idx = w1 & 0x7F
+    elif t == 7:
+        idx = 0
+    elif t == 8:
+        idx = (w1 >> 8) & 0x7F
+    else:
+        w2 = struct.unpack_from('<H', rec, 4)[0]
+        idx = (w2 >> 13) | ((w2 >> 1) & 3) << 3
+    return 16 + t - 5, idx
+
+
+def draw_cell_content(buf, g, dg, recs, m, c, x, y, d, par):
+    """Pits, stairs, doors and floor items for one cell (cells 0-15)."""
+    md = dg.maps[m]
+    ts = md.tileset
+    sq = dg.square(m, x, y)
+    e = sq >> 5
+    depth = DEPTH[c]
+    if e == 2 and sq & 8 and PIT_SUB[c] >= 0:
+        flip = PIT_FLIP[c] if c else par
+        s = try_src(g, 8, ts, PIT_SUB[c])
+        if s:
+            blit(buf, VP_W, VP_H, s, recs, PIT_LAYOUT[c], flip)
+    if e == 3:
+        front = ((sq >> 3) & 1) != (d & 1)
+        k = c * 2 + ((sq >> 2) & 1)
+        if front and k < len(STAIR_FRONT_SUB) and STAIR_FRONT_SUB[k] >= 0:
+            s, flip = try_src(g, 8, ts, STAIR_FRONT_SUB[k]), 0
+            if s is None:
+                s, flip = try_src(g, 8, ts, STAIR_FRONT_ALT[k]), 1
+            if s:
+                blit(buf, VP_W, VP_H, s, recs, STAIR_FRONT_LAYOUT[k], flip)
+        elif not front and k < len(STAIR_SIDE_SUB) and STAIR_SIDE_SUB[k] >= 0:
+            s = try_src(g, 8, ts, STAIR_SIDE_SUB[k])
+            if s:
+                blit(buf, VP_W, VP_H, s, recs, STAIR_SIDE_LAYOUT[k])
+    # floor items
+    for ref in dg.things_at(m, x, y):
+        if not 5 <= (ref >> 10 & 15) <= 10:
+            continue
+        slot = QUAD_SLOT[((ref >> 14) - d) & 3]
+        row = slot // 5
+        if c == 0 and 4 - row < 2:
+            continue  # behind the party
+        cat, idx = item_key(dg, ref)
+        s = try_src(g, cat, idx, 0)
+        if s is None:
+            continue
+        sc = ITEM_SCALE[depth * 4 + 4 - row]
+        s = scale_src(s, sc, sc)
+        if s:
+            key = g.lookup(cat, idx, 11, 4)
+            blit(buf, VP_W, VP_H, s, recs, 5000 + 25 * c + slot, 0, 10 if key is None else key)
+    # door across the view
+    if e == 4 and c in DOOR_CELLS and ((sq >> 3) & 1) != (d & 1):
+        state = sq & 7
+        door = next((r for r in dg.things_at(m, x, y) if (r >> 10 & 15) == 0), None)
+        if state == 0 or door is None:
+            return
+        w1 = struct.unpack_from('<H', dg.things[0][door & 0x3FF], 2)[0]
+        we = struct.unpack_from('<H', md.raw, 14)[0]
+        dtype = (we >> (12 if w1 & 1 else 8)) & 15
+        key = g.lookup(14, dtype, 11, 4) or 10
+        s = try_src(g, 14, dtype, depth - 1) if depth else None
+        if s is None:
+            s = try_src(g, 14, dtype, 0)
+            if s is None:
+                return
+            sc = 0x71 if depth == 0 else DEPTH_SCALE[depth]
+            s = scale_src(s, sc, sc)
+        if s is None:
+            return
+        base = DOOR_LAYOUT[c]
+        if state < 4 and not (w1 & 0x20):
+            return  # split doors (two half panels) not modelled here
+        rid = base + state if state < 4 else base
+        blit(buf, VP_W, VP_H, s, recs, rid, 0, key)
+
+
 def render(g, dg, recs, m, px, py, d):
     md = dg.maps[m]
     tileset = md.tileset
@@ -139,6 +277,12 @@ def render(g, dg, recs, m, px, py, d):
         x = px + DX[d] * fwd + DX[(d + 1) & 3] * lat
         y = py + DY[d] * fwd + DY[(d + 1) & 3] * lat
         if not view_type(dg.square(m, x, y)):
+            if c < 16:
+                if c < 9 and lower_hole(dg, m, x, y):
+                    s = try_src(g, 8, tileset, HOLE_SUB[c])
+                    if s:
+                        blit(buf, VP_W, VP_H, s, recs, HOLE_LAYOUT[c], HOLE_FLIP[c] if c else par)
+                draw_cell_content(buf, g, dg, recs, m, c, x, y, d, par)
             continue
         side = lat
         flip = 1 if side > 0 else 0
@@ -157,7 +301,22 @@ def render(g, dg, recs, m, px, py, d):
             blit(buf, VP_W, VP_H, Src(g, 8, tileset, sub), recs, LAYOUT_WALL0 + c, flip, key)
         except KeyError:
             pass
+    lat, fwd = CELLS[0]
+    draw_cell_content(buf, g, dg, recs, m, 0, px, py, d, par)
     return buf
+
+
+def lower_hole(dg, m, x, y):
+    """Is there an open pit in the square above (same coordinates, one layer
+    up)? 0x507AB checks this only when the set's flag word has bit 0."""
+    md = dg.maps[m]
+    gx, gy = x + md.origin_x, y + md.origin_y
+    for j, o in enumerate(dg.maps):
+        if o.depth == md.depth - 1 and 0 <= gx - o.origin_x < o.width and \
+                0 <= gy - o.origin_y < o.height:
+            sq = dg.square(j, gx - o.origin_x, gy - o.origin_y)
+            return sq >> 5 == 2 and bool(sq & 8)
+    return False
 
 
 def main():

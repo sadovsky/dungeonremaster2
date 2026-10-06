@@ -42,10 +42,10 @@ fn is_wall_face(sq: u8) -> bool {
     e == 0 || (e == 6 && sq & 4 == 0)
 }
 
-pub fn render(a: &mut Assets, map: usize, px: i32, py: i32, dir: u8) -> Bitmap {
+pub fn render(a: &mut Assets, dg: &Dungeon, map: usize, px: i32, py: i32, dir: u8) -> Bitmap {
     let mut buf = Bitmap::new(VP_W, VP_H);
-    let tileset = a.dungeon.maps[map].tileset;
-    let par = parity(&a.dungeon, map, px, py, dir);
+    let tileset = dg.maps[map].tileset;
+    let par = parity(dg, map, px, py, dir);
     let key = a.gdat.lookup(Key::new(8, tileset, 11, 100)).unwrap_or(0) as u8;
     let flags = a.gdat.lookup(Key::new(8, tileset, 11, 0x65)).unwrap_or(0);
     // Ceiling and floor flips: only the parity-driven modes are modelled.
@@ -59,7 +59,7 @@ pub fn render(a: &mut Assets, map: usize, px: i32, py: i32, dir: u8) -> Bitmap {
         let (lat, fwd) = CELLS[c];
         let x = px + DX[d] * fwd + DX[(d + 1) & 3] * lat;
         let y = py + DY[d] * fwd + DY[(d + 1) & 3] * lat;
-        if !is_wall_face(a.dungeon.square(map, x, y).0) {
+        if !is_wall_face(dg.square(map, x, y).0) {
             continue;
         }
         let mut flip = u8::from(lat > 0);
