@@ -51,7 +51,8 @@ fn pinned_views() {
         ((8, 12, 3, 0), 0x63937f659a8ab17e),
         ((7, 12, 11, 1), 0xb6be0da00e90b5ff),
         ((0, 3, 4, 0), 0xa679cc154d628c53),
-        ((1, 2, 9, 0), 0xb2205ef0cf9acf76),
+        // Creature in cell 6 now offset by its descriptor shift byte (0x50DEE).
+        ((1, 2, 9, 0), 0xe2aebbcfc33ceec7),
         ((5, 12, 23, 0), 0x7b768a367eb43359),
     ];
     let mut bad = Vec::new();
@@ -62,4 +63,59 @@ fn pinned_views() {
         }
     }
     assert!(bad.is_empty(), "view hashes changed:\n{}", bad.join("\n"));
+}
+
+#[test]
+fn clip_keeps_source_offsets() {
+    let p = Placement { x: 10, y: 0, w: 100, h: 50, skip_x: 0, skip_y: 0 };
+    let c = clip(p, MID_STEP_CLIP).unwrap();
+    assert_eq!((c.x, c.y, c.skip_x, c.skip_y), (21, 8, 11, 8));
+    assert_eq!((c.w, c.h), (89, 42));
+    assert!(clip(Placement { x: 0, y: 0, w: 5, h: 5, skip_x: 0, skip_y: 0 }, MID_STEP_CLIP).is_none());
+}
+
+#[test]
+fn creature_grid_geometry() {
+    // The party cell's back row and the square ahead's front row are the
+    // same grid row; centre points of neighbouring cells are 4 apart.
+    assert_eq!(creature::grid_point(0, 12), (10, 2));
+    assert_eq!(creature::grid_point(3, 12), (10, 6));
+    assert_eq!(creature::grid_point(0, 2).1, creature::grid_point(3, 22).1);
+    assert_eq!(creature::grid_point(1, 12), (6, 2));
+}
+
+#[test]
+fn quadrants_and_hits() {
+    assert_eq!([6, 8, 18, 16, 12, 7].map(quadrant_of), [Some(0), Some(1), Some(2), Some(3), Some(4), None]);
+    let mut t = hits::HitTable::default();
+    t.item(hits::HitKind::FloorItem, 3, 1, 0x1400, (10, 10, 5, 5));
+    t.item(hits::HitKind::FloorItem, 3, 1, 0x1401, (12, 8, 6, 4));
+    t.item(hits::HitKind::FloorItem, 3, 2, 0x1402, (40, 40, 4, 4));
+    assert_eq!(t.hits.len(), 2, "a pile in one quadrant shares a record");
+    let h = t.at(17, 9).unwrap();
+    assert_eq!((h.x, h.y, h.w, h.h, h.thing), (10, 8, 8, 7, Some(0x1400)));
+    assert!(t.at(0, 0).is_none());
+    assert_eq!(t.at(41, 41).unwrap().thing, Some(0x1402));
+}
+
+/// Some wall-writing thing in the dungeon resolves to non-empty text
+/// (its content is not checked or printed).
+#[test]
+fn wall_writing_resolves() {
+    let Ok(a) = assets::Assets::load(&assets::default_data_dir()) else { return };
+    let dg = &a.dungeon;
+    let found = (0..dg.maps.len()).any(|m| {
+        let md = &dg.maps[m];
+        (0..md.width as i32).any(|x| {
+            (0..md.height as i32).any(|y| {
+                dg.square(m, x, y).element() == Element::Wall
+                    && dg.things_at(m, x, y).into_iter().any(|t| {
+                        t.kind() as u16 == 2
+                            && dg.record_word(t, 1).is_some_and(|w| w & 7 == 3 && w >> 11 == 14)
+                            && walltext::text_of(&a, dg, t).is_some_and(|s| !s.is_empty())
+                    })
+            })
+        })
+    });
+    assert!(found);
 }
