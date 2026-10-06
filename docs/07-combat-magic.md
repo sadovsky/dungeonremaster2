@@ -238,8 +238,11 @@ quartered for "resistant" creatures unless type 1. Non-material creatures
 are only hit by 0xFF83. Creature flag bit 0 makes missiles glance off or
 pass, depending on further flags.
 
-Thrown potions turn into explosions on impact (potion type 3 becomes
-0xFF87, type 0x13 becomes 0xFF80).
+Thrown potions burst when the missile hits something (the hit routine
+0x1726B, so not when a throw simply runs out of energy and drops): potion
+kind 3 becomes a poison cloud 0xFF87 and kind 0x13 a fireball 0xFF80, with
+the potion's power (word 1 low byte) as the explosion strength. The potion
+itself is used up. Other potion kinds survive the impact and drop.
 
 ## Explosions (0x16746)
 

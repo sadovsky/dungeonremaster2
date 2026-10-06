@@ -194,7 +194,6 @@ fn land(g: &mut GameState, m: ThingRef, map: usize, x: i32, y: i32) {
 fn drop_item(g: &mut GameState, item: ThingRef, map: usize, x: i32, y: i32, cell: u8) {
     let placed = ThingRef((item.0 & 0x3FFF) | (cell as u16 & 3) << 14);
     movement::move_thing(g, placed, None, Some((map, x, y)));
-    // Thrown potions burst instead (docs/07): TODO(potion kinds 3, 0x13).
 }
 
 /// The party is hit by missile `m` (0x1726B mode −3). Returns true if a
@@ -236,8 +235,36 @@ fn hit_creature(g: &mut GameState, m: ThingRef, c: ThingRef, map: usize, x: i32,
     }
 }
 
-/// Finish a missile that hit something: explosions burst, items drop.
+/// Explosion a thrown potion bursts into when it hits something
+/// (0x1726B): kind 3 a poison cloud, kind 0x13 a fireball. Other potions
+/// survive the impact and drop.
+fn potion_burst(g: &GameState, item: ThingRef) -> Option<(u16, u8)> {
+    if item.kind() != ThingType::Potion {
+        return None;
+    }
+    let w1 = g.dungeon.record_word(item, 1)?;
+    let (pkind, power) = ((w1 & 0x7FFF) >> 8, (w1 & 0xFF) as u8);
+    match pkind {
+        3 => Some((kind::POISON_CLOUD, power)),
+        0x13 => Some((kind::FIREBALL, power)),
+        _ => None,
+    }
+}
+
+/// Finish a missile that hit something: explosions burst, burstable
+/// potions explode with their power, other items drop.
 fn impact(g: &mut GameState, m: ThingRef, map: usize, x: i32, y: i32) {
+    if let Some(ms) = read(g, m) {
+        if !is_explosion(ms.what) {
+            if let Some((what, power)) = potion_burst(g, ThingRef(ms.what)) {
+                let cell = m.cell();
+                retire(g, m, map, x, y);
+                g.dungeon.free_thing(ThingRef(ms.what & 0x3FFF));
+                explode(g, what, power, map, x, y, cell);
+                return;
+            }
+        }
+    }
     land(g, m, map, x, y);
 }
 

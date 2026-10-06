@@ -226,3 +226,38 @@ fn revive_formula() {
     party::revive(&mut g, 0);
     assert_eq!(g.champions[0].max_health(), 25);
 }
+
+/// Throw a potion of `pkind` at an adjacent wall; returns the game after
+/// the impact and the potion's thing reference.
+fn throw_potion_at_wall(pkind: u16) -> Option<(GameState, ThingRef)> {
+    let mut g = game()?;
+    let p = g.party;
+    let dir = (0..4u8).find(|&d| {
+        g.dungeon.square(p.map, p.x + DX[d as usize], p.y + DY[d as usize]).element() == Element::Wall
+    })?;
+    // Item numbers 384-431 are potions.
+    let potion = crate::actuators::create_item(&mut g, 384)?;
+    g.dungeon.set_record_word(potion, 1, pkind << 8 | 100);
+    missiles::launch(&mut g, potion.0, p.map, p.x, p.y, dir, dir, 120, 60, 4, true)?;
+    run(&mut g, 3);
+    Some((g, potion))
+}
+
+fn on_any_square(g: &GameState, t: ThingRef) -> bool {
+    [ThingType::Potion].iter().any(|&k| things(g, k).iter().any(|(_, _, _, r)| r.0 & 0x3FFF == t.0 & 0x3FFF))
+}
+
+#[test]
+fn thrown_poison_potion_bursts_into_a_cloud() {
+    let Some((g, potion)) = throw_potion_at_wall(3) else { return };
+    assert!(things(&g, ThingType::Missile).is_empty());
+    assert!(!on_any_square(&g, potion), "a kind-3 potion is consumed by the burst");
+    assert!(!things(&g, ThingType::Cloud).is_empty(), "the burst leaves a poison cloud");
+}
+
+#[test]
+fn thrown_ordinary_potion_drops_intact() {
+    let Some((g, potion)) = throw_potion_at_wall(0) else { return };
+    assert!(things(&g, ThingType::Missile).is_empty());
+    assert!(on_any_square(&g, potion), "other potions survive the impact");
+}
