@@ -58,7 +58,7 @@ async fn main() {
     };
     let mut game = GameState::new_game(&a.dungeon);
     // Real-time tick length is not yet known (docs/05); configurable.
-    let tick_secs = std::env::var("DM2_TICK_MS").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(166.0) / 1000.0;
+    let tick_secs = std::env::var("DM2_TICK_MS").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(133.3) / 1000.0;
     let mut acc = 0.0f64;
     let mut screen = Bitmap::new(SCREEN_W, SCREEN_H);
     let mut rgba = vec![0u8; SCREEN_W * SCREEN_H * 4];

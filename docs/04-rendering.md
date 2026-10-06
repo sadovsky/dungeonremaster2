@@ -27,6 +27,14 @@ reading, needs confirmation.
   pixel count); the blitter has 4-bit destination paths (below), used for
   off-screen work such as icons.
 
+### Presenting the viewport (traced)
+
+The view is drawn straight into the 320×200 back buffer. Afterwards
+0x138D9 resolves layout record 7, which is rectangle 3 (224×136)
+translated to **(0, 40)**, and asks the display driver (`int 0xFC`
+function 8) to copy that rectangle to the screen, hiding the mouse
+cursor first if it overlaps.
+
 ### Getting pixels to the display (traced)
 
 SKULL.EXE never touches VGA registers or calls BIOS video. All display and
@@ -123,9 +131,9 @@ Python `resolve()` is a direct transcription of these rules.
 | 130-133 | Missile/effect size boxes (44×38, 64×61, 96×88, 170×154) |
 | 700, 701 | Viewport ceiling and floor |
 | 702 + c | Wall face of viewport cell c |
-| 3100 + 25c + s | Item positions: cell c, sub-square s (0-24) |
+| 3100 + 25c + s | Wall-ornament anchor positions on the front face of cell c (0x19B91) |
 | 4425-4775 | Side-wall ornament positions for side cells (table 0x7179C maps cell → base id) |
-| 5000 + 25c + s | Creature positions: cell c, sub-square s |
+| 5000 + 25c + s | Floor positions for items, creatures and missiles: cell c, sub-square s (0x19B77) |
 
 ## 3. Viewport traversal (verified for walls, floor, ceiling)
 
@@ -195,8 +203,8 @@ four ornament slots (one per face) and a spare. View types:
 | 1 | floor; closed pit; invisible teleporter; open trick wall | floor ornament from set attribute 0x6B (animated if bit 15) or from actuator/text things |
 | 2 | open pit | |
 | 5 | visible teleporter | adds an effect overlay (0x509E6) |
-| 0x10 / 0x11 | door, facing / side-on | door state in slot 3, door thing in slot 4 |
-| 0x12 / 0x13 | stairs, two orientations | relative to facing parity; up/down in slot 3 |
+| 0x10 / 0x11 | door seen edge-on / door across the view (panel visible) | door state in slot 3, door thing in slot 4. 0x10 when the square's orientation bit 3 equals facing & 1 |
+| 0x12 / 0x13 | stairs seen side-on / stairs seen front-on | 0x12 when orientation bit 3 equals facing & 1; square bit 2 (direction) in slot 3 |
 | 7 | solid rock | never drawn |
 
 ### Walls (0x53C7B) — verified
@@ -214,7 +222,197 @@ four ornament slots (one per face) and a spare. View types:
 - Light: depth 0 is passed for walls (their art is pre-shaded per
   position), except in mid-step frames.
 
-### Other cell content (traced)
+### Summary record layout
+
+Each cell's summary is 18 bytes at 0x80040 + 18·cell: bytes 0-1 are the
+map x/y of the cell, then the 8 words described above, so the view type
+is at +2, the first drawable thing at +6, slot 3 (door state, pit or
+stair bit) at +8 and slot 4 (door thing) at +10.
+
+### Cell dispatcher (0x53E9E)
+
+For each cell in draw order:
+
+| View type | Cells 0-15 | Cells 16-20 |
+|-----------|------------|-------------|
+| 0 wall | creatures standing in the cell's list (0x51203), then the wall faces (0x53E41) | same |
+| 1 floor | floor ornament (0x50081), ceiling hole (0x507AB), then cell contents (0x52518, mask 0x1FFFFFF, or 0x1FFFC00 when a floor ornament was drawn) | floor ornament, then creatures |
+| 2 open pit | pit (0x508FF), then as floor | floor ornament, then creatures |
+| 5 teleporter | as floor, then the teleporter field (0x509E6) | floor ornament, then creatures |
+| 0x10 door edge-on | in cell 3 only: the door lintel, image (8, set, 1, 6) at the placement of 5000 + 25·3 + 2, unless the door type's attribute (14, type, 11, 0x40) is set; then as floor | — |
+| 0x11 door across | 0x539CB: far half of the cell, door panel, near half | creatures only |
+| 0x12 stairs side-on | 0x53BFB, then cell contents | — |
+| 0x13 stairs front-on | 0x53B1B, then cell contents | — |
+
+The party square is drawn last by 0x54117 (see below).
+
+### Cell contents (0x52518)
+
+A cell's things are drawn per 5×5 sub-square, in the order given by the
+left / right / centre tables (0x75D84 / 0x75D9D / 0x75DB6): the left
+columns go left-to-right, right columns right-to-left, the centre column
+outside-in, all back row first. The party cell walks only the first 15
+entries (the rows in front of the party). At each sub-square, in this
+order:
+
+1. **Floor items** (0x522A7) if the cell's item mask has that bit.
+2. **Creatures** owning that sub-square according to the 17×21 occlusion
+   grid (0x51203). After a creature has been drawn, missiles in the seven
+   preceding sub-squares are redrawn on top of it.
+3. **Missiles** (0x518B0) if the missile mask has that bit.
+
+Cells 9 and 10 (the far side cells at depth 2) have no contents pass
+(table 0x75DCF).
+
+### Item placement (0x522A7 → 0x51EB7)
+
+- Only things of types 5-10 (weapons through misc items) are drawn here.
+- An item's quadrant (reference bits 14-15) minus the party facing,
+  modulo 4, picks a 5×5 slot: 0 → 6, 1 → 8, 2 → 18, 3 → 16 (table
+  0x7168A, inverse 0x159C3; slot 12 is the centre, used by missiles and
+  creatures).
+- Placement id = 5000 + 25·cell + slot (0x19B77), drawn with bit 15 set
+  so that the offsets below move the reference point.
+- Items in the party's own cell are skipped when they are in the back two
+  rows (behind the camera).
+- **Scale** comes from a perspective table indexed by depth·4 + (4 − row),
+  row = slot / 5 (0x75B73): 87, 78, 71, 64, 58, 52, 47, 43, 39, 35, 31,
+  28, 26, 23, 21, 19, 17, 15. Consecutive depths overlap, so the back
+  row of one square matches the front row of the next.
+- **Image**: (category, index, 1, sub). Sub is 0 normally, or 1 for an
+  item in the centre column's middle slot when that image exists. Open
+  chests use subs 4 and 5 instead of 0 and 1 (table 0x75D6A).
+- **Stacking**: a counter 0-15 per cell indexes a table of (x, y) nudge
+  pairs (0x75B94) into the offsets 0, 1, 2, 3, 0, −3, −2, −1 (0x75BC2), so
+  piled items fan out slightly.
+- The per-category offset attribute (cat, 0xFE, 12, sub) is added.
+- Colour key 10.
+
+### Missiles and spell effects (0x518B0)
+
+Thing type 14. The image comes from the carried thing: an item's own
+category, or category 13 for spell clouds and explosions.
+
+- **Sub**: 8 when seen head-on, 9 for the variant used when the missile
+  is in a sub-square of matching parity, 10 when flying across the view,
+  12 when seen from behind (the record's direction compared with the
+  party facing).
+- **Scale**: table 0x75B8D, indexed by depth·2 − (slot index / 2):
+  64, 52, 43, 35, 28, 23, 19. Spell effects are further scaled by power:
+  the effect's power byte p gives a factor `(p·128/255 + 1)/2`, applied
+  through the same scaler and clamped to at least 8.
+- **Flip**: horizontal/vertical bits from the direction and sub-square
+  parity, masked by attribute (13, index, 11, 1) for spell effects (3 for
+  items).
+- **Position**: placement 5000 + 25·cell + slot with a vertical offset of
+  −92 (scaled), so missiles fly at chest height.
+
+### Creatures (0x51203 → 0x50DEE)
+
+- **View**: `(party facing − creature facing) & 3`, or 2 when the type
+  is flagged "always faces the party". The animation frame's drawing
+  descriptor (8 bytes, from the (7, 253) table) lists four image subs,
+  one per view, and a byte with two flag bits per view (bits for view v
+  at position (3 − v)·2).
+- **Fallbacks**: if the sub for the view is missing, use the opposite
+  view's sub (mirrored if the view is odd); if that is missing, the
+  front (index 2). If still missing, sub 250 + view (as 0xFA..0xFD
+  counted down: view − 6 as a byte), trying the opposite odd view
+  mirrored, and finally 252.
+- **Mirroring**: flag bit 0 of the view always mirrors; bit 1 mirrors
+  only when the creature record has flag 0x40.
+- **Scale**: depth scale (0x75B6D) multiplied by the per-frame byte at
+  (15, type, 7, 0xFE)[frame·4 + view] / 64.
+- **Position**: placement 5000 + 25·cell + slot, rotated by facing.
+  Side views (1 and 3) shift x by −7 or +7 scaled pixels. The creature
+  record's position byte nudges the image by the 0, 1, 2, 3, 0, −3, −2,
+  −1 table (bits 0-2 for x, 3-5 for y).
+- **Colour variants**: when the creature record's byte +0x17 is 0x13, a
+  colour remap is built (0x14CF2) from the creature's type and its
+  record word +0xE, so different individuals of a type can be recoloured.
+- **Colour key**: from the creature type (0x1F9DF).
+- **Attack lunge**: a creature attacking from the square in front (cell
+  3, flag 0x802CA) uses fixed slot and scale tables (0x75BB4 / 0x75BBB)
+  indexed by attack step instead.
+
+### Doors (0x539CB → 0x5346E)
+
+Door square bits 0-2 are the state (0 open, 1-3 partly closed, 4
+closed, 5 destroyed); bit 3 is the orientation. The door thing's word 1
+holds:
+
+| Bits | Meaning |
+|------|---------|
+| 0 | Which of the map's two door types (descriptor word +14 bits 8-11 or 12-15) |
+| 1-4 | Door ornament, 1-based into the map's door-ornament list (0 = none) |
+| 5 | Panel slides vertically as one piece (clear: two halves) |
+
+Drawing, for cells 0, 3-8 and 11-15 (table 0x75F48):
+
+1. Things in the far half of the cell, then the panel, then the near half.
+2. **Panel image**: (14, door type, 1, depth − 1) at 1:1 if that image
+   exists; otherwise (14, type, 1, 0) scaled by the depth scale (113/64
+   at depth 0). Colour key from attribute (14, type, 11, 4), default 10.
+3. **Ornament** (if any): composed onto a copy of the panel first.
+   Image (11, ornament, 1, depth − 1 or 0) with colour key (11, orn, 11,
+   4) (default 9), at placement 2000 + 4·attr(11, orn, 11, 8) + (3, 2,
+   1, 0 for depth 0-3).
+4. **Destroyed** (state 5): a damage overlay (14, type, 1, 0x41) is
+   composed onto the panel, placed through attribute (14, type, 11, 10).
+5. **Placement**: per-cell base ids (table 0x75F28): cell 0 → 3810, 3 →
+   3790, 4 → 3780, 5 → 3800, 6 → 3760, 7 → 3750, 8 → 3770, 11 → 3730,
+   12 → 3720, 13 → 3740, 14 → 3700, 15 → 3710.
+   - Closed or destroyed: base.
+   - Partly open, vertical panel: base + state.
+   - Partly open, split door: the panel is drawn twice at half width,
+     once at base + state + 6 (right half, shifted by the half width) and
+     once at base + state + 3.
+   - Open: nothing.
+
+### Pits, ceiling holes and stairs
+
+- **Pit** (0x508FF, view type 2): image (8, set, 1, sub) at a per-cell
+  placement. Subs from table 0x75CAC (or 0x75C9C when square bit 2 is
+  set; no square in this dungeon has it): 107, 108, 108, 110, 111, 111,
+  113, 114, 114, –, –, 118, 119, 119, 121, 121. Placements (0x75C6C):
+  862, 861, 863, 859, 858, 860, 856, 855, 857, –, –, 853, 852, 854,
+  850, 851. Right-hand cells are mirrored (0x75C8C); the party cell
+  mirrors by the floor parity. Cells 11 and up are drawn only when slot 3
+  is 0.
+- **Ceiling hole** (0x507AB, cells 0-8, only when the set's flag word
+  bit 0 is set): when the square directly above, on the map one layer up,
+  is an open pit. Subs 153, 154, 154, 156, 157, 157, 159, 160, 160 at
+  placements 871, 870, 872, 868, 867, 869, 865, 864, 866; right cells
+  mirrored.
+- **Stairs front-on** (0x53B1B, view type 0x13): index cell·2 + square
+  bit 2. Subs (table 0x75F58) 79/59, 80/60, 81/61 for cells 3-5, 82/62,
+  83/63, 84/64 for cells 6-8, 85/65, 86/66, 87/67 for cells 11-13 and
+  88/68, 89/69 for 14-15. If the set lacks that image, the partner image
+  from 0x75F78 is drawn mirrored instead. Placements from 0x75F98 (800
+  to 823).
+- **Stairs side-on** (0x53BFB, view type 0x12, cells 1, 2, 4, 5, 7, 8):
+  subs 205/199, 206/200, 207/201, 208/202, 209/203, 210/204 at
+  placements 832, 833, 830/828, 831/829, 826, 827.
+- **Party square** (0x54117): stairs underfoot draw two images: subs
+  0x4D and 0x4E at placements 0x338 and 0x339 (going down), or 0x39 and
+  0x3A at 0x32B and 0x32C (going up). A door edge-on underfoot draws the
+  lintel (sub 6). A pit underfoot uses the cell 0 pit image. Then the
+  ceiling hole, the floor ornament, items, the teleporter field, and
+  finally creatures and missiles in the party's own square (0x5142D).
+
+### Teleporter field (0x509E6)
+
+Category 24, index 0, holds the effect: sub 20 is a noise texture and
+subs 0-5 are shape masks by depth. A per-cell 4-byte record (0x75CDC)
+gives a phase byte, the mask sub (bits 0-6; 0x7F means none) with bit 7
+meaning mirrored, and the effect width and height (224×136 for the party
+cell down to 36×49 far away). The field is placed at the wall-face
+placement 702 + cell. Each frame the noise texture is copied into the
+mask shape at a random horizontal offset (one random byte) and a random
+row offset (`(random + phase) · 16`), so it shimmers. Sound (24, 0, 2,
+137) is the teleport sound.
+
+### Floor and wall ornaments
 
 - **Wall ornaments** (0x4F3DF): category 9 images; position id from
   0x19B91 (`cell·25 + 3100 + slot`, or the side-wall base table 0x7179C);
@@ -222,21 +420,9 @@ four ornament slots (one per face) and a spare. View types:
   attribute 5; size scaled by the depth table below, with an aspect
   override from attributes 0x14 / 0x15 for depths 2 and 3; wall writing
   (text things) is drawn with the 8×8 wall font, centred on the face.
-- **Creatures** (0x51203 → 0x50DEE): the view of the creature is
-  `(party facing − creature facing) & 3` (front if the type has the
-  "always front" flag). The animation sequence picks an image sub per view;
-  missing views fall back to the opposite view mirrored, then the front,
-  then subs 250-253 / 252. Position: layout 5000 + 25·cell + slot, where the
-  5×5 sub-square slot is rotated by facing (0x19B0B) and nudged by small
-  offsets (table 0x75BC2: 0, 1, 2, 3, 0, −3, −2, −1); side views shift ±7
-  scaled pixels. Scale = depth scale × the per-frame byte from the
-  creature's table (15, type, 7, 0xFE), divided by 64.
-- **Items** (0x518B0) at 3100 + 25·cell + slot; missiles (0x522A7).
-- Things inside a cell are drawn in a fixed sub-square order that depends
-  on whether the cell is left of, right of or on the centre line (tables
-  0x75D84 / 0x75D9D / 0x75DB6, 25 entries each), with a 17-column
-  occlusion grid deciding which cell owns each sub-square (cell origins
-  0x75DDF, sub-square offsets 0x75DFF).
+- **Floor ornaments** (0x50081): from the cell summary's floor slot (the
+  set's attribute 0x6B, or an actuator or text thing on the square);
+  category 10.
 
 ### Depth scale and shading
 
@@ -319,8 +505,20 @@ flip (0x1253A, keyed 0x12570); with colour map 0x127C0/0x127F1 and
 8-bit, nibble for 4-bit) before the colour map is applied; matching pixels
 are skipped. No blending exists.
 
-Scaling (0x1424B / 0x1410D) is nearest-neighbour; the exact sampling
-rule is still to be transcribed.
+### Scaling (0x1424B for 8-bit, 0x1410D for 4-bit)
+
+Nearest-neighbour. The output size is `(v·s + s/2) >> 6` for scale s in
+64ths. With source width w, height h and output width W, height H:
+
+- Rows: `T = (h << 7) / H` (integer). Output row j samples source row
+  `(T/2 + j·T) >> 7`. A row identical to the previous one is copied
+  instead of resampled (same result).
+- Columns, 8-bit: `S = (w << 7) / W`; output column i samples source
+  column `(S + 2·S·i) >> 8` (8.8 fixed point, starting half a step in).
+- Columns, 4-bit: output column i samples `(S/2 + i·S) >> 7` (the
+  4-bit routine 0x13F1D steps by S in 1/128 units). This differs from
+  the 8-bit rule only by rounding when S is odd.
+- 4-bit rows are padded to an even number of pixels.
 
 ## 6. Palette, light and colour remapping
 
@@ -353,7 +551,7 @@ rule is still to be transcribed.
   column is always background. Characters are blitted as 4-bit glyphs with
   a two-entry colour map (foreground, background); flag 0x4000 on the colour
   makes the background transparent. Advance 6 px, line height 6 (0x7172E,
-  0x71736). **Note:** docs/02 describes (1,0,7,0) as a palette; it is this font.
+  0x71736). (docs/02 originally called this entry a palette; corrected.)
 - **Wall writing font**: image (8, set, 3), a strip of 8×8 glyphs
   (metrics 0x7173A/0x7173C). Glyph index: A-Z → 0-25, '.' → 27, anything
   else → 26 (blank). Lines are centred on the wall face; the text colour map
@@ -361,14 +559,11 @@ rule is still to be transcribed.
 
 ## 8. Open questions
 
-- Exact nearest-neighbour sampling of the scalers (0x1424B, 0x1410D).
-- Door, door ornament, stairs, pit and teleporter drawing (0x539CB,
-  0x53BFB, 0x53B1B, 0x508FF, 0x509E6) and items (0x518B0) in detail.
-- Missiles and spell effects (0x522A7, ids 130-141).
-- Creature animation sequences (types 7/8, sub 251-254) and colour variants.
-- The 'p'/'q' ceiling/floor colour attributes (0x19AC4).
-- The party-square/foreground pass (0x54117) and how the viewport bitmap is
-  copied to the screen (rect 3 placement; likely layout id 7 or a fixed
-  (0, 40) origin — to confirm).
+- The colour-variant remap builder (0x14CF2) in detail.
+- The exact flip rules for missiles (which direction maps to which bit).
+- The 'p'/'q' ceiling/floor colour attributes (0x19AC4): they are read
+  when the three nearest cells on the left or right are open, but their
+  effect on the fill colour is not traced.
+- The split-door half-panel flag 0x10 in the draw request.
 - The driver side of `int 0xFC` (IBMIOP.EXE), only needed for exactness of
   cursor handling.

@@ -20,11 +20,11 @@ CATEGORY_NAMES = {
     0: 'archive info', 1: 'interface / global', 3: 'wall writing',
     4: 'music', 5: 'title screen', 6: 'full screen (other)',
     7: 'interface strings and panels', 8: 'map graphics set (walls/floor/ceiling)',
-    9: 'wall ornaments', 10: 'floor ornaments', 11: 'door ornaments?',
-    12: 'unknown (sound-linked)', 13: 'doors', 14: 'missiles / spell effects',
+    9: 'wall ornaments', 10: 'floor ornaments', 11: 'door ornaments',
+    12: 'unknown (sound-linked)', 13: 'clouds / spell effects', 14: 'doors',
     15: 'creatures', 16: 'weapons', 17: 'clothing', 18: 'scrolls',
     19: 'potions', 20: 'containers', 21: 'misc items (21/254 = fallback image)',
-    22: 'champions', 23: 'map environment set', 24: 'unknown (24)',
+    22: 'champions', 23: 'map environment set', 24: 'teleporter field',
     26: 'dialogs and system messages',
 }
 TYPE_NAMES = {

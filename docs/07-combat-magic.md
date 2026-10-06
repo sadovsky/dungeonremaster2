@@ -319,5 +319,5 @@ and the mana drops to 0.
   (probably magic-footprint and see-through-walls style effects).
 - Names for each spell type, matched to their in-game effects.
 - The term at 0x7F282 in the hit roll.
-- Full missile flight per tick (step energy, collisions) and the
-  explosion life cycle in the timeline. That belongs with 05-timeline.
+- The explosion life cycle in the timeline. Missile flight per tick is in
+  05-timeline ("Missile flight").

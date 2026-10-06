@@ -137,7 +137,7 @@ how their results are used, and from the entries themselves. Run
 | 3 | Music | HMI HMP files (start with `HMIMIDIP`). Category 4 holds all 29; probably indexed through `SONGLIST.DAT`. |
 | 4 | Offset-indexed table | A single entry (1,0,4,0) of about 17 KB: a count followed by a table of u16 offsets. Not decoded yet. |
 | 5 | Text | Obfuscated, NUL-terminated, with escape codes. See `13-text.md`. F carries the language. |
-| 7 | Raw data blob | Read as untyped bytes. Examples: (1,0,7,0) is a 768-byte VGA palette (6-bit components); (1,0,7,1) and (8,5,7,n) are 256-byte colour remap tables; creature sub-indices 252, 253 and 254 are per-creature animation or offset tables; (5,0,7,4) is the title screen's hotspot data. |
+| 7 | Raw data blob | Read as untyped bytes. Examples: (1,0,7,0) is the 768-byte interface font (see docs/04 section 7); (1,0,7,1) and (8,5,7,n) are 256-byte colour remap tables; creature sub-indices 252, 253 and 254 are per-creature animation or offset tables; (5,0,7,4) is the title screen's hotspot data. |
 | 8 | u16 table | Small arrays of little-endian words. Creatures: sub-index 251 holds frame or sequence lists. Champions: sub-index 0 is a 52-byte record of starting stats (26 words). Map sets: images 0 and 1 also have a key under type 8. |
 | 9 | Data | (1,0,9,254): 1,024 bytes, apparently 256 × 4-byte entries (a colour lookup?). |
 | 11 | Number | Not an entry reference. The value is a raw 16-bit attribute, keyed by (category, object index, 11, attribute number). Missing keys read as 0. This is how the game stores per-object properties for creatures, items, ornaments, doors, missiles and so on. |
@@ -161,10 +161,10 @@ Types 6 and 10 aren't used in this archive.
 | 8 | Map graphics set | Indexed by the current map's graphics-set number (global at 0x75BFE). Walls, floor and ceiling pieces, colour tables, and many type 11/12 attributes (sub-index 0x64 and up) that describe the set. |
 | 9 | Wall ornaments | About 108 ornaments (alcoves, switches, fountains, etc.). Attribute numbers 0x0A, 0x0B, 0x0C, 0x0E, 0x13 and 0x63 come up in the actuator and drawing code. Some have digit-string texts (sub-index 13) that look like animation frame sequences. |
 | 10 | Floor ornaments | Same pattern as 9 (attributes 4, 5, 7, 0x11, 0x60, 0x61, 0x63). |
-| 11 | Door ornaments (tentative) | 12 images of different sizes. Attributes 4 and 8 are read together with category 14 in 0x5346E. |
+| 11 | Door ornaments | 12 images. Composed onto door panels by 0x5346E: attribute 4 is the colour key, attribute 8 selects the placement (docs/04, Doors). |
 | 12 | Unknown | Two 8×9 images; attribute 8 (× 5) feeds a sound or effect call at 0x530D1. |
-| 13 | Doors | 13 door types; attributes 0, 1, 0x41 and 0x42; door sounds. |
-| 14 | Missiles and spell effects | Images shrinking with distance (96×88, 64×61, 44×38 ...). Attributes 0x0D to 0x11 are read by small wrappers at 0x1FE50 to 0x1FEB5. |
+| 13 | Clouds, explosions and spell effects | Thing type 15 (cloud) maps here (table 0x72294), and missiles carrying a spell use it: sub 8-12 are the in-flight views, attribute 1 masks the flip bits (0x518B0). |
+| 14 | Doors | Thing type 0 (door) maps here (table 0x72294). Index = door type; sub 0 is the near panel and subs 0-2 the panels pre-drawn for depths 1-3, which is why the images shrink with distance; sub 0x41 is the damage overlay. Attributes: 4 colour key, 10 damage overlay placement, 0x12 its colour key, 0x40 no lintel. Attributes 0x0D to 0x11 are read by small wrappers at 0x1FE50 to 0x1FEB5. |
 | 15 | Creatures | 76 creature types (index 0 to 87). Images (frames by sub-index), sounds, animation tables (type 7, sub-indices 252 to 254), sequence lists (type 8, sub-index 251) and about 1,900 attributes. The name text has F = 0xF0 (editor labels, never shown). |
 | 16 | Weapons | Name (text sub-index 24), action strings (sub-indices 8 to 10), icons and in-hand images, attributes. |
 | 17 | Clothing and armour | Same layout as 16. |
@@ -174,7 +174,7 @@ Types 6 and 10 aren't used in this archive.
 | 21 | Miscellaneous items | Same layout. Key (21, 0xFE, 1, 0xFE) is the generic fallback image used when any image lookup fails (wrappers at 0x3EC2B, 0x3EE1D, 0x3F422, 0x3F49D). |
 | 22 | Champions | 16 champions: portraits (sub-indices 0 and 1), names (text sub-index 24), bare-hand action strings (sub-indices 8 to 11), voice sounds, starting stats (type 8). |
 | 23 | Map environment set | Indexed by the same map graphics-set number as category 8. Images (e.g. 224×29 strips), an ambient sound, and short command strings (see `13-text.md`) at sub-indices 0 to 5 and 99 to 108. Probably sky and outdoor or weather effects. |
-| 24 | Unknown | 8 images (36×49, 83×49, 8×52 ...) and a sound. |
+| 24 | Teleporter field | Thing type 1 (teleporter) maps here. Sub 20 is the noise texture, subs 0-5 the shape masks by depth, sound 137 the teleport sound (docs/04, Teleporter field). |
 | 26 | Dialogs and system messages | Disk, save and load messages, menu captions, and 224×136 dialog backgrounds. Text index selects the dialog; sub-index selects the line. |
 
 Categories 2 and 25 are empty.
@@ -329,16 +329,15 @@ The blitter and its colour-key argument still need to be traced (see `04-renderi
   6-bit VGA DAC range when it uploads them. The upload code wasn't found by
   searching for port 0x3C8/0x3C9 constants, so it may go through the video
   driver layer.
-- **(1,0,7,0), entry 203, 768 bytes.** Values are 0-31 only, so this is
-  *not* the display palette, even though its size matches one. It may be a
-  5-bit RGB table used for colour matching or fades. Unresolved.
+- **(1,0,7,0), entry 203, 768 bytes.** Not a palette: it is the 5×6
+  interface font, 6 rows × 128 ASCII characters, one byte per glyph row
+  (values only use bits 0-4, which is why they never exceed 31). See
+  docs/04 section 7.
 - **(1,0,7,1), entry 204, 256 bytes**, and **(8,set,7,n), 256 bytes each.**
-  Palette-index remap tables. The map-set ones come in sub-indices 1-4
-  and 10-13, which looks like light levels (two series of four). They are
-  probably applied when drawing to darken the view; to be confirmed in the
-  renderer.
-- **(1,0,7,2), entry 202, 1,041 bytes.** Starts with ramps
-  (0, 4, 8 ... 0x3F) in 6-bit DAC units. Probably fade or brightness tables.
+  Palette-index remap tables. The map-set ones are depth fog: subs 1-4
+  for depths 1-4 and subs 10-13 for the mid-step frames (docs/04 section 6).
+- **(1,0,7,2), entry 202, 1,041 bytes.** The colour ramp table used for
+  darkening: 16 ramps of 16 shades plus a reverse map (docs/04 section 6).
 - **4-bit colour maps.** Each 4-bit image carries its own 16-byte nibble →
   palette map (see above). Creatures also have 16- and 48-byte type-7
   entries (category 15), likely alternative colour maps for recoloured

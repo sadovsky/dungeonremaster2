@@ -217,22 +217,22 @@ Opcodes (dispatch at 0x27CD2, index = letter − 0x3F):
 | `B` | 0x28017 | Approach or interact with the target square (0x2EA68); with argument 4, first check possessions through 0x2FF1E |
 | `C` | inline | Clear the action (0) |
 | `E` | 0x28AAD | Pick up items from the target or the square ahead (mask info+0x0C & 0x77) |
-| `F` | 0x28344 | TODO |
+| `F` | 0x28344 | Does the creature in the square ahead carry an item of kind arg 3 (in the quadrant given by arg 4 relative to its facing, or any when 0xFF)? Done if yes, failed if not (0x2FF1E). |
 | `G` | 0x28138 | Drop or throw a carried item (needs possessions and info+0x0C bit 3) |
-| `H` | 0x28DF0 | TODO |
-| `I` | 0x28574 | TODO |
-| `J` | 0x28711 | TODO |
-| `K` | 0x28E99 | TODO |
+| `H` | 0x28DF0 | Guard check two squares straight ahead: done when a creature without type flag 0x01 stands there or the party does; otherwise queue action 0x1D (wait) and stay. |
+| `I` | 0x28574 | Merchant waiting for a customer (see Merchants): done when the creature or party ahead holds coins (kind 0x10) or gems (kind 7); otherwise count down +0x0E and idle (actions 0x1D, 0x1E, 0x1F). |
+| `J` | 0x28711 | Merchant haggling over goods placed on the counter (see Merchants). |
+| `K` | 0x28E99 | Merchant settling a sale: compares the money on one half of the counter with the price of the goods on the other (see Merchants). |
 | `L` | 0x280AC | Set the target to the square ahead and queue action 0x15, or 0x16 when arg = 1 |
-| `M` | 0x281F3 | TODO |
-| `N` | 0x2905A | TODO |
+| `M` | 0x281F3 | Target the square ahead (target facing = opposite of own) with item kind arg 3 (default 0x3F); if the creature there holds that kind, queue action 0x18 (take it from them) and stay; done if it holds none. |
+| `N` | 0x2905A | Possession transfer: first discard kind arg 4 (or the global default at 0x7F7DA; −2 skips this), then if a possession of kind arg 3 (default 0x7F7D8) exists, put it on the creature's own square through 0x2EA68 mode 0x81. Failed when nothing matches. |
 | `O` | default (0x29C0F) | Queue the action given by arg 3 (or the global default) |
-| `P` | 0x2911C | TODO |
+| `P` | 0x2911C | Creature flag word (active record +0x0A): arg 4 low nibble 0 clears bit arg 3, 1 sets it, other values test it; modes 3 and 4 copy bits from the global switch list at 0x7F7DE (entries of type 0x13 or 0x14). A change queues action 0x33 unless arg 4 has bit 0x10. Done when the bit already had the wanted state. |
 | `Q` | 0x2923E | Move one step toward the target square. Returns "done" on arrival. Info+0x16 bits 12-15 give a chance of breaking off (quartered while the creature is afraid). |
 | `R` | 0x27E28 | Path toward the planner's target (0x2C404 with move flags 2 or 3 for goal types 8 and 9) |
 | `S` | 0x28017 | Same handler as `B`, after clearing the arguments |
 | `T` | 0x293A4 | Runs the planner again (0x3188A) |
-| `U` | 0x29448 | TODO |
+| `U` | 0x29448 | When on the party's map: work out the direction toward the party (0x1863D) and, if the next square that way isn't a wall, turn or step that way (0x2C005). |
 | `V` | 0x27EEB | Queue action 0x27 or 0x28 with a random facing (look around) |
 | `W` | 0x294CA | Movement test variant |
 | `X` | 0x29544 | Act on the target square (0x2F2CF) |
@@ -243,7 +243,7 @@ Opcodes (dispatch at 0x27CD2, index = letter − 0x3F):
 | `]` | 0x29BE7 | Queue action 0x3D + arg with mode and argument from globals |
 | `^` | default | Same as `O` |
 | `` ` `` | 0x29C2D | Act on the target with 0x2CC42 |
-| `a` | 0x29C88 | TODO |
+| `a` | 0x29C88 | Chance test: done with probability arg 3 percent (`random(100) < arg3`), else failed. |
 | `b` | 0x29CAA | Check possessions for either of two item kinds (args 3 and 4) |
 
 ### Movement legality (0x2D792)
@@ -335,16 +335,108 @@ What's established so far:
   attribute numbers 0 to 4 (present on 90 to 190 items each). One of
   these is probably the trade value.
 
-**TODO:** the price formula and the shop interface are not traced. Leads:
-the `Y` handler (0x296D5, which calls 0x286C8 and 0x29598), the
-item-attribute readers, and the merchant behaviour programs. Minion
-summoning lives in the spell code (docs/07).
+### Merchants (traced)
+
+A merchant stands facing a counter square. The two halves of that square
+(item quadrants, relative to the merchant's facing) act as the "goods"
+side and the "money" side. Money means items of kind 0x10 (coins) or 7
+(gems), tested with 0x2F636. Everything else on the counter is goods.
+
+- **Value of a pile** (0x286C8 → 0x1C8E5): walks the items in one
+  quadrant and adds up either their value or their count, filtered by
+  kind.
+- **Pricing** (0x15958): the goods' total value is rounded down to an
+  amount that can be paid with at most 18 coins, choosing greedily from
+  the coin denominations table (values at 0x7F3A8, count at 0x7F3FA,
+  largest first).
+
+**`I`, waiting.** If goods (anything that isn't money) lie in the near
+quadrant, the merchant counts down +0x0E; at 6 or below it resets the
+counter to 9 + rand4() and plays action 0x1F (presumably pushing the item
+back). Otherwise it is done as soon as the creature or party ahead holds
+coins or gems; if not, it counts down +0x0E and plays 0x1D (idle), or 0x1E
+when the counter runs out (counter reset to 5).
+
+**`J`, haggling.** With no stray goods in the near quadrant:
+
+1. offer = value of the coins plus the gems on the money side; with no
+   money, the remembered offer (+0x10) is cleared and the step ends.
+2. price = the pricing rule above applied to the goods side. If price > 16,
+   a random discount is taken off: `price −= random(16) · price / 100`.
+3. ratio = offer · 100 / price. The previous offer is kept in +0x10.
+4. If offer ≥ price: accept. +0x0E becomes min(offer, undiscounted price),
+   action 0x1C, done.
+5. If the offer hasn't changed, count down +0x0E. When it runs out and
+   ratio > 76, the merchant may give in: with
+   `random(max(1, 100 − ratio)) < 5`, combined with a rand4() roll, it
+   plays 0x20, otherwise 0x1B. While counting, it plays 0x1D.
+6. If the offer went up: with rand4() ≠ 0 and ratio ≤ 76 + (rnd & 7) it
+   keeps waiting (0x1D); otherwise it resets +0x0C and makes the same
+   0x20 / 0x1B decision.
+
+Action meanings (tentative, from how they are used): 0x1B refuse, 0x1C
+accept or sell, 0x1D wait, 0x1E prompt, 0x1F reject the item offered,
+0x20 accept grudgingly.
+
+**`K`, settling.** If goods sit in the quadrant that should hold money,
+the merchant plays 0x1F and the step fails. Otherwise:
+
+1. price = the goods value, rounded as above, plus any gems on the goods
+   side.
+2. paid = the coins plus gems on the money side.
+3. If paid < (gems on the goods side + the amount still owed in +0x0C),
+   it refuses (0x1B).
+4. Otherwise, if paid differs from the last amount (+0x0E), it plays
+   0x1C and remembers it in +0x10. +0x0C becomes max(0, paid − price),
+   the change still due. Done.
+
+**Leads not yet traced:** `Y` (0x296D5) moves the goods between the
+counter and the merchant's possessions (0x29598).
+
+Minion summoning lives in the spell code (docs/07).
+
+### The planner (0x3188A, structure)
+
+The planner searches outward from a start square for the first square that
+satisfies any goal in a goal list. It is called by think (0x26008), by
+opcode `T` and by two other AI helpers.
+
+- **Inputs:**
+  - the start x and y;
+  - the goal kind of the calling step (byte 5 bits 0-4);
+  - a list of goal records, each with a distance limit (byte 0), target
+    fields, the goal kind (byte 7), arguments (+8, +10) and pass flags
+    (+0x10: bit 0 is tested in the first pass, bit 1 in the second).
+- **Search:** breadth-first, distance-limited. It uses scratch grids
+  allocated per map (128 bytes per map, plus a 1 KB queue) and checks each
+  step with the movement test 0x2D792, so it follows the same terrain rules
+  as real movement. It crosses stairs and pits into other maps
+  (0x2BEAF, 0x2BBAD), and it skips goals whose distance limit has
+  been passed.
+- **Results:** a match writes the target (map, x, y) and the distance
+  back into the goal record (bytes 2-6) and returns the goal's index.
+- **Goal kinds matched in the final switch:**
+
+| Kind | Satisfied when |
+|------|----------------|
+| 2 | The square is the party's. Argument mode 1 also requires the party to face one of the directions in a 4-bit mask; mode 3 requires the next square in the goal direction to be an open, real pit. |
+| 3 | The square is the party's. |
+| 8, 9 | A thing search (0x2C0A2) finds a matching item or object at the square, filtered by the item mask at 0x7F574. Kind 9 is a variant flag. |
+| 0x0F, 0x11 | The creature can interact with the square (0x2EA68 mode 0), such as an actuator or an item on the floor. |
+| 0x12 | A creature of type +8 stands there. Mode 1 matches any such creature. Otherwise the square ahead of it must hold the party or a creature without flag 0x01. |
+| 0x13-0x1A | Other branches exist but are not traced. |
+
+- **Scoring:** there is no separate score. Since the search is
+  breadth-first, the first match is the nearest one. Ties are broken by
+  the order of the goal list and the order squares are visited. The
+  planner also draws random numbers (0x1C6A1, 0x1C6B7), probably to vary
+  that order; not confirmed. The flags at 0x7F572 (0x100 / 0x110 /
+  0x108) change which passes run.
 
 ## Open questions
 
-- The meanings of the many opcodes marked TODO, and of the goal kinds in
-  byte 5 (0 to 0x1B) inside the planner's switch at 0x325BE.
-- How the planner (0x3188A) scores candidates.
+- Planner goal kinds 0x13-0x1A and the exact visiting order of the search.
+- The `Y` trade handler (0x296D5) in detail.
 - The full list of action codes. Known ones: 6 and 7 (turn), 0x11, 0x13,
   0x15 and 0x16, 0x1D, 0x23 to 0x25, 0x27 and 0x28, 0x32 to 0x34 (wait),
   0x3B and 0x3C (transform), 0x3D and up, and 0x55.

@@ -86,7 +86,7 @@ The loop never returns except to quit. One iteration is one game tick:
 Input is also polled before every timeline event (0x210DC is called inside
 0x59A5C), so long event bursts don't drop clicks.
 
-### Tick timing (code, rate open)
+### Tick timing (code)
 
 The tick is driven by an interrupt handler at 0x10CC2, installed through
 the `IBMIOP` launcher's service interface (`int 0xFC`, services 0x2A, 0x2D,
@@ -101,12 +101,35 @@ The main loop sets the threshold to 8 and resets the accumulator at the
 start of each tick. One code path sets the threshold to 1 (fast mode, used
 while some modal state is active; tentative).
 
-The interrupt rate is programmed inside `IBMIOP.EXE`, which is packed, so
-the real-time tick length is **not yet known**. It should be measured
-under DOSBox: count ticks over a known period, or watch 0x7F22C. Until
-then the remake should make the tick period configurable. The original
-Dungeon Master ran at roughly 6 ticks per second; treat that only as a
-starting guess.
+### Timer rate (from IBMIOP.EXE)
+
+`IBMIOP.EXE` is packed with LZEXE 0.91; `tools/unlzexe.py` unpacks its
+load image to `re/ibmiop.bin` for disassembly. The launcher (a Borland
+C++ program) hooks int 8 and reprograms PIT channel 0 (mode 3, port
+0x43 value 0x36) with **divisor 0x136B = 4971**:
+
+- The interrupt rate is 1,193,182 / 4971 ≈ **240.0 Hz**.
+- On every 4th interrupt (**60 Hz**) it calls the far callback that the
+  game registers (stored at [0xA9D0] by the setter at 0x2877). The call
+  is skipped while a busy flag is set.
+- It keeps the BIOS clock right by subtracting the divisor from a 16-bit
+  accumulator and chaining to the original int 8 handler on each borrow
+  (about 18.2 Hz).
+- On exit it restores divisor 0 (the standard 18.2 Hz) and the old
+  vector.
+
+The game's handler (0x10CC2) therefore runs at 60 Hz. Each run adds the
+increment at 0x7EFAC to the sub-tick accumulator; a tick fires when the
+accumulator reaches the threshold of 8. The increment is the word the
+launcher's service 0x0F writes into the shared buffer at 0x8048C after the
+handler is installed (0x5A8B1). That service wasn't found in the
+unpacked launcher, so the increment is still unconfirmed.
+
+**With an increment of 1, the tick is 8/60 s ≈ 133 ms (7.5 ticks per
+second).** That fits the first game's roughly 6 per second. The remake
+should use 7.5 Hz as the default and keep it configurable until the
+increment is confirmed (in DOSBox, read 0x7EFAC or count 0x7F22C over a
+minute). The fast-mode threshold of 1 would then be 60 ticks per second.
 
 ## Selecting a map (0x1C724, code)
 
@@ -485,14 +508,89 @@ square marks the link as disabled. The record gives the destination:
 0x1D113 also checks that the destination is itself a valid link, which
 keeps two-way seams consistent.
 
+## Falling through pits (party, 0x4A34A)
+
+When the party's move ends on an open pit, the move routine loops:
+
+1. **Fall one layer:** go to the map one layer down at the same world
+   position (0x1CC7E with +1) and count one more level fallen.
+2. **Stop condition:** the loop stops on a non-pit square. The map set's
+   attribute (8, set, 11, 0x6A) also controls landing; it is read but its
+   exact effect isn't traced.
+3. **Animation:** while falling (and not climbing down on purpose), each
+   intermediate level redraws the view (0x54B3F, then 0x138D9), so the
+   player sees the fall.
+
+On landing:
+
+- **Normal fall:** every living champion takes `(min(max health / 4,
+  17) + rand4()) × levels fallen` damage through 0x4722A, to the legs and
+  feet (wound mask 0x30), with attack type 2, and plays the champion
+  sound (22, champion, 0x87).
+- **Deliberate descent** (flag 0x8002A, set by the action code 0x414A5
+  when the party climbs down into a pit, for example with a rope): no
+  damage. Instead each living champion loses `current load · 25 /
+  maximum load + 1` stamina (0x47707).
+
+## Missile flight (event 0x1D / 0x1E, 0x17A7B)
+
+Every flying missile owns one timeline event, rescheduled one tick ahead
+each time it runs, so missiles move once per tick. The event's +6 holds
+the missile thing; +8 packs x (bits 0-4), y (5-9), direction (10-11) and
+the **step energy** (12-15). The missile record holds the kinetic energy
+(byte +4), the damage energy (byte +5) and the event index (word +6).
+
+Each tick:
+
+1. **Launch tick:** type 0x1D only appears on the first tick. It is
+   changed to 0x1E and the hit test on the launch square is skipped, so a
+   missile never hits its own thrower.
+2. **Hit test on the current square:**
+   - If a creature is there, its type has flag 0x02 (spell-reflecting) and
+     the missile is a spell (thing value ≥ 0xFF80): the missile is
+     deflected. The new direction comes from a table at 0x716A4 indexed
+     by direction, cell·4 and the creature's facing parity·16 (value 4
+     means no change).
+   - Otherwise, if the party stands there, try a party hit (0x1726B mode
+     −3); then try creatures and objects (mode −1). Any hit ends the
+     step; the impact code removes or explodes the missile.
+3. **Energy:**
+   - If kinetic energy ≤ step energy, the missile stops: it is removed
+     from the flight list and lands or bursts in place (0x16C0C).
+   - Otherwise kinetic energy −= step energy, and damage energy −= step
+     energy (not below 0).
+4. **Advance:** a square has four cells. A missile in one of the two
+   cells on its leading side (cell = direction, or direction + 1) moves to
+   the next square; otherwise it moves to the leading cell of the same
+   square.
+   - **Into a blocked square:** if the next square is a wall, a closed
+     trick wall, or stairs while the current square is also stairs, the
+     missile impacts on the current square (0x1726B with the square type).
+   - **Bounce:** a cloud of kind 0x0E in the next square reverses the
+     direction instead and the missile stays put.
+   - **New cell:** `cell − 1` if direction and cell have the same parity,
+     else `cell + 1`, modulo 4.
+5. **Moving:**
+   - **Within the same square:** a door square triggers a door hit
+     (0x1726B mode 4); then the thing is relinked at its new cell.
+   - **Into the next square:** the general mover (0x4B108) handles
+     teleporters, pits and map changes; the final position comes back in
+     0x80020-0x80026.
+   - **Waking creatures:** a creature on the destination square, and one
+     on the square beyond if the destination isn't a wall, closed door or
+     closed trick wall, is notified (0x24E62 with code 0x2006). That is how
+     creatures notice incoming missiles.
+6. **Reschedule:** the event goes back on the timeline for the next tick
+   and its new index is stored in the missile record.
+
 ## Open questions
 
-- The real-time tick period: measure in DOSBox.
+- The tick increment returned by launcher service 0x0F (expected 1, giving 7.5 ticks per second).
 - New-game RNG seed: confirm it stays 0, or comes from a header.
 - The rest of the teleporter record: rotation and scope (DM1 layout
   assumed).
-- Pit falling: fall damage, and how the destination below is chosen for
-  things versus the party (0x58C6F, 0x4A34A).
+- Pit falling for things and creatures (0x58C6F), and the landing
+  attribute (8, set, 11, 0x6A).
 - Floor and wall sensor trigger conditions (0x4CDCC, 0x4C134).
 - Event types 0x0E, 0x46, 0x55, 0x5A and actuator types 0x2C, 0x32, 0x42,
   0x43, 0x44, 0x46.

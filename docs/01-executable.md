@@ -49,3 +49,12 @@ decompilation to `re/skull_decomp.c` (gitignored).
 | 0x62284 | Runtime entry point |
 | 0x70019 | Literal path string for `SONGLIST.DAT` (referenced from 0x10396) |
 | 0x73000 | Table of data-file name pointers (dungeon, graphics, save) |
+
+## IBMIOP.EXE (launcher)
+
+A 16-bit Borland C++ program packed with LZEXE 0.91. Unpack it with
+`python3 tools/unlzexe.py original/dumast2/IBMIOP.EXE re/ibmiop.bin`.
+It provides the display, input and timer services the game reaches
+through `int 0xFC`, and sets the timer to 240 Hz (see 05-timeline, "Timer
+rate").
+

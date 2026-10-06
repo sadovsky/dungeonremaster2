@@ -74,7 +74,7 @@ Helpers used everywhere: 0x1C67E = min (signed 16-bit), 0x1C687 = max,
 | 0xAF | 20 | Signed temporary level modifiers per skill (from items/spells) |
 | 0xC3 | 60 | Inventory: 30 thing references (0xFFFF empty); slot 0 ready hand, slot 1 action hand |
 | 0x101 | 1 | Champion (portrait) number in GRAPHICS.DAT category 22 |
-| 0x102 | 1 | Which kind of personal shield 0x103 holds (0 fire, 1 spell) |
+| 0x102 | 1 | What 0x103 holds: 0 fire shield, 1 spell shield, 3-6 a temporary boost of stat (value − 2), i.e. strength, dexterity, wisdom, vitality |
 | 0x103 | 2 | Personal shield strength |
 
 Unlisted bytes are touched by only one or two functions and still need
@@ -226,7 +226,21 @@ is capped at its maximum. Losses over 9 flag the stats bar for redraw.
   11; for skill 11 only if attribute 5 bit 15 marks the item as a
   launcher). Then a stamina adjustment (0x4667A), halved if that hand is
   wounded, and the result is clamp(0, value / 2, 100).
-- **Maximum load** (0x46824) and **current load** (0x47BC5) drive the load
+- **Maximum load** (0x46824), in tenths of a kg:
+  1. s = effective strength (0x466AB, below).
+  2. L = 8·s + 100.
+  3. If stamina is below half its maximum: L = L/2 + stamina·(L/2) / (max
+     stamina / 2) (0x4667A).
+  4. If any wound bit is set: subtract L/4 when the legs are wounded (bit
+     4), otherwise L/8.
+  5. Round up to a multiple of 10: `(L + 9) − (L + 9) % 10`.
+- **Effective stat** (0x466AB): the current (or maximum) byte of the stat
+  pair. For the current value, if a temporary boost is active (+0x103
+  non-zero and +0x102 between 3 and 6, boosting stat +0x102 − 2, i.e.
+  strength to wisdom), add `random((min(+0x103, 100) · value >> 7) + 1) +
+  4`. Then add the signed per-stat modifier at +0x58 + stat and clamp the
+  result to 10-220 (0x1C690).
+- **Maximum load** (above) and **current load** (0x47BC5) drive the load
   display: load above maximum shows in one colour, above 5/8 of maximum
   in another.
 - **Stat-adjusted value** (0x46745, `(champion, stat, value)`): scales a
@@ -272,14 +286,30 @@ When health reaches 0:
 - If no champion is left alive the game ends (0x7F24C = 1, 0x209E0),
   otherwise leadership passes to the first living champion.
 
-**Resurrection** works through those bones: the rebirth explosion thing
-0xFFE4 (handled in 0x16746) appears when bones are placed where the
-dungeon allows rebirth. The full altar flow (probably in 0x4C134, which
-also resets water to 2048) is TODO.
+**Resurrection** (traced):
+
+1. **Trigger** (floor sensor code, 0x4CDCC). The bones item (category 21,
+   index 0; its charge value is the champion's index) is dropped on a
+   square whose thing list holds an altar marker (tested by 0x1FDF0). If
+   the champion index is valid (below the party size at 0x7F276), event
+   0x0D is scheduled for the next tick. The event carries the champion
+   index (+5), x and y (+6, +7), cell (+8) and stage (+9, starting at 2).
+2. **Event 0x0D** (0x59050) runs in three stages, counting +9 down:
+   - **Stage 2:** spawn the rebirth effect 0xFFE4 at the altar cell
+     (0x16746) and reschedule 5 ticks later.
+   - **Stage 1:** find the matching bones in that cell, take them off the
+     square and delete them; reschedule 1 tick later.
+   - **Stage 0:** revive the champion (0x49CBB).
+3. **Revive** (0x49CBB):
+   - reset the record through 0x46E4D and clear +0xFF;
+   - empty all 30 inventory slots (the belongings were dropped at death);
+   - max health becomes `max(25, max − max/64 − 1)`, a permanent loss of
+     about 1.6% plus 1, and current health becomes half the new maximum;
+   - set flag 0x40 in +0x33, clear any boost or shield (+0x102, +0x103);
+   - refresh the portraits and panels.
 
 ## Open questions
 
 - Remaining record bytes (0x29-0x2C, 0xCF, 0xD9, 0xDB, 0xFF, 0x105).
-- Curves inside 0x46745 (stat adjustment) and 0x4667A (stamina
-  adjustment), and the exact maximum-load formula.
-- The resurrection flow end to end.
+- The curve inside 0x46745 (stat adjustment).
+- What 0x46E4D resets on revival, and the altar marker test 0x1FDF0.
