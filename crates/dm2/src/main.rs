@@ -576,3 +576,46 @@ async fn play(args: Vec<String>) {
         next_frame().await;
     }
 }
+
+#[cfg(test)]
+mod screen_tests {
+    use super::*;
+
+    /// FNV-1a over the indexed pixels: a stable fingerprint of a frame
+    /// (no image data is kept in the source).
+    fn fnv(px: &[u8]) -> u64 {
+        px.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
+    }
+
+    /// Hash of the composed game screen after the given interface
+    /// commands on a new game, or None without the user's game data.
+    fn frame(cmds: &[u16]) -> Option<u64> {
+        let dir = assets::default_data_dir();
+        if !dir.join("GRAPHICS.DAT").exists() || !dir.join("../SKULL.EXE").exists() {
+            return None;
+        }
+        let mut d = load(&dir);
+        d.game_data.as_ref()?;
+        let mut g = new_game(&d);
+        for &c in cmds {
+            if let Some(gc) = input::game_command(c) {
+                g.push_command(gc);
+            }
+            g.advance();
+        }
+        let f = game_frame(&mut d, &g, &ui_view(&g, false));
+        Some(fnv(&f.px))
+    }
+
+    /// Screens whose interface matches the original pixel for pixel in
+    /// DOSBox (docs/10, "Interface states"): change these only together
+    /// with a new comparison against the original.
+    #[test]
+    fn pinned_interface_screens() {
+        let cases: [(&str, &[u16], u64); 3] = [("start", &[], 0x23be4bf743c5bd49), ("inventory", &[7], 0xd54bfe305cc1b708), ("action menu", &[0x75], 0x7600a6e0bd246531)];
+        for (name, cmds, want) in cases {
+            let Some(got) = frame(cmds) else { return };
+            assert_eq!(got, want, "{name}: {got:#x}");
+        }
+    }
+}
