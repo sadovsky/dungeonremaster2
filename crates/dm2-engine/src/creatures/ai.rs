@@ -11,6 +11,8 @@ use crate::viewport::{DX, DY};
 use super::anim::{Anim, NO_FRAME};
 use super::data::{CreatureData, Row, WANDER_LISTS};
 use super::fight;
+use super::kinds;
+use super::ops;
 use super::merchant;
 use super::planner::{self, Goal, Searcher};
 use super::slot::{Packed, NO_ACTION};
@@ -59,11 +61,11 @@ pub fn direction_toward(x: i32, y: i32, tx: i32, ty: i32) -> u8 {
     }
 }
 
-fn party_here(g: &GameState, map: usize, x: i32, y: i32) -> bool {
+pub(super) fn party_here(g: &GameState, map: usize, x: i32, y: i32) -> bool {
     g.party.map == map && g.party.x == x && g.party.y == y && g.champions.iter().any(|c| c.is_alive())
 }
 
-fn searcher(ctx: &Ctx) -> Searcher {
+pub(super) fn searcher(ctx: &Ctx) -> Searcher {
     Searcher {
         map: ctx.map,
         x: ctx.x,
@@ -74,12 +76,12 @@ fn searcher(ctx: &Ctx) -> Searcher {
     }
 }
 
-fn set_action(g: &mut GameState, ctx: &Ctx, a: u8) {
+pub(super) fn set_action(g: &mut GameState, ctx: &Ctx, a: u8) {
     ctx.slot_mut(g).action = a;
 }
 
 /// Queue a turn toward `dir` (0x2C005). Returns false if already facing it.
-fn queue_turn(g: &mut GameState, ctx: &Ctx, dir: u8) -> bool {
+pub(super) fn queue_turn(g: &mut GameState, ctx: &Ctx, dir: u8) -> bool {
     let f = facing(g, ctx.thing);
     if dir == f {
         return false;
@@ -228,10 +230,20 @@ fn pick_behaviour(g: &mut GameState, d: &CreatureData, ctx: &Ctx, list: u32) -> 
         }
         let step = if cur >= 0 && e.program as i8 == cur { ctx.slot(g).step } else { 0 };
         let Some(row) = d.row(e.program, step) else { continue };
-        goals.push(Goal { kind: row.goal_kind(), arg: row.goal_arg, program: e.program, limit: planner::DEFAULT_LIMIT });
+        goals.push(Goal { kind: row.goal_kind(), arg: row.goal_arg, program: e.program, limit: planner::DEFAULT_LIMIT, data: e.goal_data });
     }
     let found = planner::search(g, &searcher(ctx), &goals)?;
     let gl = goals[found.goal];
+    // The chosen behaviour's goal data also supplies default item kinds
+    // (0x25C59 copies words +8 and +10 into 0x7F7D8 / 0x7F7DA).
+    let (ka, kb) = if gl.data != 0 {
+        (d.word_at(gl.data + 8).unwrap_or(0xFFFF), d.word_at(gl.data + 10).unwrap_or(0xFFFF))
+    } else {
+        (0xFFFF, 0xFFFF)
+    };
+    let s = ctx.slot_mut(g);
+    s.kind_a = ka;
+    s.kind_b = kb;
     ctx.slot_mut(g).target = Packed::new(ctx.map, found.x, found.y);
     Some(gl.program)
 }
@@ -337,15 +349,13 @@ pub fn run_program(g: &mut GameState, d: &CreatureData, ctx: &Ctx) {
     set_action(g, ctx, action::IDLE);
 }
 
-/// Item kind test used by `F`, `M`, `b`, `I`... The original consults a
-/// per-creature kind table (0x2F636 / 0x1538D); here only "any item"
-/// (0x3F) is modelled. TODO.
+/// Does creature `c` carry an item of `kind` (0x2FF1E over its
+/// possessions)? Negative kinds (−1, −2) mean "none" in programs.
 fn possession_matches(g: &GameState, c: ThingRef, kind: i8) -> bool {
-    let first = ThingRef(rec_u16(g, c, 2));
-    first.is_thing() && (kind == 0x3F || kind < 0)
+    kind >= 0 && kinds::possession_of_kind(g, c, c, kind as u8).is_some()
 }
 
-fn square_ahead(g: &GameState, ctx: &Ctx, n: i32) -> (i32, i32) {
+pub(super) fn square_ahead(g: &GameState, ctx: &Ctx, n: i32) -> (i32, i32) {
     let f = facing(g, ctx.thing) as usize;
     (ctx.x + DX[f] * n, ctx.y + DY[f] * n)
 }
@@ -443,11 +453,16 @@ fn opcode(g: &mut GameState, d: &CreatureData, ctx: &Ctx, row: &Row) -> Res {
             ctx.slot_mut(g).vars[0] = c.countdown as u16;
             merchant_result(g, ctx, o)
         }
-        b'J' | b'K' | b'Y' | b'F' | b'M' | b'N' | b'W' | b'[' | b'\\' | b']' => {
-            // Trading, possession transfer and scripted actions: see docs/08
-            // TODO list. Fail so programs fall through to their next row.
-            Res::Failed
-        }
+        b'F' => ops::op_f(g, ctx, a3, a4),
+        b'J' => ops::op_j(g, ctx),
+        b'K' => ops::op_k(g, ctx),
+        b'M' => ops::op_m(g, ctx, a3),
+        b'N' => ops::op_n(g, ctx, a3, a4),
+        b'W' => ops::op_w(g, ctx, a3),
+        b'Y' => ops::op_y(g, ctx, a3),
+        b'[' => ops::op_open_bracket(g, ctx),
+        b'\\' => ops::op_backslash(g, ctx),
+        b']' => ops::op_close_bracket(g, ctx, a3),
         b'L' => {
             let (ax, ay) = square_ahead(g, ctx, 1);
             let s = ctx.slot_mut(g);

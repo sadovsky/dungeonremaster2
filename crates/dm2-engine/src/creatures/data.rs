@@ -153,13 +153,15 @@ pub struct CreatureData {
     pub tables: ExeTables,
     obj: Vec<u8>,
     anims: std::cell::RefCell<HashMap<u8, Option<Rc<Anim>>>>,
+    /// Parsed item-kind sets by (creature type, set, classifying creatures).
+    pub kind_sets: std::cell::RefCell<HashMap<(u8, u8, bool), Option<super::kinds::KindSet>>>,
 }
 
 impl CreatureData {
     pub fn load(gdat: Rc<Gdat>, exe: &[u8]) -> Result<CreatureData, ExeError> {
         let obj = le_object(exe, 2)?;
         let tables = ExeTables::from_exe(exe)?;
-        Ok(CreatureData { gdat, tables, obj, anims: Default::default() })
+        Ok(CreatureData { gdat, tables, obj, anims: Default::default(), kind_sets: Default::default() })
     }
 
     fn bytes(&self, addr: u32, n: usize) -> Option<&[u8]> {
@@ -169,6 +171,11 @@ impl CreatureData {
     fn u16_at(&self, addr: u32) -> u16 {
         self.bytes(addr, 2).map(|b| u16::from_le_bytes([b[0], b[1]])).unwrap_or(0)
     }
+    /// Little-endian word at a data-object address.
+    pub fn word_at(&self, addr: u32) -> Option<u16> {
+        self.bytes(addr, 2).map(|b| u16::from_le_bytes([b[0], b[1]]))
+    }
+
     fn ptr_at(&self, addr: u32) -> Option<u32> {
         let b = self.bytes(addr, 4)?;
         let v = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);

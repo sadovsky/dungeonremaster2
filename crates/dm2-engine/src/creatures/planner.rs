@@ -25,6 +25,8 @@ pub struct Goal {
     pub program: u8,
     /// Distance limit in squares.
     pub limit: u8,
+    /// Address of the behaviour's goal data (0 when none).
+    pub data: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

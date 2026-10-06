@@ -75,6 +75,11 @@ pub struct Slot {
     pub mode: u8,
     /// +0x21: frame events stay armed.
     pub armed: u8,
+    /// Default item kinds of the running behaviour (goal data words +8 and
+    /// +10, globals 0x7F7D8/0x7F7DA): used by `N` and `]` when their
+    /// arguments are −1. 0xFFFF = none.
+    pub kind_a: u16,
+    pub kind_b: u16,
     /// Where the group currently stands (the original finds this from the
     /// event's square; kept here for convenience).
     pub pos: Packed,
@@ -106,6 +111,8 @@ impl Slot {
             stage: 0,
             mode: 0,
             armed: 0,
+            kind_a: 0xFFFF,
+            kind_b: 0xFFFF,
             pos: Packed::new(map, x, y),
         }
     }
