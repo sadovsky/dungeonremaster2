@@ -226,3 +226,176 @@ fn revive_formula() {
     party::revive(&mut g, 0);
     assert_eq!(g.champions[0].max_health(), 25);
 }
+
+/// Throw a potion of `pkind` at an adjacent wall; returns the game after
+/// the impact and the potion's thing reference.
+fn throw_potion_at_wall(pkind: u16) -> Option<(GameState, ThingRef)> {
+    let mut g = game()?;
+    let p = g.party;
+    let dir = (0..4u8).find(|&d| {
+        g.dungeon.square(p.map, p.x + DX[d as usize], p.y + DY[d as usize]).element() == Element::Wall
+    })?;
+    // Item numbers 384-431 are potions.
+    let potion = crate::actuators::create_item(&mut g, 384)?;
+    g.dungeon.set_record_word(potion, 1, pkind << 8 | 100);
+    missiles::launch(&mut g, potion.0, p.map, p.x, p.y, dir, dir, 120, 60, 4, true)?;
+    run(&mut g, 3);
+    Some((g, potion))
+}
+
+fn on_any_square(g: &GameState, t: ThingRef) -> bool {
+    [ThingType::Potion].iter().any(|&k| things(g, k).iter().any(|(_, _, _, r)| r.0 & 0x3FFF == t.0 & 0x3FFF))
+}
+
+#[test]
+fn thrown_poison_potion_bursts_into_a_cloud() {
+    let Some((g, potion)) = throw_potion_at_wall(3) else { return };
+    assert!(things(&g, ThingType::Missile).is_empty());
+    assert!(!on_any_square(&g, potion), "a kind-3 potion is consumed by the burst");
+    assert!(!things(&g, ThingType::Cloud).is_empty(), "the burst leaves a poison cloud");
+}
+
+#[test]
+fn thrown_ordinary_potion_drops_intact() {
+    let Some((g, potion)) = throw_potion_at_wall(0) else { return };
+    assert!(things(&g, ThingType::Missile).is_empty());
+    assert!(on_any_square(&g, potion), "other potions survive the impact");
+}
+
+/// Put `items` into a fresh container of type `ctype` and return its weight.
+fn container_weight(g: &mut GameState, ctype: u16, items: &[ThingRef]) -> u16 {
+    let c = crate::actuators::create_item(g, 480 + ctype).unwrap();
+    let mut prev = ThingRef::END;
+    for &t in items.iter().rev() {
+        g.dungeon.set_record_word(t, 0, prev.0);
+        prev = t;
+    }
+    g.dungeon.set_record_word(c, 1, prev.0);
+    let data = g.data.clone().unwrap();
+    data.item_db(&g.dungeon).weight(c)
+}
+
+#[test]
+fn coins_weigh_a_fifth_in_money_containers() {
+    let Some(mut g) = game() else { return };
+    let data = g.data.clone().unwrap();
+    // Find a money container type and an ordinary one among types 0-7.
+    let probe = |g: &mut GameState, ty: u16| {
+        let c = crate::actuators::create_item(g, 480 + ty).unwrap();
+        data.item_db(&g.dungeon).is_money_container(c)
+    };
+    let Some(money) = (0..8).find(|&t| probe(&mut g, t)) else { return };
+    let Some(plain) = (0..8).find(|&t| !probe(&mut g, t)) else { return };
+    // A heavy misc item (so 1/5 is clearly visible).
+    let Some(heavy) = (256..384u16).find(|&n| {
+        let Some(t) = crate::actuators::create_item(&mut g, n) else { return false };
+        data.item_db(&g.dungeon).weight(t) >= 20
+    }) else {
+        return;
+    };
+    let a = crate::actuators::create_item(&mut g, heavy).unwrap();
+    let b = crate::actuators::create_item(&mut g, heavy).unwrap();
+    let item_w = data.item_db(&g.dungeon).weight(a) as u32;
+    let empty_money = container_weight(&mut g, money, &[]) as u32;
+    let full_money = container_weight(&mut g, money, &[a, b]) as u32;
+    let empty_plain = container_weight(&mut g, plain, &[]) as u32;
+    let a2 = crate::actuators::create_item(&mut g, heavy).unwrap();
+    let b2 = crate::actuators::create_item(&mut g, heavy).unwrap();
+    let full_plain = container_weight(&mut g, plain, &[a2, b2]) as u32;
+    assert_eq!(full_plain - empty_plain, 2 * item_w, "ordinary containers add full weight");
+    assert_eq!(full_money - empty_money, (2 * item_w + 4) / 5, "money containers add a fifth, rounded up");
+}
+
+#[test]
+fn shooting_fires_matching_ammunition_from_the_other_hand() {
+    use crate::combat::{self, ActionContext, ActionSpec, Effect as Action};
+    let Some(mut g) = game() else { return };
+    let data = g.data.clone().unwrap();
+    // Find a launcher (attribute 5 bit 15) and ammunition sharing a class bit.
+    let class = |g: &mut GameState, n: u16| {
+        let t = crate::actuators::create_item(g, n)?;
+        Some((t, data.item_db(&g.dungeon).attr(t, crate::items::ATTR_LAUNCHER)))
+    };
+    let mut pair = None;
+    'outer: for ln in 0..256u16 {
+        let Some((lt, lc)) = class(&mut g, ln) else { continue };
+        if lc & 0x8000 == 0 {
+            continue;
+        }
+        for an in 0..256u16 {
+            let Some((at, ac)) = class(&mut g, an) else { continue };
+            if ac & 0x8000 == 0 && ac & lc & 0x7FFF != 0 {
+                pair = Some((lt, at));
+                break 'outer;
+            }
+        }
+    }
+    let Some((launcher, ammo)) = pair else { return };
+    let idx = g.leader.unwrap_or(0);
+    g.champions[idx].set_inventory(1, launcher.0 & 0x3FFF);
+    g.champions[idx].set_inventory(0, ammo.0 & 0x3FFF);
+    let mut spec = ActionSpec { name: String::new(), codes: vec![0; 32] };
+    spec.codes[data.tables.code_slot("CM").unwrap()] = 0x20;
+    let db = data.item_db(&g.dungeon);
+    let ctx = ActionContext {
+        db: &db,
+        tables: &data.tables,
+        tick: 0,
+        map_multiplier: 1,
+        light_term: 0,
+        target: None,
+        target_untouchable: false,
+    };
+    let r = combat::do_action(&mut g.champions, &mut g.party_status, idx, 1, &spec, &ctx, &mut g.rng);
+    assert!(r.success);
+    let shot = r.effects.iter().find_map(|e| match e {
+        Action::LaunchMissile { what, step, .. } => Some((*what, *step)),
+        _ => None,
+    });
+    let (what, step) = shot.expect("a missile is launched");
+    assert_eq!(what & 0x3FFF, ammo.0 & 0x3FFF, "the ammunition flies");
+    assert_eq!(step as u16, db.attr(ammo, 0x0C), "speed from the ammunition's attribute 0x0C");
+    assert_eq!(g.champions[idx].inventory(0), EMPTY, "the ammunition left the other hand");
+    // Without ammunition the shot fails.
+    let r = combat::do_action(&mut g.champions, &mut g.party_status, idx, 1, &spec, &ctx, &mut g.rng);
+    assert!(!r.success);
+}
+
+#[test]
+fn poison_cloud_damage_follows_the_formula() {
+    let Some(mut g) = game() else { return };
+    let flags = g.data.as_ref().unwrap().cloud_flags(7);
+    // Strength 0x90: min(0x90 >> 5, 4) = 4, plus one random bit.
+    let w = 7u16 | 0x90 << 8;
+    g.rng = Rng::new(1234);
+    let mut r = Rng::new(1234);
+    let d = missiles::cloud_damage(&mut g, 7, w, None);
+    if flags & 4 == 0 {
+        assert_eq!(d, 0, "kind 7 does not reach the party in this archive");
+        return;
+    }
+    if flags & 1 != 0 {
+        r.random((0x90 >> 1) + 1);
+    }
+    assert_eq!(d, (4 + r.bit()).max(1));
+    assert_eq!(g.rng.state, r.state, "random calls in the documented order");
+}
+
+#[test]
+fn explosion_rolls_once_and_hurts_the_party_first() {
+    let Some(mut g) = game() else { return };
+    let p = g.party;
+    let total = |g: &GameState| -> i32 {
+        g.champions.iter().map(|c| c.health() as i32).sum::<i32>()
+            - g.party_status.pending_damage.iter().map(|&d| d as i32).sum::<i32>()
+    };
+    let before = total(&g);
+    g.rng = Rng::new(99);
+    let mut r = Rng::new(99);
+    missiles::explode(&mut g, kind::LIGHTNING, 60, p.map, p.x, p.y, 0);
+    // One roll for the square, halved for this kind; nothing else on the
+    // party square, so the party's damage is the next random use.
+    let base = ((30 + 1) + r.random(31) + 1) >> 1;
+    assert!(base > 0);
+    assert!(total(&g) < before, "the party took the blast");
+}

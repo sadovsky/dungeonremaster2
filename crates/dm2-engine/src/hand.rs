@@ -221,18 +221,8 @@ pub fn eat_held(g: &mut GameState) -> bool {
     if t.kind() == ThingType::Potion {
         let w1 = g.dungeon.record_word(t, 1).unwrap_or(0);
         let (kind, power) = ((w1 >> 8) & 0x7F, (w1 & 0xFF) as i16);
-        let c = &mut g.champions[idx];
-        match kind {
-            11 => c.set_stamina((c.stamina() as i32 + c.max_stamina() as i32 / 4 + power as i32).min(c.max_stamina() as i32) as i16),
-            13 => c.set_mana((c.mana() as i32 + power as i32 * 2).min(900) as i16),
-            14 => c.set_health((c.health() as i32 + power as i32).min(c.max_health() as i32) as i16),
-            15 => {
-                champions::drink_water(c);
-                champions::drink_water(c);
-            }
-            // TODO(docs/09): stat potions (6-9), kind 10 and the party
-            // shield (12) are not modelled yet.
-            _ => {}
+        if !crate::potions::drink(g, idx, kind, power as u16) {
+            return false;
         }
         // The potion becomes an empty flask (misc kind 0x14; item numbers
         // 256-383 are misc items).
@@ -336,6 +326,12 @@ pub fn viewport_click(g: &mut GameState, r: ViewRegion) -> bool {
                     g.hand.held = EMPTY;
                 }
             }
+            if res.stored {
+                g.hand.held = EMPTY;
+            }
+            if let Some(t) = res.take {
+                g.hand.held = t.0 & 0x3FFF;
+            }
             res.fired
         }
         (Some(t), _) if near || (ahead && ahead_open(g)) => {
@@ -357,6 +353,21 @@ pub fn viewport_click(g: &mut GameState, r: ViewRegion) -> bool {
 
 /// Throw the held item into the view (0x22942 → 0x478A1), from the left
 /// or right half of the party square.
+/// Stamina a throw costs for an item of `weight` (0x4663A): with h = w/2,
+/// clamp(h, 1, 10), plus half of every positive h − 10k.
+pub fn throw_stamina_cost(weight: i32) -> i16 {
+    let mut h = weight >> 1;
+    let mut cost = h.clamp(1, 10);
+    loop {
+        h -= 10;
+        if h <= 0 {
+            break;
+        }
+        cost += h >> 1;
+    }
+    cost as i16
+}
+
 pub fn throw_held(g: &mut GameState, right: bool) -> bool {
     let (Some(l), Some(t)) = (leader(g), held(g)) else { return false };
     let Some(data) = g.data.clone() else { return false };
@@ -374,8 +385,8 @@ pub fn throw_held(g: &mut GameState, right: bool) -> bool {
     let attack = ((g.rng.rnd() & 31) as i32 + level * 8).clamp(40, 200) as u8;
     let a12 = db.attr(t, 0x0C);
     let step = if a12 != 0 { a12 as u8 } else { (11 - level).max(5) as u8 };
-    let weight = db.weight(t) as i16;
-    champions::stamina_loss(&mut g.champions, &mut g.party_status, l, (weight / 10).max(1));
+    let cost = throw_stamina_cost(db.weight(t) as i32);
+    champions::stamina_loss(&mut g.champions, &mut g.party_status, l, cost);
     g.hand.held = EMPTY;
     let cell = (p.dir + u8::from(right)) & 3;
     crate::missiles::launch(g, t.0 & 0x3FFF, p.map, p.x, p.y, cell, p.dir, energy, attack, step, false);

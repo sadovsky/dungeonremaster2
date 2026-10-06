@@ -258,7 +258,14 @@ pub fn inventory_panel(a: &mut Assets, font: &Font, tables: &UiTables, inv: &Inv
     }
     let (load, max) = inv.load;
     let lc = if load > max { 8 } else if load as u32 * 8 > max as u32 * 5 { 0xB } else { 0xD };
-    let t = format!("{}.{}/{}", load / 10, load % 10, max / 10).into_bytes();
+    // The load line is text (7,0,0x2a) with its numbers in context codes
+    // 12 (kilograms), 13 (tenths) and 14 (maximum, whole kilograms).
+    let ctx = crate::font::TextContext {
+        slots: [None, None, Some((load / 10) as i32), Some((load % 10) as i32), Some((max / 10) as i32)],
+        ..Default::default()
+    };
+    let t = crate::font::text(&a.gdat, 7, 0, 0x2A, &ctx)
+        .unwrap_or_else(|| format!("{}.{}/{}", load / 10, load % 10, max / 10).into_bytes());
     font.draw_at(&mut b, &a.layout, id::LOAD, &t, col[lc], None);
     if let Some(info) = &inv.info {
         a.draw(&mut b, 7, 0, 1, id::FOOD_PANEL, 0, None);

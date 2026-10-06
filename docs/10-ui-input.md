@@ -320,11 +320,27 @@ not model yet.
   loads are recomputed.
 - Container cells hold the container's list (record word 1). Following the
   first game, a container is shown open while it sits in the open
-  champion's action hand. That trigger is an assumption: the original's
-  flag at 0x7F224 is not traced yet.
-- The mouth eats food (attribute 3) and drinks potions. Potion kinds
-  11, 13, 14 and 15 are modelled, and the potion becomes an empty flask
-  (misc 0x14). Kinds 6-10 and 12 are TODO.
+  champion's action hand. That trigger is still an assumption: the
+  original decides it through the zone condition tree (list @174), which
+  is not decoded.
+- **0x7F224 is the eye flag, not a container flag.** 0x3A409 (the eye
+  click) sets it while the button is held and clears it on release, and
+  0x20588/0x206C6 reset it with its neighbours 0x7F21C and 0x7F220. The
+  inventory panel draw (0x48890) uses it to choose what the details area
+  shows:
+  - flag clear: the open champion's action-hand item (slot 1). A scroll
+    shows its text (0x3918A); otherwise the default food and water view
+    is drawn (0x39A4D);
+  - flag set: the leader's held item's details (0x3962A with mode 1), or
+    the champion's own details when nothing is held (0x3A12A).
+  The eye icon's glyph (layout 0x222) switches with the flag. A separate
+  state at 0x7F284 (set by 0x494FB to a champion number + 1, cleared by
+  0x49A17) replaces the details with a fixed wall-ornament picture
+  (category 9, index 0x5B) through 0x39B3F; it belongs to the recruit
+  flow, not to containers.
+- The mouth eats food (attribute 3) and drinks potions. Every potion kind
+  with a drink effect is modelled (docs/09), and the potion becomes an
+  empty flask (misc 0x14).
 - Viewport clicks use the six regions 0x2F8-0x2FE: take the top item of a
   floor cell, drop into a floor cell (the square ahead only when it is
   open), or click the wall ahead (`click_wall`, with the held item). Any

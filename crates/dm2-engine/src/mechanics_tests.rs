@@ -221,3 +221,231 @@ fn floor_text_shows_on_entry_and_items_trigger_item_plates() {
     movement::move_thing(&mut g, placed, Some((m, x, y)), None);
     assert_eq!(g.timeline.len(), before + 1);
 }
+
+#[test]
+fn animated_ornament_finishes_its_cycle_when_switched_off() {
+    let Some(mut g) = game() else { return };
+    // Actuator 0x2C on map 0 showing the map's first wall ornament.
+    let t = actuators::alloc_thing(&mut g, ThingType::Actuator).unwrap();
+    g.dungeon.set_record_word(t, 1, 0x2C);
+    g.dungeon.set_record_word(t, 2, 1 << 12);
+    g.dungeon.set_record_word(t, 3, 0);
+    let mut ev = crate::timeline::Event::new(4, 0, 0);
+    ev.b9 = SET;
+    actuators::wall_actuator(&mut g, ev, t);
+    assert_eq!(Actuator::load(&g, t).w2 & 5, 5, "switched on and animating");
+    run(&mut g, 3);
+    ev.b9 = actuators::CLEAR;
+    actuators::wall_actuator(&mut g, ev, t);
+    let w2 = Actuator::load(&g, t).w2;
+    assert_eq!(w2 & 4, 0, "switched off");
+    if w2 & 1 != 0 {
+        // Mid-cycle: event 0x59 ends the animation later.
+        assert!(g.timeline.iter().any(|(_, e)| e.kind == 0x59));
+        run(&mut g, 300);
+        assert_eq!(Actuator::load(&g, t).w2 & 1, 0, "animation stops at the end of the cycle");
+    }
+}
+
+#[test]
+fn one_shot_ornament_plays_a_single_cycle() {
+    let Some(mut g) = game() else { return };
+    let t = actuators::alloc_thing(&mut g, ThingType::Actuator).unwrap();
+    g.dungeon.set_record_word(t, 1, 0x32 | 0x55 << 7);
+    g.dungeon.set_record_word(t, 2, 1 << 12);
+    g.dungeon.set_record_word(t, 3, 0);
+    let mut ev = crate::timeline::Event::new(4, 0, 0);
+    ev.b9 = SET;
+    actuators::wall_actuator(&mut g, ev, t);
+    let a = Actuator::load(&g, t);
+    assert_eq!(a.w2 & 1, 1, "busy while playing");
+    assert_eq!(a.data(), 0, "frame counter reset");
+    // A second trigger while playing does not restart it.
+    actuators::wall_actuator(&mut g, ev, t);
+    assert_eq!(g.timeline.iter().filter(|(_, e)| e.kind == actuators::EVENT_ORNAMENT_STEP).count(), 1);
+    run(&mut g, 600);
+    let a = Actuator::load(&g, t);
+    assert_eq!(a.w2 & 1, 0, "done after one cycle");
+    assert!(a.data() > 0, "the counter advanced");
+    assert!(!g.timeline.iter().any(|(_, e)| e.kind == actuators::EVENT_ORNAMENT_STEP));
+}
+
+#[test]
+fn random_pits_drop_items_on_a_marker_square() {
+    let Some(mut g) = game() else { return };
+    // A pit with a kind-0x0C marker on a map whose graphics set has 0x6A.
+    let marker = |g: &GameState, m: usize, x: i32, y: i32, kind: u16| {
+        g.dungeon.things_at(m, x, y).into_iter().filter(|t| t.kind() == ThingType::Text).find_map(|t| {
+            let w = g.dungeon.record_word(t, 1)?;
+            (w & 6 == 2 && w >> 11 == kind).then_some(w >> 3 & 0xFF)
+        })
+    };
+    let mut found = None;
+    'outer: for (m, md) in g.dungeon.maps.iter().enumerate() {
+        if g.attrs.get(8, md.tileset, 0x6A) == 0 {
+            continue;
+        }
+        for x in 0..md.width as i32 {
+            for y in 0..md.height as i32 {
+                let sq = g.dungeon.square(m, x, y);
+                if sq.element() == Element::Pit {
+                    if let Some(id) = marker(&g, m, x, y, 0x0C) {
+                        found = Some((m, x, y, id));
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+    let Some((m, x, y, id)) = found else { return };
+    // Make sure the pit is open.
+    let sq = g.dungeon.square(m, x, y).0;
+    g.dungeon.set_square(m, x, y, (sq | 8) & !1);
+    let item = actuators::alloc_thing(&mut g, ThingType::Weapon).unwrap();
+    g.dungeon.set_record_word(item, 1, 0x80);
+    movement::move_thing(&mut g, item, None, Some((m, x, y)));
+    let landed = g.dungeon.maps.iter().enumerate().find_map(|(mm, md)| {
+        (0..md.width as i32)
+            .flat_map(|xx| (0..md.height as i32).map(move |yy| (xx, yy)))
+            .find(|&(xx, yy)| g.dungeon.things_at(mm, xx, yy).iter().any(|t| t.0 & 0x3FFF == item.0 & 0x3FFF))
+            .map(|(xx, yy)| (mm, xx, yy))
+    });
+    let (lm, lx, ly) = landed.expect("the item lands somewhere");
+    assert_eq!(marker(&g, lm, lx, ly, 0x0B), Some(id), "it lands on a matching marker square");
+}
+
+/// A wall square on map 0 next to an open floor square.
+fn wall_spot(g: &GameState) -> Option<(i32, i32)> {
+    let md = &g.dungeon.maps[0];
+    (0..md.width as i32)
+        .flat_map(|x| (0..md.height as i32).map(move |y| (x, y)))
+        .find(|&(x, y)| g.dungeon.square(0, x, y).element() == Element::Wall && !g.dungeon.square(0, x, y).has_things())
+}
+
+/// Put a fresh wall actuator of `kind` with `data` on (x, y), cell 0,
+/// targeting (1,1).
+fn wall_sensor(g: &mut GameState, x: i32, y: i32, kind: u16, data: u16, w2: u16) -> dm2_formats::dungeon::ThingRef {
+    let t = actuators::alloc_thing(g, ThingType::Actuator).unwrap();
+    g.dungeon.set_record_word(t, 1, kind | data << 7);
+    g.dungeon.set_record_word(t, 2, w2);
+    g.dungeon.set_record_word(t, 3, 1 << 6 | 1 << 11);
+    g.dungeon.add_thing(0, x, y, t);
+    t
+}
+
+#[test]
+fn cooldown_button_fires_once_until_rearmed() {
+    let Some(mut g) = game() else { return };
+    let Some((x, y)) = wall_spot(&g) else { return };
+    let t = wall_sensor(&mut g, x, y, 0x18, 5, 0);
+    assert!(actuators::click_wall(&mut g, 0, x, y, 0, None).fired);
+    assert!(!actuators::click_wall(&mut g, 0, x, y, 0, None).fired, "busy");
+    run(&mut g, 8);
+    assert_eq!(Actuator::load(&g, t).w2 & 1, 0, "re-armed after data + 2 ticks");
+    assert!(actuators::click_wall(&mut g, 0, x, y, 0, None).fired);
+}
+
+#[test]
+fn receptacle_counts_items_down_and_fires_at_zero() {
+    let Some(mut g) = game() else { return };
+    let Some((x, y)) = wall_spot(&g) else { return };
+    // Map 0's first wall ornament decides the accepted kind.
+    let t = wall_sensor(&mut g, x, y, 0x1B, 2, 1 << 12);
+    let orn = g.dungeon.map_lists(0).wall_ornaments[0];
+    let kind = g.attrs.get(9, orn, 0x0E);
+    let Some(item) = actuators::create_item(&mut g, kind) else { return };
+    let r = actuators::click_wall(&mut g, 0, x, y, 0, Some(item));
+    assert!(r.consume_item && !r.fired, "first item: 2 -> 1, no fire");
+    let item2 = actuators::create_item(&mut g, kind).unwrap();
+    let r = actuators::click_wall(&mut g, 0, x, y, 0, Some(item2));
+    assert!(r.consume_item && r.fired, "second item: 1 -> 0, fires");
+    assert_eq!(Actuator::load(&g, t).w2 & 1, 1, "spent");
+}
+
+#[test]
+fn party_mover_button_moves_the_party() {
+    let Some(mut g) = game() else { return };
+    let Some((x, y)) = wall_spot(&g) else { return };
+    // Target (1,1), absolute facing east (action bits 1), inverted = absolute.
+    wall_sensor(&mut g, x, y, 0x1C, 0, 1 << 3 | 0x20);
+    actuators::click_wall(&mut g, 0, x, y, 0, None);
+    run(&mut g, 2);
+    assert_eq!((g.party.map, g.party.x, g.party.y, g.party.dir), (0, 1, 1, 1));
+}
+
+#[test]
+fn heavy_parties_slip_on_unstable_floors() {
+    let Some(mut base) = game() else { return };
+    // A floor square on map 0 without things, with a kind-10 text marker.
+    let md = &base.dungeon.maps[0];
+    let Some((x, y)) = (0..md.width as i32)
+        .flat_map(|x| (0..md.height as i32).map(move |y| (x, y)))
+        .find(|&(x, y)| base.dungeon.square(0, x, y).element() == Element::Floor && !base.dungeon.square(0, x, y).has_things())
+    else {
+        return;
+    };
+    let txt = actuators::alloc_thing(&mut base, ThingType::Text).unwrap();
+    base.dungeon.set_record_word(txt, 1, 2 | 10 << 11);
+    base.dungeon.add_thing(0, x, y, txt);
+    // Far over the load limit: the chance is capped at 90%.
+    base.champions[0].set_load(60000);
+    let mut slipped = 0;
+    for seed in 0..10 {
+        let mut g = base.clone();
+        g.rng = crate::rng::Rng::new(seed);
+        actuators::floor_sensors(&mut g, 0, x, y, movement::Mover::Party, false, true);
+        if g.timeline.iter().any(|(_, e)| e.kind == 0x5D) {
+            slipped += 1;
+        }
+    }
+    assert!(slipped >= 5, "slipped {slipped} of 10 times at a 90% chance");
+}
+
+#[test]
+fn script_variables_cover_flags_bytes_and_words() {
+    let Some(mut g) = game() else { return };
+    use actuators::{script_var as get, script_var_op as op};
+    op(&mut g, 9, 0, 0);
+    assert_eq!(get(&g, 9), 1, "flag set");
+    op(&mut g, 9, 2, 0);
+    assert_eq!(get(&g, 9), 0, "flag toggled off");
+    op(&mut g, 70, 6, 300);
+    assert_eq!(get(&g, 70), 255, "bytes clamp to 255");
+    op(&mut g, 70, 4, 1000);
+    assert_eq!(get(&g, 70), 0, "and to 0");
+    op(&mut g, 130, 6, 40000);
+    op(&mut g, 130, 3, 5);
+    assert_eq!(get(&g, 130), 40005, "words hold 16 bits");
+    op(&mut g, 130, 5, 7);
+    assert_eq!(get(&g, 130), 40005, "unknown operation leaves the value");
+}
+
+#[test]
+fn variable_actuators_set_and_test() {
+    let Some(mut g) = game() else { return };
+    // 0x43 on variable 3, then 0x44 testing variable 3, both firing at (1,1).
+    let set_var = actuators::alloc_thing(&mut g, ThingType::Actuator).unwrap();
+    g.dungeon.set_record_word(set_var, 1, 0x43 | 3 << 7);
+    g.dungeon.set_record_word(set_var, 2, 0);
+    g.dungeon.set_record_word(set_var, 3, 1 << 6 | 1 << 11);
+    let test_var = actuators::alloc_thing(&mut g, ThingType::Actuator).unwrap();
+    g.dungeon.set_record_word(test_var, 1, 0x44 | 3 << 7);
+    g.dungeon.set_record_word(test_var, 2, 0);
+    g.dungeon.set_record_word(test_var, 3, 1 << 6 | 1 << 11);
+    let mut ev = crate::timeline::Event::new(4, 0, 0);
+    ev.b9 = SET;
+    // The variable is clear: a set fails the test.
+    actuators::wall_actuator(&mut g, ev, test_var);
+    assert!(g.timeline.is_empty());
+    // 0x43 sets it and fires its own target.
+    actuators::wall_actuator(&mut g, ev, set_var);
+    assert_eq!(actuators::script_var(&g, 3), 1);
+    assert_eq!(g.timeline.len(), 1);
+    // Now the set passes the test and fires.
+    actuators::wall_actuator(&mut g, ev, test_var);
+    assert_eq!(g.timeline.len(), 2);
+    // A clear passes only when the variable agrees with "not inverted" = clear.
+    ev.b9 = actuators::CLEAR;
+    actuators::wall_actuator(&mut g, ev, test_var);
+    assert_eq!(g.timeline.len(), 2);
+}

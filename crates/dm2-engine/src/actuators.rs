@@ -228,7 +228,36 @@ pub fn floor_sensors(g: &mut GameState, map: usize, x: i32, y: i32, mover: Mover
                             square_action(g, map, x, y, 0, CLEAR, now + 5);
                         }
                     }
-                    // TODO(kind 10): load-based chance of being pushed back (event 0x5D).
+                    // Unstable floor (0x4CDCC): the heavier the party, the likelier
+                    // it slips and is put back on the square (event 0x5D).
+                    10 if ty.is_none() && entering && hooks::champion_count(g) != 0 => {
+                        let mut pressure = 0u32;
+                        for i in 0..g.champions.len() {
+                            if g.champions[i].is_alive() {
+                                let max = crate::champions::max_load(&g.champions[i], &mut g.rng) as u32;
+                                pressure += g.champions[i].load() as u32 / (max >> 1).max(1);
+                            }
+                        }
+                        let base = if w1 & 1 != 0 { 50 } else { 25 };
+                        let chance = (pressure * 10 + base).min(90) as u16;
+                        if g.rng.random(100) < chance {
+                            let mut e = Event::new(0x5D, map as u8, g.tick);
+                            let packed = (x as u16 & 0x1F) | (y as u16 & 0x1F) << 5 | (g.party.dir as u16 & 3) << 10;
+                            [e.x, e.y] = packed.to_le_bytes();
+                            g.schedule(e);
+                            let mut who = g.rng.rand4() as usize;
+                            if !g.champions.get(who).is_some_and(|c| c.is_alive()) {
+                                who = g.leader.unwrap_or(0);
+                            }
+                            if let Some(c) = g.champions.get(who) {
+                                let portrait = c.portrait();
+                                g.effects.push(Effect::Sound { cat: 0x16, idx: portrait, sub: 0x82, map, x, y });
+                            }
+                        } else {
+                            let orn = (w1 >> 3 & 0xFF) as u8;
+                            g.effects.push(Effect::Sound { cat: 10, idx: orn, sub: 0x88, map, x, y });
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -299,8 +328,21 @@ fn sensor_fire(g: &mut GameState, map: usize, x: i32, y: i32, a: &Actuator, stat
 pub struct WallClick {
     /// At least one actuator fired.
     pub fired: bool,
-    /// The item in hand should be consumed (type 3 with word 2 bit 2).
+    /// The item in hand should be consumed (type 3 with word 2 bit 2,
+    /// type 0x1B).
     pub consume_item: bool,
+    /// The item in hand was put into the wall (type 0x1A): clear the hand
+    /// without destroying it.
+    pub stored: bool,
+    /// An item taken out of the wall for the leader's hand (type 0x1A).
+    pub take: Option<ThingRef>,
+}
+
+/// The item kind an alcove ornament accepts: attribute (9, ornament, 11,
+/// 0x0E) of the actuator's wall ornament.
+fn alcove_kind(g: &GameState, map: usize, a: &Actuator) -> Option<u16> {
+    let (cat, orn) = ornament_of(g, map, a, true)?;
+    Some(g.attrs.get(cat, orn, 0x0E))
 }
 
 /// Click the wall at (map, x, y), side `cell`, holding `item` (None = empty
@@ -335,11 +377,103 @@ pub fn click_wall(g: &mut GameState, map: usize, x: i32, y: i32, cell: u8, item:
                 let q = matched == a.inverted();
                 (q, q)
             }
+            // A lock that also needs the key item to have charges left.
+            0x15 => {
+                let charged = item.is_some_and(|i| {
+                    g.data.as_ref().is_some_and(|d| d.item_db(&g.dungeon).charges(i) != 0)
+                });
+                let matched = charged && item.is_some_and(|i| item_number(g, i) == a.data());
+                if matched && a.enabled() {
+                    out.consume_item = true;
+                }
+                let q = matched == a.inverted();
+                (q, q)
+            }
             0x17 if empty => {
                 let w2 = a.w2 ^ 4;
                 set_w(g, t, 2, w2);
                 let q = (w2 & 0x20 != 0) == (w2 & 4 != 0);
                 (q, q)
+            }
+            // Push button with a cooldown: busy until event 0x57 re-arms it
+            // after *data* + 2 ticks; inverted buttons fire 16 ticks later.
+            0x18 if empty && !a.busy() => {
+                let mut e = Event::new(0x57, map as u8, g.tick.wrapping_add(a.data() as u32 + 2));
+                [e.x, e.y] = t.0.to_le_bytes();
+                g.schedule(e);
+                set_w(g, t, 2, a.w2 | 1);
+                let action = if a.action() == FOLLOW { SET } else { a.action() };
+                if a.sound() {
+                    g.effects.push(Effect::Sound { cat: 9, idx: 0, sub: 0x88, map, x, y });
+                }
+                fire(g, map, &a, action, if a.inverted() { 16 } else { 0 });
+                out.fired = true;
+                continue;
+            }
+            // Alcove for one item kind (the ornament's attribute 0x0E).
+            0x1A => {
+                let Some(kind) = alcove_kind(g, map, &a) else { continue };
+                match item {
+                    Some(i) if !a.enabled() && item_number(g, i) == kind => {
+                        // Put the held item into the wall.
+                        g.dungeon.add_thing(map, x, y, ThingRef(i.0 & 0x3FFF | (cell as u16) << 14));
+                        out.stored = true;
+                        out.fired = true;
+                    }
+                    None if a.enabled() => {
+                        // Take one out; the alcove makes a new one when empty.
+                        let here = g
+                            .dungeon
+                            .things_at(map, x, y)
+                            .into_iter()
+                            .find(|&u| u.cell() == cell && is_item(u) && item_number(g, u) == kind);
+                        let got = match here {
+                            Some(u) => {
+                                g.dungeon.remove_thing(map, x, y, u);
+                                Some(u)
+                            }
+                            None => create_item(g, kind),
+                        };
+                        out.take = got.map(|u| ThingRef(u.0 & 0x3FFF));
+                        out.fired = got.is_some();
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            // Receptacle: consumes matching items, counting *data* down, and
+            // fires when it reaches 0 (then stays busy).
+            0x1B => {
+                let Some(kind) = alcove_kind(g, map, &a) else { continue };
+                let Some(i) = item else { continue };
+                if a.data() == 0 || item_number(g, i) != kind {
+                    continue;
+                }
+                out.consume_item = true;
+                let left = a.data() - 1;
+                set_w(g, t, 1, a.w1 & 0x7F | left << 7);
+                if left == 0 {
+                    set_w(g, t, 2, a.w2 | 1);
+                }
+                let q = left != 0;
+                (q, q)
+            }
+            // Re-arm: an empty-handed click clears the busy bit; it only
+            // sends anything in follow mode.
+            0x3F => {
+                if empty {
+                    set_w(g, t, 2, a.w2 & !1);
+                }
+                (true, true)
+            }
+            // Move the party to the target square (empty hand, bit 2 clear),
+            // facing word 2 bits 3-4, absolute when inverted.
+            0x1C if empty && !a.enabled() => {
+                let d = a.action();
+                let dir = if a.inverted() { d } else { (g.party.dir + d) & 3 };
+                let (tx, ty, _) = a.target();
+                movement::teleport_party(g, tx, ty, map, dir);
+                (false, false)
             }
             _ => continue,
         };
@@ -438,7 +572,11 @@ fn floor_actuator(g: &mut GameState, ev: Event, t: ThingRef) {
         0x3A => creatures::floor_signal(g, map, ev.x as i32, ev.y as i32, ev.b9 == SET),
         0x3B | 0x40 | 0x47 | 0x48 | 0x49 => item_relay(g, ev, &a),
         0x3D => relay(g, ev, &a, a.data() as u32),
-        // TODO: 0x2C (0x56F11), 0x32 (0x570B1), 0x42-0x44.
+        0x2C => animated_ornament(g, ev, &a, false),
+        0x32 => one_shot_ornament(g, ev, &a, false),
+        0x42 => face_creatures(g, ev, &a),
+        0x43 => set_variable(g, ev, &a),
+        0x44 => test_variable(g, ev, &a),
         _ => {}
     }
 }
@@ -581,9 +719,232 @@ pub(crate) fn wall_actuator(g: &mut GameState, ev: Event, t: ThingRef) {
                 set_w(g, u, 1, w & !0x2000 | (v as u16) << 13);
             }
         }
-        // TODO: 0x2C (0x56F11), 0x32 (0x570B1), 0x41 (randomise from an
-        // ornament attribute), 0x42-0x44.
+        0x2C => animated_ornament(g, ev, &a, true),
+        0x32 => one_shot_ornament(g, ev, &a, true),
+        0x41 => randomise(g, map, &a, true),
+        0x42 => face_creatures(g, ev, &a),
+        0x43 => set_variable(g, ev, &a),
+        0x44 => test_variable(g, ev, &a),
         _ => {}
+    }
+}
+
+/// The ornament an actuator shows: word 2 bits 12-15 index the map's wall
+/// (or floor) ornament list, 0 meaning none (0x1FC2C / 0x1FC82).
+fn ornament_of(g: &GameState, map: usize, a: &Actuator, wall: bool) -> Option<(u8, u8)> {
+    let slot = (a.w2 >> 12) as usize;
+    if slot == 0 {
+        return None;
+    }
+    let lists = g.dungeon.map_lists(map);
+    let list = if wall { &lists.wall_ornaments } else { &lists.floor_ornaments };
+    list.get(slot - 1).map(|&o| (if wall { 9 } else { 10 }, o))
+}
+
+/// An ornament's animation cycle length (0x56CF4): its number attribute
+/// 0x0D, else the length of its frame-digit text (type 5, sub 0x0D), else 1.
+fn ornament_cycle(g: &GameState, map: usize, a: &Actuator, wall: bool) -> u32 {
+    let Some((cat, orn)) = ornament_of(g, map, a, wall) else { return 1 };
+    let n = g.attrs.get(cat, orn, 0x0D) & 0x7FFF;
+    if n != 0 {
+        return n as u32;
+    }
+    let Some(data) = g.data.as_ref() else { return 1 };
+    crate::font::text(&data.gdat, cat, orn, 0x0D, &Default::default()).map_or(1, |t| (t.len() as u32).max(1))
+}
+
+/// Actuator 0x2C (0x56F11): an animated ornament switched on and off.
+/// Word 2 bit 2 holds the switch, bit 0 "animating", and word 1 bits 7-14
+/// the animation phase. Switching on starts the animation aligned to the
+/// tick; switching off lets the current cycle finish (event 0x59 clears
+/// bit 0 at the end of the cycle unless it was switched on again). An
+/// inverted actuator whose action is "follow" also passes the event on.
+fn animated_ornament(g: &mut GameState, ev: Event, a: &Actuator, wall: bool) {
+    let map = ev.map as usize;
+    let old = a.w2 & 4 != 0;
+    let new = resolve_action(ev.b9, old);
+    let mut w2 = a.w2 & !4 | u16::from(new) << 2;
+    let mut w1 = a.w1;
+    if new != old {
+        let n = ornament_cycle(g, map, a, wall).max(1);
+        if !new {
+            let phase = ((w1 >> 7 & 0xFF) as u32 + g.tick) % n;
+            if phase == 0 {
+                w2 &= !1;
+            } else {
+                let mut e = Event::new(0x59, map as u8, g.tick.wrapping_add(n - phase));
+                e.set_w8(a.thing.0);
+                g.schedule(e);
+            }
+        } else if w2 & 1 == 0 {
+            w2 |= 1;
+            let start = ((n - g.tick % n) % n) as u16;
+            w1 = (w1 & 0x807F) | (start & 0xFF) << 7;
+            // The original also schedules a repeating ornament sound
+            // (event 0x5A, attribute 0x88) when the sound bit is set; the
+            // first one plays now.
+            if a.sound() {
+                if let Some((cat, idx)) = ornament_of(g, map, a, wall) {
+                    g.effects.push(Effect::Sound { cat, idx, sub: 0x88, map, x: ev.x as i32, y: ev.y as i32 });
+                }
+            }
+        }
+    }
+    set_w(g, a.thing, 1, w1);
+    set_w(g, a.thing, 2, w2);
+    if a.inverted() && a.action() == FOLLOW {
+        fire(g, map, a, ev.b9, 0);
+    }
+}
+
+/// Actuator 0x32 (0x570B1): play the ornament's animation once. If it is
+/// not already playing (word 2 bit 0), mark it busy, reset the frame counter
+/// (word 1 bits 7-15) and start event 0x55 next tick; with the sound bit,
+/// play the ornament's sound 0x88. When word 2 bit 2 is set it also relays
+/// the event like 0x3D (0x571F3).
+fn one_shot_ornament(g: &mut GameState, ev: Event, a: &Actuator, wall: bool) {
+    let map = ev.map as usize;
+    if a.w2 & 1 == 0 {
+        set_w(g, a.thing, 2, a.w2 | 1);
+        set_w(g, a.thing, 1, a.w1 & 0x7F);
+        let mut e = Event::new(EVENT_ORNAMENT_STEP, map as u8, g.tick.wrapping_add(1));
+        e.x = ev.x;
+        e.y = ev.y;
+        e.set_w8(a.thing.0);
+        e.w10 = u16::from(wall);
+        g.schedule(e);
+        if a.sound() {
+            if let Some((cat, idx)) = ornament_of(g, map, a, wall) {
+                g.effects.push(Effect::Sound { cat, idx, sub: 0x88, map, x: ev.x as i32, y: ev.y as i32 });
+            }
+        }
+    }
+    if a.w2 & 4 != 0 {
+        let a = Actuator::load(g, a.thing);
+        relay(g, ev, &a, 0);
+    }
+}
+
+/// Read dungeon script variable `id` (0x150AE): 0-63 are flag bits (0x7F100),
+/// 64-127 bytes (0x7F0C0), 128-191 words (0x7F108); others read 0. The
+/// save game keeps them in `GameState::legacy`.
+pub fn script_var(g: &GameState, id: u16) -> u16 {
+    let v = &g.legacy;
+    match id {
+        0..=63 => u16::from(v.flags[(id >> 3) as usize] & 1 << (id & 7) != 0),
+        64..=127 => v.byte_vars[(id - 64) as usize] as u16,
+        128..=191 => v.word_vars[(id - 128) as usize],
+        _ => 0,
+    }
+}
+
+/// Apply operation `op` to script variable `id` (0x1512E): 0 set to 1,
+/// 1 clear to 0, 2 toggle, 3 add `operand`, 4 subtract it, 6 assign it,
+/// anything else leaves the value. Flags store "non-zero", bytes clamp to
+/// 0-255, words wrap.
+pub fn script_var_op(g: &mut GameState, id: u16, op: u16, operand: i32) {
+    let cur = script_var(g, id) as i32;
+    let new = match op {
+        0 => 1,
+        1 => 0,
+        2 => i32::from(cur == 0),
+        3 => cur + operand,
+        4 => cur - operand,
+        6 => operand,
+        _ => cur,
+    };
+    let v = &mut g.legacy;
+    match id {
+        0..=63 => {
+            let (i, bit) = ((id >> 3) as usize, 1u8 << (id & 7));
+            if new != 0 {
+                v.flags[i] |= bit;
+            } else {
+                v.flags[i] &= !bit;
+            }
+        }
+        64..=127 => v.byte_vars[(id - 64) as usize] = new.clamp(0, 255) as u8,
+        128..=191 => v.word_vars[(id - 128) as usize] = new as u16,
+        _ => {}
+    }
+}
+
+/// The action an actuator sends on: its configured action when word 2
+/// bit 2 is set, otherwise the incoming one.
+fn outgoing(a: &Actuator, incoming: u8) -> u8 {
+    if a.enabled() {
+        a.action()
+    } else {
+        incoming
+    }
+}
+
+/// Actuator 0x41: set *data* to a random value below the ornament's
+/// cycle length (its attribute 0x0D, category 9 or 10). Tentative: from
+/// docs/05; the handler is inline in the dispatcher.
+fn randomise(g: &mut GameState, map: usize, a: &Actuator, wall: bool) {
+    let n = ornament_cycle(g, map, a, wall).min(0x1FF) as u16;
+    let r = g.rng.random(n.max(1));
+    set_w(g, a.thing, 1, a.w1 & 0x7F | r << 7);
+}
+
+/// Actuator 0x42 (0x56B39): on a matching trigger (set, or clear when
+/// inverted), turn the creature group on the target square to face
+/// *data* & 3 (0x49EF8 in absolute mode). The original also turns the cells
+/// of things the group carries for some types; not modelled.
+fn face_creatures(g: &mut GameState, ev: Event, a: &Actuator) {
+    if !a.triggered_by(ev.b9) {
+        return;
+    }
+    let (tx, ty, _) = a.target();
+    if let Some(grp) = creatures::group_at(g, ev.map as usize, tx, ty) {
+        creatures::set_facing(g, grp, (a.data() & 3) as u8);
+    }
+}
+
+/// Actuator 0x43 (0x5737C): apply the incoming action to script variable
+/// *data* (set, clear or toggle; when inverted, set adds 1 and clear
+/// subtracts 1), then fire the target.
+fn set_variable(g: &mut GameState, ev: Event, a: &Actuator) {
+    let op = ev.b9 as u16 + if a.inverted() { 3 } else { 0 };
+    script_var_op(g, a.data(), op, 1);
+    fire(g, ev.map as usize, a, outgoing(a, ev.b9), 0);
+}
+
+/// Actuator 0x44 (0x573E9): test script variable *data*. With r = (value
+/// is non-zero) compared against the inverted bit, a set or toggle passes
+/// when they differ and a clear passes when they agree; a passing event
+/// fires the target.
+fn test_variable(g: &mut GameState, ev: Event, a: &Actuator) {
+    let r = script_var(g, a.data()) != 0;
+    let pass = match ev.b9 {
+        SET | TOGGLE => r != a.inverted(),
+        CLEAR => r == a.inverted(),
+        _ => false,
+    };
+    if pass {
+        fire(g, ev.map as usize, a, outgoing(a, ev.b9), 0);
+    }
+}
+
+/// Event type that steps a one-shot ornament animation.
+pub const EVENT_ORNAMENT_STEP: u8 = 0x55;
+
+/// Event 0x55 (0x59293): advance a one-shot ornament's frame counter; at the
+/// end of a cycle clear its busy bit, otherwise come back next tick.
+pub fn ornament_step(g: &mut GameState, ev: Event) {
+    let t = ThingRef(ev.w8());
+    if !t.is_thing() {
+        return;
+    }
+    let a = Actuator::load(g, t);
+    let n = ornament_cycle(g, ev.map as usize, &a, ev.w10 != 0).max(1);
+    let count = ((a.w1 >> 7) + 1) & 0x1FF;
+    set_w(g, t, 1, a.w1 & 0x7F | count << 7);
+    if count as u32 % n == 0 {
+        set_w(g, t, 2, a.w2 & !1);
+    } else {
+        g.schedule(Event { tick: g.tick.wrapping_add(1), ..ev });
     }
 }
 
@@ -668,9 +1029,14 @@ fn item_relay(g: &mut GameState, ev: Event, a: &Actuator) {
     let map = ev.map as usize;
     let reverse = matches!(a.kind(), 0x47 | 0x49);
     let first_only = matches!(a.kind(), 0x48 | 0x49);
-    if a.kind() == 0x40 {
-        return; // TODO: match against the kind list loaded from GRAPHICS.DAT.
-    }
+    // 0x40 matches a kind list instead of the single kind in *data*: text
+    // (15, data & 0xFF, 5, (word 2 bits 7-10) × 3 + 0x20) (0x1538D).
+    let kinds = (a.kind() == 0x40).then(|| {
+        let sub = ((a.w2 >> 7 & 0xF) * 3 + 0x10) as u8;
+        g.data.as_ref().map_or(crate::items::KindSet([0; 64]), |d| {
+            crate::items::KindSet::load(&d.gdat, (a.data() & 0xFF) as u8, sub, false)
+        })
+    });
     let (tx, ty, tcell) = a.target();
     let ((sx, sy, scell), (dx, dy, dcell)) = if reverse {
         ((tx, ty, tcell), (ev.x as i32, ev.y as i32, ev.b8))
@@ -687,7 +1053,11 @@ fn item_relay(g: &mut GameState, ev: Event, a: &Actuator) {
     // TODO: also search the possessions of creatures on the square.
     for t in candidates {
         let n = item_number(g, t);
-        if n != a.data() && a.data() != 0x1FF {
+        let matches = match &kinds {
+            Some(k) => k.contains(n),
+            None => n == a.data() || a.data() == 0x1FF,
+        };
+        if !matches {
             continue;
         }
         let moved = ThingRef(t.0 & 0x3FFF | (dcell as u16) << 14);
@@ -712,9 +1082,18 @@ pub fn create_item(g: &mut GameState, n: u16) -> Option<ThingRef> {
         128..=255 => (ThingType::Clothing, n - 128),
         256..=383 => (ThingType::Misc, n - 256),
         384..=431 => (ThingType::Potion, n - 384),
-        // TODO: creatures (432-479), containers (480-507) and scrolls (508).
+        480..=507 => (ThingType::Container, n - 480),
+        // TODO: creatures (432-479) and scrolls (508).
         _ => return None,
     };
+    if ty == ThingType::Container {
+        // Empty content list in word 1; the type index is split over word
+        // 2 bits 13-15 (low three bits) and bits 1-2 (next two).
+        let t = alloc_thing(g, ty)?;
+        g.dungeon.set_record_word(t, 1, ThingRef::END.0);
+        g.dungeon.set_record_word(t, 2, (idx & 7) << 13 | ((idx >> 3) & 3) << 1);
+        return Some(t);
+    }
     let t = alloc_thing(g, ty)?;
     // Bit 7 (weapons, clothing, misc) and bit 15 (potions) are set on every
     // item in the original file. TODO(0x1F07C): initial charges.

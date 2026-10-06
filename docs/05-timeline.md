@@ -239,7 +239,7 @@ Who schedules each type was recovered by scanning every call to 0x56390
 | 0x48 | inline | 0x4565A | A party effect expires: for each champion in mask +5, subtract the u16 at +6 from the effect amount at +0x103 (not below 0). See 07-combat-magic, "Party shields and effects". |
 | 0x4B | inline | 0x474FC | Champion +5: decrement champion byte +0x1F and subtract the u16 at +6 from field +0x48, then 0x474FC. Tentative: an expiring per-champion effect. |
 | 0x54 | 0x5A073(1) | | Champion status update |
-| 0x55 | 0x59293 | actuator 0x32 (0x570B1) | Actuator 0x32 follow-up |
+| 0x55 | 0x59293 | actuator 0x32 (0x570B1) | One-shot ornament step: add 1 to the actuator's 9-bit frame counter (word 1 bits 7-15); when it reaches a multiple of the ornament's cycle length (0x56CF4) clear the busy bit, otherwise reschedule for the next tick |
 | 0x56 | 0x593CF | clock actuators (0x592FA) | Periodic actuator tick (types 0x1E, 0x33-0x37) |
 | 0x57 | inline | wall sensors 0x4C134 | Re-arm an actuator: clear bit 0 of the thing's word 2 |
 | 0x58 | 0x59608 | 0x22A68 | Clear bit 11 of word 1 of thing +6 |
@@ -319,20 +319,36 @@ kind 0x17 plays a sound on set. Types not listed below do nothing.
 | 0x1E, 0x33-0x37 | inline, then 0x592FA | State switch plus clock. The action sets or clears word 2 bit 2. While enabled and not busy, it schedules event 0x56 and marks itself busy. The period is *data* × {1, 8, 16, 32, 64, 128} ticks (by type); the first event is due at `tick + tick mod period`, so the phase depends on the current tick, not on the random generator. Event 0x56 (0x593CF) keeps the multiplier in byte +8 and a phase bit in byte +9. In "follow" mode each period flips the phase and sends set on phase 1, clear on phase 0, continuing while the phase is 1 or the clock is enabled. Otherwise each period fires the configured action while enabled; once disabled the clock stops and clears its busy bit. |
 | 0x20 | 0x572A8 | Timer. When word 2 bit 2 is clear it relays every action; when set, only a matching action (set, or clear if inverted), and it then sends its configured action instead of the incoming one. The target event is due after (word 2 bits 7-10) + *data* ticks. |
 | 0x26 | inline | State switch only: word 2 bit 2 follows the action |
-| 0x2C | 0x56F11 | Unknown; schedules 0x59 |
+| 0x2C | 0x56F11 | Animated ornament switch. Word 2 bit 2 is the switch (set/clear/toggle as usual), bit 0 "animating", and word 1 bits 7-14 hold the animation phase. The cycle length n is the ornament's number attribute 0x0D (category 9 on walls, 10 on floors; the ornament comes from word 2 bits 12-15), else the length of its frame-digit text (type 5, sub 0x0D), else 1 (0x56CF4). Switching on sets bit 0 and stores the phase `(n − tick mod n) mod n`, so the animation starts on frame 0; with the sound bit it also plays the ornament's sound 0x88 and schedules repeats through event 0x5A (0x56D6A, repeats not modelled in the engine). Switching off computes `(phase + tick) mod n`: at 0 the animation stops at once, otherwise event 0x59 is scheduled for the end of the cycle and clears bit 0 then, unless the switch was turned on again. When inverted in "follow" mode the incoming action is also passed to the target. |
 | 0x2D | inline | If *data* is 1-400: decrement it and forward the incoming action. If 401-499: a percentage gate. One `random(100)` call; the gate fails when *data* − 400 ≤ the roll, so it passes with probability (*data* − 400)%. In "follow" mode it sends set on a pass and clear on a fail; otherwise it forwards the incoming action only on a pass. |
 | 0x2E | inline | Creature generator: on set, create a creature of type *data* at the target square through 0x30BA6. Direction comes from word 2 bits 3-4, or random if bit 2 is set. If bit 5 is set, also store a value from word 2 into the creature's word +8; bit 6 plays a sound. |
 | 0x31 | inline | Debounced relay: if not busy, mark busy and schedule a re-arm (0x5B) after *data* ticks; if the action matches, fire the target (with the configured action when bit 2 is set) |
-| 0x32 | 0x570B1 | Unknown; schedules 0x55 |
-| 0x3B, 0x40, 0x47, 0x48, 0x49 | 0x57E6C | Item relay between the event's square and the actuator's target. 0x40 matches against an item-kind list loaded from GRAPHICS.DAT instead of the single *data* kind. 0x47 and 0x49 reverse the direction. 0x48 and 0x49 move only the first match. Items carried by creatures on the square are searched too. |
+| 0x32 | 0x570B1 | Play the ornament's animation once. If word 2 bit 0 (busy) is clear: set it, reset the 9-bit frame counter in word 1 bits 7-15, schedule event 0x55 for the next tick (bytes 8-9 the actuator, bytes 10-11 the wall/floor flag) and, with the sound bit, play the ornament's sound 0x88. A trigger while it is playing does not restart it. If word 2 bit 2 is set it also relays the event as 0x3D does (0x571F3). |
+| 0x3B, 0x40, 0x47, 0x48, 0x49 | 0x57E6C | Item relay between the event's square and the actuator's target. 0x40 matches against an item kind list (docs/09, "Item kind lists"): text (15, *data* & 0xFF, 5, (word 2 bits 7-10) × 3 + 0x20), instead of the single *data* kind. 0x47 and 0x49 reverse the direction. 0x48 and 0x49 move only the first match. Items carried by creatures on the square are searched too. |
 | 0x3C | inline | Item generator: on set (or clear if inverted), create an item of kind *data* and place it at the target square and cell (0x57D4C) |
 | 0x3D | 0x571F3 | Relay with *data* as extra delay. In "follow" mode: not inverted, it forwards the incoming action after the delay; inverted, it forwards the action at once and then sends the opposite action (toggle stays toggle) after *data* ticks, making a pulse. Other modes fire the configured action on a matching trigger (set, or clear if inverted). |
-| 0x41 | inline | Randomise: set *data* to a random value below an ornament attribute (category 9 or 10, attribute 0x0D). Tentative: the ornament frame count. |
-| 0x42 | 0x56B39 | Unknown |
-| 0x43 | 0x5737C | Unknown |
-| 0x44 | 0x573E9 | Unknown |
+| 0x41 | inline | Randomise: set *data* to a random value below an ornament attribute (category 9 or 10, attribute 0x0D). Tentative: the ornament frame count. The engine uses the ornament's cycle length (0x56CF4), which starts from that attribute. |
+| 0x42 | 0x56B39 | Face creatures: on a matching trigger (set, or clear when inverted), the creature group on the target square is turned to face *data* & 3 (0x49EF8 in absolute mode; for types with flag bit 0 the routine also turns the cells of the things the group carries). |
+| 0x43 | 0x5737C | Set a script variable: apply the incoming action to variable *data* through 0x1512E with operation = action, plus 3 when inverted (so inverted set adds 1, inverted clear subtracts 1, inverted toggle does nothing), then fire the target with the configured action (word 2 bit 2 set) or the incoming one. |
+| 0x44 | 0x573E9 | Test a script variable: r = (variable *data* is non-zero). A set or toggle passes when r differs from the inverted bit; a clear passes when they agree. A passing event fires the target, with the configured or incoming action as for 0x43. |
 | 0x45 | 0x572A8 | Long timer: like 0x20, but the delay is *data* << (word 2 bits 7-10) |
 | 0x46 | inline | Set, clear or toggle bit 13 of word 1 of the door or teleporter record on the target square (meaning of that bit still unknown) |
+
+### Script variables (0x150AE read, 0x1512E write)
+
+Actuators 0x43 and 0x44 work on 192 dungeon script variables, the same
+ones a save game stores:
+
+| Ids | Storage | Notes |
+|-----|---------|-------|
+| 0-63 | Bits of the 8-byte bitmap at 0x7F100 | A write stores "non-zero" |
+| 64-127 | Bytes at 0x7F080 + id (0x7F0C0 onward) | Clamped to 0-255 |
+| 128-191 | Words at 0x7F008 + 2·id (0x7F108 onward) | 16 bits, wrapping |
+
+Ids from 192 up read as 0 and ignore writes. The write routine takes an
+operation and an operand (EDX): 0 set to 1, 1 clear to 0, 2 toggle (1 when
+0, else 0), 3 add the operand, 4 subtract it, 6 assign it; other values
+leave the variable unchanged.
 
 ### Floor actuator types (handler 0x57476, code)
 
@@ -351,6 +367,20 @@ kind 0x17 plays a sound on set. Types not listed below do nothing.
 
 Text things on floors: kinds 0x13 and 0x16 schedule event 0x5E on set;
 kind 0x17 plays a sound.
+
+Floor markers (text things with word 1 bits 1-2 equal to 1, kind in bits
+11-15) react to the party walking on (0x4CDCC):
+
+- **Kind 9, random pulse:** see "Floor sensors".
+- **Kind 10, unstable floor:** when the party steps on, sum over living
+  champions load ÷ (maximum load ÷ 2), giving a pressure P. The chance is
+  min(90, 10P + 25), or 10P + 50 when word 1 bit 0 is set. One
+  `random(100)` call decides. On a slip, event 0x5D is scheduled for this
+  tick to put the party back on the square with its current facing, and a
+  champion picked with `rand4()` (or the leader, if that one is dead) cries
+  out with their sound 0x82. Otherwise the floor ornament named in bits
+  3-10 plays its sound 0x88.
+- **Kinds 0x0B and 0x0C:** destination and source markers of random pits.
 
 ### What triggers actuators
 
@@ -555,8 +585,8 @@ When the party's move ends on an open pit, the move routine loops:
 1. **Fall one layer:** go to the map one layer down at the same world
    position (0x1CC7E with +1) and count one more level fallen.
 2. **Stop condition:** the loop stops on a non-pit square. The map set's
-   attribute (8, set, 11, 0x6A) also controls landing; it is read but its
-   exact effect isn't traced.
+   attribute (8, set, 11, 0x6A) switches pits to random destinations (see
+   "Random pits" below).
 3. **Animation:** while falling (and not climbing down on purpose), each
    intermediate level redraws the view (0x54B3F, then 0x138D9), so the
    player sees the fall.
@@ -642,9 +672,17 @@ square:
   counter increases. Each living champion takes
   `(min(max HP / 4, 17) + rand4()) × falls` with attack type 0x30, so a
   second level in one move hurts twice as much. A fallen creature takes 20.
-  If the map's graphics set has attribute 0x6A, the destination instead
-  comes from a text thing on the pit square (word 1 kind 0x0C), choosing at
-  random among listed targets (0x4D88A); this is not yet modelled.
+  **Random pits.** If the map's graphics set has attribute (8, set, 11,
+  0x6A) and the faller is not a creature, the pit can send it elsewhere.
+  The pit square holds a marker text thing: word 1 with bits 1-2 equal to 1,
+  kind 0x0C in bits 11-15, and an id in bits 3-10. 0x4D88A in counting mode
+  counts every kind-0x0B marker with the same id in the whole dungeon
+  (maps in order, squares column-major, things in list order); one
+  `random(count)` call picks r, and the same routine in search mode returns
+  the map and square of the (r + 1)-th marker. The faller goes there, on any
+  map, and the move continues from that square. This jump does not count
+  as a fall level, so it adds no fall damage of its own. The shipped
+  dungeon uses it (for example a pit on map 38).
 - **Stairs**, for things other than the party, creatures and missiles: the
   item goes down a layer if stairs bit 2 is clear. It then moves one square
   in the stairs' exit direction (0x1CE6F) and its cell turns to match.
@@ -696,7 +734,7 @@ later. Kind 10: the party can be pushed back by a delayed teleport (event
 0x5D), with a chance of `min(90, 10 × load term + 25 or 50)`%; this is still
 to be modelled.
 
-## Wall sensors (0x4C134, partly)
+## Wall sensors (0x4C134)
 
 Clicking a wall cell, possibly holding an item, checks the actuators on
 that cell:
@@ -706,17 +744,22 @@ that cell:
 | 1 | Any click fires (not allowed in follow mode) |
 | 2 | Fires when "hand empty" differs from the inverted bit, i.e. normally when holding something; follow mode sends that state |
 | 3 | Fires when "holding item *data*" differs from the inverted bit; with word 2 bit 2 the item is consumed |
-| 0x15 | Like 3 but only for items with charges |
+| 0x15 | Like 3 but only for items with charges left (0x1F606); an empty item counts as not matching |
 | 0x17 | With an empty hand: toggles word 2 bit 2, and fires when that bit differs from the inverted bit |
-| 0x1A, 0x1B, 0x1C, 0x18, others | Alcoves, counting keyholes and item slots; not yet written up |
+| 0x18 | Push button with a cooldown. With an empty hand and word 2 bit 0 (busy) clear: set busy, schedule event 0x57 (re-arm, actuator in bytes 6-7) at tick + *data* + 2, and fire (set in follow mode). Inverted buttons fire with 16 extra ticks of delay. Types 0x4A and 0x46 on a door with a flag at +3 bit 0x20 take the same path. |
+| 0x1A | Alcove for one item kind: the wall ornament's attribute (9, ornament, 11, 0x0E). With word 2 bit 2 clear, holding that kind puts the item into the wall on that cell. With bit 2 set and an empty hand, it hands over an item of that kind from the cell (0x4BD17), or creates a new one (0x1DE8E) with its charges set to full when there is none. No actuator fires. |
+| 0x1B | Receptacle: when *data* is non-zero and the held item is the ornament's kind, the item is consumed and *data* decreases; on reaching 0 the actuator marks itself busy and fires. |
+| 0x1C | With an empty hand and word 2 bit 2 clear: move the party to the target square (0x4BED2), facing word 2 bits 3-4 (absolute when inverted, otherwise added to the party's facing), then fire. |
+| 0x3F | Clears the busy bit when clicked with an empty hand; it fires nothing except in follow mode (where it sends set) |
 
 ## Open questions
 
 - The tick increment returned by launcher service 0x0F (expected 1, giving 7.5 ticks per second).
 - New-game RNG seed: confirm it stays 0, or comes from a header.
-- The pit "random destination" mode (graphics-set attribute 0x6A, 0x4D88A).
-- The rest of the wall sensor types (0x1A-0x1C, 0x18) and floor text kind 10.
-- Event types 0x0E, 0x46, 0x55, 0x5A and actuator types 0x2C, 0x32, 0x42,
-  0x43, 0x44, 0x46.
+
+- The charges that alcove 0x1A gives a newly
+  created item (the engine leaves them at the default).
+- Event types 0x0E, 0x46 and 0x5A (the repeating ornament sound), and the
+  meaning of door/teleporter bit 13 toggled by actuator 0x46.
 - The meaning of the 512-tick (0x39044) and 64-tick (0x47CC3) periodic
   calls.

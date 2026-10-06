@@ -32,6 +32,7 @@ pub mod magic;
 pub mod missiles;
 pub mod movement;
 pub mod party;
+pub mod potions;
 pub mod rng;
 pub mod save;
 pub mod squares;

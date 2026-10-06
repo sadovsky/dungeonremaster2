@@ -80,10 +80,11 @@ Meanings so far, from the code that reads them and the values in the data:
 | 3 | Food value | Eating adds it to the champion's food (0x39C3F). Present only on food items. |
 | 4 | Allowed-slot mask | See "Equipment slots". |
 | 5 | Launcher and ammunition class | Bit 15 set = launcher (bow, sling...); the low bits are a class mask. A launcher works when the ammunition's mask (bit 15 clear) shares a bit with it (0x408A8). |
-| 6 | Bits 0-4: a sub-type used when the item is shown or used (0x37F76); bit 15: a flag. TODO. |
-| 8 | Shown on the info panel for weapons when non-zero (0x3962A); used in combat (0x46A19). Probably the ranged or thrown strength. TODO. |
+| 6 | Icon animation (0x37F76): bits 0-4 frame count n, bits 5-7 group size m, bits 8-12 mode, bit 15 animate only while equipped in a slot it fits, bit 14 animate only while it is the item an action is running with. Frames start at icon sub 0x18; an active gate starts them one higher with one frame fewer. Modes: 0 tick mod n, 5 the same offset by the item number, 1 random, 2 party facing, 3 charge fraction `charges·n/(max+1) + 1`, 4 charge groups `tick mod m + (charges·(n/m)/(max+1))·m + 1`, 6 like 4 offset by the item number. Maximum charges (0x1F5D0): 15 for weapons and clothing, 3 for misc. |
+| 8 | Melee strength bonus: the strength-for-an-action routine (0x46A19) adds it for melee skills (0, 4-7, 9). Shown on the info panel for weapons when non-zero (0x3962A). |
 | 9 | Weapon damage (the info panel draws it as a bar scaled to 100); used in melee and throwing (0x16D72, 0x414A5, 0x478A1). |
-| 0x0A, 0x0C | Used when throwing or shooting (0x414A5, 0x478A1): 0x0C sets the missile's speed or range (default 5 to 11 if absent), 0x0A adds to the missile's energy. TODO. |
+| 0x0A | Launcher accuracy: when shooting, the missile's attack value is the launcher's attribute 0x0A + 2 × the shoot level (0x414A5 case 0x20). |
+| 0x0C | Missile step (speed) of a thrown item or of ammunition (0x478A1, 0x414A5). When a thrown item has none, the step is max(5, 11 − throw level). |
 | 0x0B | Armour: the low byte is the armour value (info bar scaled to 200); the high byte is probably a resistance. |
 | 0x0D | Extra damage on hit, e.g. poison (0x16D72). |
 | 0x13 | Duration in ticks. When the item is placed in a slot, a timer event (type 14) is scheduled this many ticks ahead (0x45A9D); torches and similar. |
@@ -97,12 +98,18 @@ Meanings so far, from the code that reads them and the values in the data:
 with *n* = 1 and 0x1F8A7 with *n* = 2.
 
 - **Charged items:** add the charges times attribute 0x34 (when *n* = 1) or 0x35 (when *n* = 2).
-- **Potions, when *n* = 2:** scale the value with the potion's power (word 1 low byte).
+- **Potions, when *n* = 2:** if the value v is above 1 it becomes
+  v/2 + power × (v/2) / 255 (power is word 1's low byte), so a full-power
+  potion is worth about its listed value and a weak one about half.
 - **Containers, unless their state bits (byte 4 bits 1-2) say otherwise:**
   add the totals of everything inside, recursively.
-- **Money containers** (see "Containers"): each misc item inside counts as
-  its attribute times its stack count. When *n* = 1 (weight), the total
-  coin weight is then divided by 5, rounded up.
+- **Money containers** (0x1F2AB): a container with clear state bits whose
+  type has a contents rule, text (20, index, 5, 0x40); in this archive
+  only container type 2. Each misc item inside counts as its attribute
+  times (stack count + 1), where the stack count is word 1 bits 8-13;
+  other things inside add their own totals. When *n* = 1 (weight), the
+  stacked total is divided by 5, rounding up (`(total + 4) / 5`); for
+  value it is added in full.
 
 ## Charges and stack counts
 
@@ -172,6 +179,27 @@ Attribute 4 bits seen in the data:
 - **Container panel:** opening a container shows it in the inventory
   panel with 8 cells (slots 30-37, commands 0x3A-0x41).
 
+## Item kind lists (0x1538D)
+
+Several systems need "which items count": item relay actuator 0x40,
+merchants, and creatures that collect or steal. They read a kind list,
+text (15, creature or list index, 5, sub) from GRAPHICS.DAT, and turn it
+into a 512-bit set with one bit per item number (see "Item numbers"
+above). The list is a compact string:
+
+- A letter sets the item-number base for the numbers after it: `W`
+  weapons (0), `A` clothing (0x80), `J` misc (0x100), `P` potions (0x180),
+  `C` containers (0x1E0, or 0 when the caller asks to leave containers
+  out) and `S` the scroll (0x1FC). Other letters leave the base unset.
+- Digits form a number; `-` makes the number before it the start of a
+  range.
+- When the next letter (or the end) arrives, the pending number or range
+  is marked at base + number, and the base is cleared again.
+
+So a list like `W2-4J7` (an invented example) selects weapons 2 to 4 and
+misc item 7. Item relay 0x40 reads sub (word 2 bits 7-10) × 3 + 0x20 of
+creature type *data* & 0xFF. The engine's parser is `items::KindSet`.
+
 ## Eating and drinking (command 0x46, 0x39C3F)
 
 Clicking the mouth area with an item in the leader's hand feeds it to the
@@ -184,18 +212,33 @@ open champion:
 - **Water containers (0x39BBB):** add 800 to water (offset +0x46), capped at 2048. The container is kept.
 - **Potions (type 8):**
   - Word 1 bits 8-14 are the kind and bits 0-7 the power.
-  - The effect depends on the kind:
+  - Three amounts come from the power p: s = p/25 + 8, the divisor
+    d = ((511 − p) / ((p + 1)/8 + 32)) / 2, and p itself. The effect
+    depends on the kind (implemented in `crates/dm2-engine/src/potions.rs`):
 
     | Kind | Effect |
     |------|--------|
-    | 6-9 | Raise one stat (0x459C8) |
-    | 10 | Calls 0x475D3 with an amount growing with the square of the power (heal or cure?) |
-    | 11 | Restore stamina towards its maximum |
-    | 12 | A party-wide effect through 0x4565A (shield?) |
-    | 13 | Mana, capped at 900 |
-    | 14 | Restore hit points and clear status bits |
-    | 15 | Water +1600 |
+    | 6 | Dexterity +s through the stat raise 0x459C8 |
+    | 7 | Strength +(p/35 + 5) |
+    | 8 | Wisdom +s |
+    | 9 | Vitality +s |
+    | 10 | Cure poison (0x475D3) by s + p + (p/7)² |
+    | 11 | Stamina + min(max − current, max/d) |
+    | 12 | Armour bonus for the drinker: party effect 0x4565A with type 2, strength a = s + s/2, lasting a² ticks |
+    | 13 | Mana = min(900, mana + 2s − 8); above the maximum, half the excess over max(mana, maximum) is taken off again |
+    | 14 | Health + max/d, then wounds are cleared at random: AND the wound bits with a random value max(1, p/42) times, then once per try, up to 10 tries, stopping as soon as they change |
+    | 15 | Water + 1600, capped at 2048 |
 
+    Other kinds have no drink effect and the potion is not consumed.
+    Afterwards stamina and health are clamped to their maxima.
+  - **Stat raise (0x459C8):** when a gain pushes the current value past
+    its maximum, the gain loses a quarter of itself for every full 20
+    points of overshoot beyond 20; the result is clamped to 10-220.
+  - **Cure poison (0x475D3):** walks the champion's pending poison events
+    (type 0x4B), taking the cure amount off each event's remaining dose
+    and the poison pool, deleting events that are used up and decrementing
+    the poison-event count at +0x1F. The engine stores the dose in the pool
+    only, so it cancels the pending events once the pool reaches 0.
   - Afterwards the potion becomes an empty flask: misc item kind 0x14 is
     created through 0x1F07C and placed where the potion was.
 
@@ -213,6 +256,12 @@ same, showing the champion's details while the button is held.
 Taking, dropping and throwing all go through the viewport click handler
 (see `10-ui-input.md`). Items dropped in the far half of the view are
 thrown (0x227EA); the missile code then reads attributes 9, 0x0A and 0x0C.
+
+**Throw cost (0x478A1).** Throwing costs the thrower stamina through
+0x47707, with the amount from 0x4663A: let h = weight / 2 (weight in tenths
+of a kg, contents included); the cost is clamp(h, 1, 10) plus half of each
+positive value of h − 10, h − 20, ... So light items cost a little and
+heavy ones rise steeply (a 5 kg item costs 19, a 12 kg item 85).
 
 ## Special items
 

@@ -36,25 +36,43 @@ There are two spellings that do the same job:
 Each code is replaced by a string, which is itself expanded recursively.
 What the codes substitute, as far as is known:
 
-| Code | Substitution |
+| Code | Substitution (global it reads) |
 |------|--------------|
-| 0 | A number (decimal) from a global, e.g. a count in the current message |
-| 1 | A number derived from a 10-bit packed global |
-| 2 | Another text entry: (1, 0xFE, 5, *n*), where *n* comes from the current context |
-| 3, 4 | Fixed strings (pointers at 0x70536 and 0x7053A), probably drive or disk names |
-| 7 | The current champion's name (champion records are 0x107 bytes, starting at 0x7FBD0) |
-| 8, 9 | Fixed strings (0x7053E and 0x70542) |
-| 10 to 14, 25 | Numbers from various context globals |
-| 15 | Chooses code 3 or code 4 depending on a mode flag |
-| 17 | Text from category 7 (interface words) with sub-index from context, e.g. a class name |
-| 20, 22, 26, 28 | Directory prefixes for data and save files (`DATA\` and the like) |
-| 23 | A number formatted with a stored prefix |
-| 24 | An entry from a pointer table at 0x7574A (probably the save-slot or drive name) |
-| 27 | Fixed text (1, 0xFE, 5, 6) |
-| others | An empty or default string |
+| 0 | Number from the word at 0x7F214 |
+| 1 | Number (0x3FF − packed value at 0x760C1) >> 10 |
+| 2 | Text (1, 0xFE, 5, 0) |
+| 3, 4 | Fixed strings through pointers at 0x70536 and 0x7053A (drive or disk names) |
+| 7 | Name of the champion whose index is at 0x7F988 (nothing when it is −1) |
+| 8, 9 | Fixed strings through 0x7053E and 0x70542 |
+| 10 | Number from the word at 0x7F996 |
+| 11 | Number from the word at 0x7F98A |
+| 12 | Number from the word at 0x7F994 |
+| 13 | Number from the word at 0x7F992 |
+| 14 | Number from the word at 0x7F986 |
+| 15 | Code 3 when the word at 0x7F98E is 1, code 4 when it is 2, else nothing |
+| 17 | Text (7, 0, 5, n) with n the byte at 0x7F990 (an interface word such as a class name) |
+| 20, 26, 28 | Data-directory prefixes (28 picks 26 or 20 depending on the second graphics file) |
+| 22 | Save-directory prefix, which depends on a flag at 0x7054A |
+| 23 | A number from 0x7F998 formatted with a stored prefix |
+| 24 | An entry from the pointer table at 0x7574A, indexed by the word at 0x75748 |
+| 25 | Number from the word at 0x760C3 |
+| 27 | Text (1, 0xFE, 5, 6) |
+| others | An empty string |
 
-The code numbers are reliable. The descriptions of the context globals
-are working guesses until the callers are traced.
+Callers fill the context words before fetching the text. Two traced examples:
+
+- **Item details (0x3962A):** the item's weight in kilograms goes in
+  0x7F996 (code 10) and its tenths in 0x7F98A (code 11).
+- **Load line (0x48890):** the champion's load in kilograms goes in 0x7F994
+  (code 12), its tenths in 0x7F992 (code 13) and the maximum load in whole
+  kilograms in 0x7F986 (code 14); then text (7, 0, 5, 0x2A) is drawn at
+  layout id 0x22B, in one colour above the maximum, another above 5/8 of
+  it, and a third otherwise.
+
+The engine's `font::TextContext` mirrors these words (codes 0, 7, 10-14,
+17 and 25, plus the fixed texts 2 and 27). The drive, disk, directory and
+save-slot codes only appear in the DOS file dialogs, which the remake does
+not have, so they expand to nothing.
 
 ## Data languages stored as text
 
@@ -118,5 +136,4 @@ or a range).
   16-bit constants) and confirm the meaning of each code.
 - Where the language byte at 0x7576C is set (probably from a config
   file or the installer).
-- Confirm the context globals behind the escape codes.
 - Type 14 strings and the 16-byte type 13 entry.
