@@ -244,6 +244,19 @@ kind 3 becomes a poison cloud 0xFF87 and kind 0x13 a fireball 0xFF80, with
 the potion's power (word 1 low byte) as the explosion strength. The potion
 itself is used up. Other potion kinds survive the impact and drop.
 
+**Shooting (command 0x20, 0x414A5).** The launcher in the acting hand
+fires the item in the other hand when that item is ammunition for it
+(0x408A8): the launcher has attribute 5 bit 15 set, the ammunition has it
+clear, and they share a class bit in attribute 5's low 15 bits. The
+ammunition is taken from its slot (0x45F27) and launched by 0x47773 with,
+for shoot level L (skill 0x0B):
+
+- energy = L + launcher attribute 9 + ammunition attribute 9;
+- attack = launcher attribute 0x0A + 2L;
+- step = the ammunition's attribute 0x0C.
+
+Without matching ammunition the action fails.
+
 ## Explosions (0x16746)
 
 `explode(type, strength, x, y)` creates an explosion thing (type 15) on

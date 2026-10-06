@@ -305,3 +305,58 @@ fn coins_weigh_a_fifth_in_money_containers() {
     assert_eq!(full_plain - empty_plain, 2 * item_w, "ordinary containers add full weight");
     assert_eq!(full_money - empty_money, (2 * item_w + 4) / 5, "money containers add a fifth, rounded up");
 }
+
+#[test]
+fn shooting_fires_matching_ammunition_from_the_other_hand() {
+    use crate::combat::{self, ActionContext, ActionSpec, Effect as Action};
+    let Some(mut g) = game() else { return };
+    let data = g.data.clone().unwrap();
+    // Find a launcher (attribute 5 bit 15) and ammunition sharing a class bit.
+    let class = |g: &mut GameState, n: u16| {
+        let t = crate::actuators::create_item(g, n)?;
+        Some((t, data.item_db(&g.dungeon).attr(t, crate::items::ATTR_LAUNCHER)))
+    };
+    let mut pair = None;
+    'outer: for ln in 0..256u16 {
+        let Some((lt, lc)) = class(&mut g, ln) else { continue };
+        if lc & 0x8000 == 0 {
+            continue;
+        }
+        for an in 0..256u16 {
+            let Some((at, ac)) = class(&mut g, an) else { continue };
+            if ac & 0x8000 == 0 && ac & lc & 0x7FFF != 0 {
+                pair = Some((lt, at));
+                break 'outer;
+            }
+        }
+    }
+    let Some((launcher, ammo)) = pair else { return };
+    let idx = g.leader.unwrap_or(0);
+    g.champions[idx].set_inventory(1, launcher.0 & 0x3FFF);
+    g.champions[idx].set_inventory(0, ammo.0 & 0x3FFF);
+    let mut spec = ActionSpec { name: String::new(), codes: vec![0; 32] };
+    spec.codes[data.tables.code_slot("CM").unwrap()] = 0x20;
+    let db = data.item_db(&g.dungeon);
+    let ctx = ActionContext {
+        db: &db,
+        tables: &data.tables,
+        tick: 0,
+        map_multiplier: 1,
+        light_term: 0,
+        target: None,
+        target_untouchable: false,
+    };
+    let r = combat::do_action(&mut g.champions, &mut g.party_status, idx, 1, &spec, &ctx, &mut g.rng);
+    assert!(r.success);
+    let shot = r.effects.iter().find_map(|e| match e {
+        Action::LaunchMissile { what, step, .. } => Some((*what, *step)),
+        _ => None,
+    });
+    let (what, step) = shot.expect("a missile is launched");
+    assert_eq!(what & 0x3FFF, ammo.0 & 0x3FFF, "the ammunition flies");
+    assert_eq!(step as u16, db.attr(ammo, 0x0C), "speed from the ammunition's attribute 0x0C");
+    assert_eq!(g.champions[idx].inventory(0), EMPTY, "the ammunition left the other hand");
+    // Without ammunition the shot fails.
+    let r = combat::do_action(&mut g.champions, &mut g.party_status, idx, 1, &spec, &ctx, &mut g.rng);
+    assert!(!r.success);
+}

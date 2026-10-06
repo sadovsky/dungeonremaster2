@@ -549,6 +549,31 @@ pub fn do_action(
             }
             out.effects.push(Effect::PartyEffect { kind: (cm - 0x21) as u8, strength: strength as u16 });
         }
+        0x20 => {
+            // Shoot (0x414A5 case 0x20): the launcher in this hand fires the
+            // ammunition from the other hand. A launcher has attribute 5 bit
+            // 15 set; the ammunition has it clear and shares a class bit
+            // (0x408A8). With L the shoot level: energy = L + both items'
+            // attribute 9, attack = launcher attribute 0x0A + 2L, step =
+            // the ammunition's attribute 0x0C.
+            let launcher = champions[idx].inventory(hand);
+            let other = 1 - hand.min(1);
+            let ammo = champions[idx].inventory(other);
+            let class = |t: u16| ctx.db.attr(ThingRef(t), crate::items::ATTR_LAUNCHER);
+            let fits = launcher != EMPTY && ammo != EMPTY && class(launcher) & 0x8000 != 0 && class(ammo) & 0x8000 == 0 && class(ammo) & class(launcher) & 0x7FFF != 0;
+            if fits {
+                let l = champions::level(&champions[idx], party, skill::SHOOT, true) as i32;
+                champions[idx].set_inventory(other, EMPTY);
+                let a9 = |t: u16| ctx.db.attr(ThingRef(t), crate::items::ATTR_DAMAGE) as i32;
+                let energy = (l + a9(launcher) + a9(ammo)).clamp(0, 255) as u8;
+                let attack = (ctx.db.attr(ThingRef(launcher), 0x0A) as i32 + 2 * l).clamp(0, 255) as u8;
+                let step = ctx.db.attr(ThingRef(ammo), 0x0C) as u8;
+                out.effects.push(Effect::LaunchMissile { champion: idx, what: ammo, energy, attack, step });
+            } else {
+                success = false;
+                xp >>= 1;
+            }
+        }
         0x24 => {
             // Heal: 2 mana per step of min(10, heal level).
             let lv = champions::level(&champions[idx], party, skill::HEAL, true) as i16;
