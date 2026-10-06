@@ -88,8 +88,8 @@ Meanings so far, from the code that reads them and the values in the data:
 | 0x0D | Extra damage on hit, e.g. poison (0x16D72). |
 | 0x13 | Duration in ticks. When the item is placed in a slot, a timer event (type 14) is scheduled this many ticks ahead (0x45A9D); torches and similar. |
 | 0x14-0x1B, 0x1E-0x35 | Rare flags and amounts (bonus effects, special uses). Not yet traced. |
-| 0x34 | Extra value per charge. 0x1F6E4 adds `charges × attr 0x34` to attribute 1 or 2 when asked for that attribute. |
-| 0x35 | Extra weight per charge, added the same way. |
+| 0x34 | Extra weight per charge. 0x1F6E4 adds `charges × attr 0x34` to attribute 1 (weight) when asked for it. |
+| 0x35 | Extra value per charge, added the same way to attribute 2 (value). |
 
 ### Weight and value totals (0x1F6E4)
 
