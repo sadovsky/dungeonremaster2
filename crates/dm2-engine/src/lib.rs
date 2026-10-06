@@ -23,6 +23,7 @@ pub mod exe;
 pub mod exe_tables;
 pub mod font;
 pub mod gfx;
+pub mod hand;
 pub mod hooks;
 pub mod input;
 pub mod items;

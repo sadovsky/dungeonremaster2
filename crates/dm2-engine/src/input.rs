@@ -54,6 +54,10 @@ pub mod lists {
     pub const ACTION_HANDS: [u16; 4] = [97, 102, 107, 112];
     pub const SPELL_RUNES: u16 = 166;
     pub const SPELL_CAST: u16 = 172;
+    /// Action menu with 1, 2 or 3 choices (rows at rects 63-65), cancel and
+    /// champion rotation.
+    pub const ACTION_MENU: [u16; 3] = [117, 121, 126];
+    pub const CONTAINER: u16 = 174;
 
     pub const KEY_TITLE: u16 = 0;
     pub const KEY_GAME: u16 = 5;
@@ -77,6 +81,10 @@ pub struct UiState {
     pub champions: [bool; 4],
     pub inventory_open: Option<usize>,
     pub leader: Option<usize>,
+    /// Number of choices in the open action menu (0 = no menu).
+    pub menu_choices: usize,
+    /// A container is shown in the open inventory.
+    pub container_open: bool,
 }
 
 impl UiState {
@@ -94,11 +102,18 @@ impl UiState {
                 }
                 if self.inventory_open.is_some() {
                     v.extend([INVENTORY_SLOTS, INVENTORY_BUTTONS]);
+                    if self.container_open {
+                        v.push(CONTAINER);
+                    }
                 }
                 if self.leader.is_some() {
-                    for (i, &present) in self.champions.iter().enumerate() {
-                        if present {
-                            v.push(ACTION_HANDS[i]);
+                    if (1..=3).contains(&self.menu_choices) {
+                        v.push(ACTION_MENU[self.menu_choices - 1]);
+                    } else {
+                        for (i, &present) in self.champions.iter().enumerate() {
+                            if present {
+                                v.push(ACTION_HANDS[i]);
+                            }
                         }
                     }
                     v.extend([SPELL_RUNES, SPELL_CAST]);
@@ -247,6 +262,7 @@ pub fn rect_box(layout: &Layout, id: u16) -> Option<(i32, i32, i32, i32)> {
 }
 
 /// Map a dispatcher command number onto a game command, where one exists.
+/// Viewport clicks (0x50) need the click position: see `viewport_command`.
 pub fn game_command(cmd: u16) -> Option<crate::state::Command> {
     use crate::state::Command;
     use crate::world::Move;
@@ -257,8 +273,33 @@ pub fn game_command(cmd: u16) -> Option<crate::state::Command> {
         4 => Command::Move(Move::Right),
         5 => Command::Move(Move::Back),
         6 => Command::Move(Move::Left),
+        0x07..=0x0B | 0x14..=0x41 | 0x46 | 0x47 | 0x5F..=0x62 | 0x65..=0x6C | 0x70..=0x7B => Command::Ui(cmd),
         _ => return None,
     })
+}
+
+/// Which part of the 3D view a screen click at (x, y) hit (docs/10
+/// "Viewport clicks"; regions are the layout ids 0x2F8-0x2FE).
+pub fn view_region(layout: &Layout, x: i32, y: i32) -> crate::hand::ViewRegion {
+    use crate::hand::ViewRegion;
+    let (ox, oy) = crate::viewport::VP_SCREEN_POS;
+    let (vx, vy) = (x - ox, y - oy);
+    for (rid, r) in ViewRegion::LAYOUT_IDS {
+        if let Some((bx, by, bw, bh)) = rect_box(layout, rid) {
+            if vx >= bx && vy >= by && vx < bx + bw && vy < by + bh {
+                return r;
+            }
+        }
+    }
+    ViewRegion::Elsewhere { right: vx >= crate::viewport::VP_W as i32 / 2 }
+}
+
+/// The game command for a click: viewport clicks carry their region.
+pub fn click_command(layout: &Layout, cmd: u16, x: i32, y: i32) -> Option<crate::state::Command> {
+    if cmd == 0x50 {
+        return Some(crate::state::Command::Viewport(view_region(layout, x, y)));
+    }
+    game_command(cmd)
 }
 
 #[cfg(test)]
@@ -275,7 +316,14 @@ mod tests {
     #[test]
     fn arrows_and_keys_from_original() {
         let Some((inp, layout)) = load() else { return };
-        let ui = UiState { screen: Screen::Game, champions: [false; 4], inventory_open: None, leader: None };
+        let ui = UiState {
+            screen: Screen::Game,
+            champions: [false; 4],
+            inventory_open: None,
+            leader: None,
+            menu_choices: 0,
+            container_open: false,
+        };
         // Arrow grid at (229,129) with 29×23 buttons: turn left, forward, turn right.
         assert_eq!(inp.click(&layout, &ui, 230, 130, BUTTON_LEFT), Some(1));
         assert_eq!(inp.click(&layout, &ui, 262, 131, BUTTON_LEFT), Some(3));
@@ -288,5 +336,28 @@ mod tests {
         assert_eq!(inp.key(&ui, 0x01), Some(0x90));
         let title = UiState { screen: Screen::Title, ..ui };
         assert_eq!(inp.key(&title, 0x1C), Some(0xD7));
+    }
+
+    #[test]
+    fn inventory_and_viewport_regions() {
+        use crate::hand::ViewRegion;
+        let Some((inp, layout)) = load() else { return };
+        let ui = UiState {
+            screen: Screen::Game,
+            champions: [true, false, false, false],
+            inventory_open: Some(0),
+            leader: Some(0),
+            menu_choices: 0,
+            container_open: false,
+        };
+        // Inventory slot 0 (rect 507) lies at viewport (6,56), screen (6,96).
+        assert_eq!(inp.click(&layout, &ui, 10, 100, BUTTON_LEFT), Some(0x1C));
+        // Near floor cells of the view: rects 0x2F8/0x2F9.
+        assert_eq!(view_region(&layout, 30, 40 + 120), ViewRegion::NearLeft);
+        assert_eq!(view_region(&layout, 150, 40 + 120), ViewRegion::NearRight);
+        assert_eq!(view_region(&layout, 2, 42), ViewRegion::Elsewhere { right: false });
+        // With a two-choice menu open the menu rows replace the hand icons.
+        let menu = UiState { inventory_open: None, menu_choices: 2, ..ui };
+        assert_eq!(inp.click(&layout, &menu, 240, 55, BUTTON_LEFT), Some(0x71));
     }
 }

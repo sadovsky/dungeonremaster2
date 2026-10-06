@@ -272,6 +272,76 @@ result. Colours come from the 16-byte table (1, 0, 13, 254), loaded once
 | Leader bar (0x43332) | (1, 4, 20) and (1, 4, 14) | 60 and 59 | Name text at 61 in colour [9] (leader) or [15] |
 | Spell panel (0x43686) | (1, 5, set + 1), set = champion byte +0x1E | 92 | Six rune symbols drawn as font characters `'`' + 6·set + k` at ids 255-260; entered runes at 261 and up (0x435D3) |
 
+### Inventory panel (0x48890, inventory open)
+
+Drawn into a viewport-sized buffer, so its layout ids resolve relative to
+the viewport (rect 3), then shown where the 3D view normally is.
+
+| Element | Image / source | Layout id |
+|---------|----------------|-----------|
+| Background | (7, 0, 0) | 4 |
+| Slots | table at 0x75538 (below) | 507-536 |
+| Mouth | frame (1, 2, 4), then (7, 0, 0x25) | 545 |
+| Eye | frame (1, 2, 4), then (7, 0, 0x20), or 0x21 while a container is open | 546 |
+| Name and title | text, colour [15] | 553 |
+| Health, stamina ÷ 10, mana | "cur/max" numbers (0x483CB), colour [13] | 550-552 |
+| Load | numbers; colour [8] over the maximum, [11] over 5/8 of it, else [13] | 555 |
+| Food and water (0x39A4D) | panel (7, 0, 1) at 494; bars at 496 (colour [5]) and 497 (colour [14]) over −1024..2048 (0x398FF); labels (7, 0, 6) and (7, 0, 7) at 500 and 501; poison bar 499 and label (7, 0, 8) at 502 while poisoned | 494-502 |
+
+**Slot table (0x75538).** 38 records of 8 bytes: a layout id and the
+sub-index of the slot's "empty" picture in (7, 0) (0xFF = none). Records
+0-7 are the hand cells on the champion boxes (champion × 2 + hand, ids
+209-216); records 8-37 are inventory slots 0-29 (ids 507-536). The slot
+drawer 0x3815D puts a frame (1, 2, 4), 5 or 6 (selected) under hand cells
+and the first six inventory slots, then the item icon with colour key 12.
+The icon is sub 24 of the item's (category, index); 0x37F76 picks a later
+sub for animated or charged items (attribute 6), which the remake does
+not model yet.
+
+### Action area (0x4315D, 0x43759)
+
+- **Per champion:** two images from (1, 4) at ids 0x57 + cell and
+  0x53 + cell, where cell is the champion's party cell relative to the
+  facing. They are mirrored for cells 1 and 2; the front image is +1 for
+  the leader. The hand icons sit at ids 74 + n (ready hand) and 70 + n
+  (action hand).
+- **Action menu:** each row is (1, 4, 0x15) at id 0x3F + row with the
+  action's name at 0x42 + row. The names are the part before the colon of
+  the action strings (category, index, 5, 8 + n). With an empty hand the
+  key is the champion's portrait in category 22 (the bare hand). Zone lists
+  @117, @121 and @126 hold the 1-, 2- and 3-row menus (choices 0x71-0x73,
+  cancel 0x70).
+- **Open container:** fills the action area with 8 cells at screen ids
+  229-236 (zone list @174, commands 0x3A-0x41).
+
+### What the remake implements (`crates/dm2-engine/src/hand.rs`)
+
+- Slot clicks swap the held item with the slot when `slot_fits` allows it;
+  loads are recomputed.
+- Container cells hold the container's list (record word 1). Following the
+  first game, a container is shown open while it sits in the open
+  champion's action hand. That trigger is an assumption: the original's
+  flag at 0x7F224 is not traced yet.
+- The mouth eats food (attribute 3) and drinks potions. Potion kinds
+  11, 13, 14 and 15 are modelled, and the potion becomes an empty flask
+  (misc 0x14). Kinds 6-10 and 12 are TODO.
+- Viewport clicks use the six regions 0x2F8-0x2FE: take the top item of a
+  floor cell, drop into a floor cell (the square ahead only when it is
+  open), or click the wall ahead (`click_wall`, with the held item). Any
+  other click with an item throws it.
+- Throwing follows 0x478A1:
+  - energy = strength for the throw skill (10) + random(energy / 4 + 8) +
+    throw level;
+  - attack = clamp(40, (rnd & 31) + 8 × level, 200);
+  - step = attribute 0x0C, or max(5, 11 − level);
+  - experience is 8, or 12 + attribute 9 / 4.
+  - The stamina cost here is weight / 10, a stand-in for 0x4663A.
+- Not yet modelled: the drawn-things hit table (clicking a specific item
+  sprite, door buttons, giving items to creatures in front).
+- Actions run through `combat::do_action` and `apply::apply_action`, and
+  the hand stays busy for the BZ ticks.
+- Runes are entered, removed and cast through `magic`.
+
 ## Zone rectangles
 
 A zone's rectangle id is a record placed inside a size box (its parent,

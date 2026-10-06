@@ -34,7 +34,7 @@ const NAME_LEN: usize = 40;
 const GLOBALS_LEN: usize = 60;
 const INVENTORY_SLOTS: usize = 30;
 const TRAILER_MAGIC: &[u8; 4] = b"DM2R";
-const TRAILER_VERSION: u16 = 1;
+const TRAILER_VERSION: u16 = 2;
 
 /// Mask table addresses in the data object (docs/12, "Layout").
 mod addr {
@@ -340,7 +340,7 @@ pub fn to_bytes(g: &GameState, name: &str) -> Result<Vec<u8>, SaveError> {
             d.chain(&mut w, c.inventory(slot), false, false);
         }
     }
-    d.chain(&mut w, g.legacy.leader_hand, false, false);
+    d.chain(&mut w, g.hand.held, false, false);
     for (_, ev) in &events {
         if TIMERS_HOLDING_THINGS.contains(&ev.kind) {
             d.chain(&mut w, ev.w8(), false, false);
@@ -731,6 +731,7 @@ fn engine_trailer(g: &GameState, events: &[(u16, Event)]) -> Vec<u8> {
     for (_, e) in events {
         o.0.extend_from_slice(&e.to_bytes());
     }
+    o.u16(g.hand.held);
     o.0
 }
 
@@ -778,6 +779,7 @@ fn apply_trailer(g: &mut GameState, b: &[u8]) -> Result<(), SaveError> {
         events.push(Event::from_bytes(&e));
     }
     g.timeline = Timeline::from_slots(cap, events);
+    g.hand.held = i.u16()?;
     Ok(())
 }
 

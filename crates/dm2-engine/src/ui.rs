@@ -27,6 +27,38 @@ pub struct ChampionView {
     pub damage: Option<u16>,
 }
 
+/// An image in the archive: (category, index, sub-index of type 1).
+pub type Icon = (u8, u8, u8);
+
+/// The open inventory panel (0x48890 with the inventory flag).
+#[derive(Clone, Debug, Default)]
+pub struct InventoryView {
+    pub champion: usize,
+    /// Icons of the 30 inventory slots.
+    pub slots: Vec<Option<Icon>>,
+    /// The 8 cells of an open container, if one is shown.
+    pub container: Option<Vec<Option<Icon>>>,
+    /// Name and title (+0x00 / +0x08).
+    pub name: Vec<u8>,
+    /// Health, stamina and mana as (current, maximum).
+    pub stats: [(u16, u16); 3],
+    /// Food and water (+0x44, +0x46), −1024..2048.
+    pub food: i16,
+    pub water: i16,
+    pub poisoned: bool,
+    /// Load and maximum load in tenths of a kilogram.
+    pub load: (u16, u16),
+    /// Name of the held item while the eye is pressed.
+    pub info: Option<Vec<u8>>,
+}
+
+/// An open action menu (0x43759): the champion and its action names.
+#[derive(Clone, Debug, Default)]
+pub struct MenuView {
+    pub champion: usize,
+    pub names: Vec<Vec<u8>>,
+}
+
 /// Read-only view of the game the interface needs.
 #[derive(Clone, Debug, Default)]
 pub struct UiView {
@@ -36,6 +68,16 @@ pub struct UiView {
     pub inventory_open: Option<usize>,
     /// Alternate arrow set (global 0x7F3A4).
     pub alt_arrows: bool,
+    /// Item icons in each champion's two hands (None = empty hand).
+    pub hands: [[Option<Icon>; 2]; 4],
+    /// Hands still busy after an action (drawn greyed).
+    pub busy: [[bool; 2]; 4],
+    /// Party cell of each champion relative to the facing (0-3).
+    pub cells: [u8; 4],
+    pub inventory: Option<InventoryView>,
+    pub menu: Option<MenuView>,
+    /// Item in the leader's hand, drawn as the cursor.
+    pub held: Option<Icon>,
 }
 
 /// Layout ids used below.
@@ -52,7 +94,33 @@ mod id {
     pub const SPELL_PANEL: u16 = 92;
     pub const RUNE_SYMBOLS: u16 = 255; // 255-260
     pub const ENTERED_RUNES: u16 = 261; // 261-
+    // Inventory panel (viewport-relative ids).
+    pub const INVENTORY: u16 = 4;
+    pub const MOUTH: u16 = 545;
+    pub const EYE: u16 = 546;
+    pub const STATS: u16 = 550; // 550-552
+    pub const INV_NAME: u16 = 553;
+    pub const LOAD: u16 = 555;
+    pub const FOOD_PANEL: u16 = 494;
+    pub const FOOD_BAR: u16 = 496;
+    pub const WATER_BAR: u16 = 497;
+    pub const POISON_BAR: u16 = 499;
+    pub const FOOD_LABEL: u16 = 500;
+    pub const WATER_LABEL: u16 = 501;
+    pub const POISON_LABEL: u16 = 502;
+    pub const CONTAINER_CELLS: u16 = 229; // 229-236
+    // Action area (screen ids).
+    pub const HAND0: u16 = 74; // + champion
+    pub const HAND1: u16 = 70; // + champion
+    pub const CELL_BACK: u16 = 0x57; // + party cell
+    pub const CELL_FRONT: u16 = 0x53; // + party cell
+    pub const MENU_ROW: u16 = 0x3F; // + row
+    pub const MENU_TEXT: u16 = 0x42; // + row
 }
+
+/// Number of entries in the slot table (0x75538): 8 portrait hand cells,
+/// then the 30 inventory slots.
+pub const SLOT_TABLE_LEN: usize = 38;
 
 /// Small tables the interface reads from the user's SKULL.EXE.
 #[derive(Clone, Copy, Debug)]
@@ -61,6 +129,9 @@ pub struct UiTables {
     pub champion_colour: [u8; 4],
     /// Offset of the bar shadow (0x71724).
     pub shadow: (i32, i32),
+    /// Slot table (0x75538, 8-byte records): layout id of each slot and
+    /// the sub-index of its empty-slot picture in (7, 0), 0xFF for none.
+    pub slots: [(u16, u8); SLOT_TABLE_LEN],
 }
 
 impl UiTables {
@@ -72,14 +143,21 @@ impl UiTables {
             exe.u8_at(0x759CF)?,
         ];
         let shadow = (exe.i16_at(0x71724)? as i32, exe.i16_at(0x71726)? as i32);
-        Some(UiTables { champion_colour, shadow })
+        let mut slots = [(0u16, 0xFFu8); SLOT_TABLE_LEN];
+        for (k, s) in slots.iter_mut().enumerate() {
+            let a = 0x75538 + 8 * k as u32;
+            *s = (exe.u16_at(a)?, exe.u8_at(a + 2)?);
+        }
+        Some(UiTables { champion_colour, shadow, slots })
     }
 }
 
 impl Default for UiTables {
     /// Neutral stand-in when SKULL.EXE is unavailable.
     fn default() -> Self {
-        UiTables { champion_colour: [1, 2, 3, 4], shadow: (1, 1) }
+        // Slot layout ids follow the zone lists; no empty-slot pictures.
+        let slots = std::array::from_fn(|k| (if k < 8 { 209 + k as u16 } else { 507 + (k as u16 - 8) }, 0xFF));
+        UiTables { champion_colour: [1, 2, 3, 4], shadow: (1, 1), slots }
     }
 }
 
@@ -127,10 +205,132 @@ fn colours(a: &Assets) -> [u8; 16] {
     c
 }
 
+/// Item icons and slot frames use colour key 12 (0x3815D).
+const ICON_KEY: u8 = 12;
+
+/// A slot (0x3815D): frame (1, 2, 4) for hands and the first six inventory
+/// slots, then the item icon or the slot's empty picture (7, 0, n).
+fn draw_slot(a: &mut Assets, dst: &mut Bitmap, tables: &UiTables, k: usize, icon: Option<Icon>, selected: bool) {
+    let (rid, empty) = tables.slots[k];
+    if k < 14 {
+        a.draw(dst, 1, 2, if selected { 6 } else { 4 }, rid, 0, Some(ICON_KEY));
+    }
+    match icon {
+        Some((c, i, sub)) => {
+            a.draw(dst, c, i, sub, rid, 0, Some(ICON_KEY));
+        }
+        None if empty != 0xFF => {
+            a.draw(dst, 7, 0, empty, rid, 0, Some(ICON_KEY));
+        }
+        None => {}
+    }
+}
+
+/// Horizontal bar filling a layout box by value/max (0x398FF).
+fn hbar(a: &Assets, dst: &mut Bitmap, rid: u16, value: i16, lo: i32, hi: i32, colour: u8) {
+    let Some(rec) = a.layout.get(rid) else { return };
+    let Some(par) = a.layout.get(rec.parent as u16) else { return };
+    let (w, h) = if par.kind == 9 { (par.x as i32, par.y as i32) } else { return };
+    let Some(p) = a.layout.resolve(rid, w, h, (w, h)) else { return };
+    let fill_w = ((value as i32 - lo).clamp(0, hi - lo) * w) / (hi - lo).max(1);
+    fill(dst, p.x, p.y, fill_w, p.h, colour);
+}
+
+/// The inventory panel, drawn over the viewport area (0x48890, 0x39A4D).
+pub fn inventory_panel(a: &mut Assets, font: &Font, tables: &UiTables, inv: &InventoryView) -> Bitmap {
+    let mut b = Bitmap::new(crate::viewport::VP_W, crate::viewport::VP_H);
+    let col = colours(a);
+    a.draw(&mut b, 7, 0, 0, id::INVENTORY, 0, None);
+    for (s, icon) in inv.slots.iter().enumerate().take(30) {
+        draw_slot(a, &mut b, tables, 8 + s, *icon, false);
+    }
+    // Mouth and eye, each in a slot frame.
+    a.draw(&mut b, 1, 2, 4, id::MOUTH, 0, Some(ICON_KEY));
+    a.draw(&mut b, 7, 0, 0x25, id::MOUTH, 0, Some(ICON_KEY));
+    a.draw(&mut b, 1, 2, 4, id::EYE, 0, Some(ICON_KEY));
+    a.draw(&mut b, 7, 0, 0x20 + u8::from(inv.container.is_some()), id::EYE, 0, Some(ICON_KEY));
+    font.draw_at(&mut b, &a.layout, id::INV_NAME, &inv.name, col[0xF], None);
+    // Health, stamina (in tenths) and mana as "cur/max".
+    for (k, &(cur, max)) in inv.stats.iter().enumerate() {
+        let (cur, max) = if k == 1 { (cur / 10, max / 10) } else { (cur, max) };
+        let t = format!("{cur:>3}/{max:>3}").into_bytes();
+        font.draw_at(&mut b, &a.layout, id::STATS + k as u16, &t, col[0xD], None);
+    }
+    let (load, max) = inv.load;
+    let lc = if load > max { 8 } else if load as u32 * 8 > max as u32 * 5 { 0xB } else { 0xD };
+    let t = format!("{}.{}/{}", load / 10, load % 10, max / 10).into_bytes();
+    font.draw_at(&mut b, &a.layout, id::LOAD, &t, col[lc], None);
+    if let Some(info) = &inv.info {
+        a.draw(&mut b, 7, 0, 1, id::FOOD_PANEL, 0, None);
+        font.draw_at(&mut b, &a.layout, id::FOOD_LABEL, info, col[0xF], None);
+    } else {
+        // Food, water and poison bars (0x39A4D).
+        a.draw(&mut b, 7, 0, 1, id::FOOD_PANEL, 0, None);
+        hbar(a, &mut b, id::FOOD_BAR, inv.food, -1024, 2048, col[5]);
+        hbar(a, &mut b, id::WATER_BAR, inv.water, -1024, 2048, col[0xE]);
+        a.draw(&mut b, 7, 0, 6, id::FOOD_LABEL, 0, Some(ICON_KEY));
+        a.draw(&mut b, 7, 0, 7, id::WATER_LABEL, 0, Some(ICON_KEY));
+        if inv.poisoned {
+            hbar(a, &mut b, id::POISON_BAR, 1, 0, 1, col[8]);
+            a.draw(&mut b, 7, 0, 8, id::POISON_LABEL, 0, Some(ICON_KEY));
+        }
+    }
+    b
+}
+
+/// The action area (0x4315D, 0x43759): one panel per champion with its two
+/// hand icons, or the open action menu.
+fn action_area(a: &mut Assets, font: &Font, view: &UiView, col: &[u8; 16], s: &mut Bitmap) {
+    // An open container fills the action area with its 8 cells (list @174).
+    if let Some(cont) = view.inventory.as_ref().and_then(|i| i.container.as_ref()) {
+        for (k, icon) in cont.iter().enumerate().take(8) {
+            let rid = id::CONTAINER_CELLS + k as u16;
+            a.draw(s, 1, 2, 4, rid, 0, Some(ICON_KEY));
+            if let Some((c, i, sub)) = icon {
+                a.draw(s, *c, *i, *sub, rid, 0, Some(ICON_KEY));
+            }
+        }
+        return;
+    }
+    if let Some(m) = &view.menu {
+        for (row, name) in m.names.iter().enumerate().take(3) {
+            a.draw(s, 1, 4, 0x15, id::MENU_ROW + row as u16, 0, None);
+            font.draw_at(s, &a.layout, id::MENU_TEXT + row as u16, name, col[0xF], None);
+        }
+        return;
+    }
+    for (i, c) in view.champions.iter().enumerate() {
+        let Some(c) = c else { continue };
+        let cell = view.cells[i] & 3;
+        let flip = u8::from(cell == 1 || cell == 2);
+        let (back, front) = if cell < 2 { (6, 10) } else { (8, 12) };
+        a.draw(s, 1, 4, back, id::CELL_BACK + cell as u16, flip, None);
+        let lead = u8::from(view.leader == Some(i));
+        a.draw(s, 1, 4, front + lead, id::CELL_FRONT + cell as u16, flip, Some(ICON_KEY));
+        if c.dead {
+            continue;
+        }
+        for (h, rid) in [(0usize, id::HAND0), (1, id::HAND1)] {
+            if let Some((cat, idx, sub)) = view.hands[i][h] {
+                let sub = if view.busy[i][h] { sub + 1 } else { sub };
+                if !a.draw(s, cat, idx, sub, rid + i as u16, 0, Some(ICON_KEY)) {
+                    a.draw(s, cat, idx, sub.saturating_sub(1), rid + i as u16, 0, Some(ICON_KEY));
+                }
+            }
+        }
+    }
+}
+
 /// Draw the 320×200 game screen: interface plus the given viewport bitmap.
 pub fn compose(a: &mut Assets, font: &Font, tables: &UiTables, view: &UiView, vp: &Bitmap) -> Bitmap {
     let mut s = Bitmap::new(SCREEN_W, SCREEN_H);
-    s.paste(vp, VP_SCREEN_POS.0, VP_SCREEN_POS.1);
+    match &view.inventory {
+        Some(inv) => {
+            let panel = inventory_panel(a, font, tables, inv);
+            s.paste(&panel, VP_SCREEN_POS.0, VP_SCREEN_POS.1);
+        }
+        None => s.paste(vp, VP_SCREEN_POS.0, VP_SCREEN_POS.1),
+    }
     let col = colours(a);
 
     // Movement arrows (0x42AE4): six images at ids 40-45.
@@ -156,6 +356,9 @@ pub fn compose(a: &mut Assets, font: &Font, tables: &UiTables, view: &UiView, vp
             continue;
         }
         a.draw(&mut s, 22, c.portrait, 0, id::PORTRAIT + n, 0, None);
+        for h in 0..2 {
+            draw_slot(a, &mut s, tables, i * 2 + h, view.hands[i][h], false);
+        }
         let colour = col[(tables.champion_colour[i] & 15) as usize];
         for (k, &(cur, max)) in c.bars.iter().enumerate() {
             bar(a, &mut s, id::BARS + n + 4 * k as u16, cur, max, tables.shadow, col[0], colour);
@@ -185,7 +388,24 @@ pub fn compose(a: &mut Assets, font: &Font, tables: &UiTables, view: &UiView, vp
             }
         }
     }
+    action_area(a, font, view, &col, &mut s);
     s
+}
+
+/// Draw the cursor at screen (x, y): the held item's icon centred on the
+/// pointer, or nothing (the frontend draws the system pointer).
+pub fn draw_cursor(a: &mut Assets, s: &mut Bitmap, held: Option<Icon>, x: i32, y: i32) {
+    let Some((c, i, sub)) = held else { return };
+    let Some(sp) = a.sprite(c, i, sub) else { return };
+    let p = crate::layout::Placement {
+        x: x - sp.w as i32 / 2,
+        y: y - sp.h as i32 / 2,
+        w: sp.w as i32,
+        h: sp.h as i32,
+        skip_x: 0,
+        skip_y: 0,
+    };
+    sp.blit(s, &p, 0, Some(ICON_KEY));
 }
 
 /// Title screen image (category 5), drawn full-screen.
