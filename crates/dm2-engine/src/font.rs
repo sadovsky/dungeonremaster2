@@ -79,24 +79,38 @@ pub fn deobfuscate(raw: &[u8]) -> Vec<u8> {
     raw.iter().enumerate().map(|(i, &b)| (!b).wrapping_sub(i as u8)).collect()
 }
 
-/// Context the escape expander needs (docs/13 escape table). Only the
-/// codes the engine can currently answer are filled in.
+/// Context the escape expander needs (docs/13 escape table). In the
+/// original these are globals the caller fills before fetching the text;
+/// here the caller fills the matching fields.
 #[derive(Default)]
 pub struct TextContext<'a> {
-    /// Code 7: the current champion's name.
+    /// Code 7: the current champion's name (champion index at 0x7F988).
     pub champion_name: Option<&'a [u8]>,
-    /// Code 0: a number from the current message.
+    /// Code 0: a number from the current message (0x7F214).
     pub number: Option<i32>,
+    /// Codes 10-14: numbers from the words at 0x7F996, 0x7F98A, 0x7F994,
+    /// 0x7F992 and 0x7F986. The load line, for example, puts the load's
+    /// kilograms in 12, its tenths in 13 and the maximum in 14.
+    pub slots: [Option<i32>; 5],
+    /// Code 25: a number from the word at 0x760C3.
+    pub number25: Option<i32>,
+    /// Code 17: sub-index of an interface word (7, 0, 5, n), e.g. a class
+    /// name (byte 0x7F990).
+    pub interface_word: Option<u8>,
 }
 
 /// Fetch text (cat, idx, 5, sub) and expand escapes (0x3A921 + 0x3A6AB).
 pub fn text(g: &Gdat, cat: u8, idx: u8, sub: u8, ctx: &TextContext) -> Option<Vec<u8>> {
+    text_depth(g, cat, idx, sub, ctx, 0)
+}
+
+fn text_depth(g: &Gdat, cat: u8, idx: u8, sub: u8, ctx: &TextContext, depth: u32) -> Option<Vec<u8>> {
     let raw = g.get(Key::new(cat, idx, 5, sub))?;
     let flags = g.lookup(Key::new(0, 0, 11, 0)).unwrap_or(0);
     let plain = if flags & 0x08 != 0 { deobfuscate(raw) } else { raw.to_vec() };
     let end = plain.iter().position(|&b| b == 0).unwrap_or(plain.len());
     let mut out = Vec::new();
-    expand(g, &plain[..end], ctx, &mut out, 0);
+    expand(g, &plain[..end], ctx, &mut out, depth);
     Some(out)
 }
 
@@ -116,15 +130,29 @@ fn expand(g: &Gdat, s: &[u8], ctx: &TextContext, out: &mut Vec<u8>, depth: u32) 
             None
         };
         let Some(code) = code else { continue };
-        match code {
-            0 => out.extend(ctx.number.unwrap_or(0).to_string().bytes()),
-            7 => out.extend_from_slice(ctx.champion_name.unwrap_or(b"")),
-            27 if depth < 4 => {
-                if let Some(t) = text(g, 1, 0xFE, 6, ctx) {
+        let nested = |cat: u8, idx: u8, sub: u8, out: &mut Vec<u8>| {
+            if depth < 4 {
+                if let Some(t) = text_depth(g, cat, idx, sub, ctx, depth + 1) {
                     out.extend(t);
                 }
             }
-            // TODO(docs/13): the remaining codes need game context.
+        };
+        match code {
+            0 => out.extend(ctx.number.unwrap_or(0).to_string().bytes()),
+            2 => nested(1, 0xFE, 0, out),
+            7 => out.extend_from_slice(ctx.champion_name.unwrap_or(b"")),
+            10..=14 => out.extend(ctx.slots[(code - 10) as usize].unwrap_or(0).to_string().bytes()),
+            17 => {
+                if let Some(n) = ctx.interface_word {
+                    nested(7, 0, n, out);
+                }
+            }
+            25 => out.extend(ctx.number25.unwrap_or(0).to_string().bytes()),
+            27 => nested(1, 0xFE, 6, out),
+            // Codes 1, 3, 4, 8, 9, 15, 20, 22-24, 26 and 28 produce drive,
+            // disk and directory names or save-slot labels for the DOS file
+            // dialogs; the remake has no such dialogs, so they expand to
+            // nothing.
             _ => {}
         }
     }
@@ -140,5 +168,17 @@ mod tests {
         assert_eq!(Font::measure(b"A\nBCD"), (17, 12));
         let enc: Vec<u8> = b"HI".iter().enumerate().map(|(i, &c)| !(c.wrapping_add(i as u8))).collect();
         assert_eq!(deobfuscate(&enc), b"HI");
+    }
+
+    #[test]
+    fn load_line_expands_its_number_codes() {
+        let Ok(g) = Gdat::open(dm2_formats::gdat::default_path()) else { return };
+        let ctx = TextContext { slots: [None, None, Some(67), Some(3), Some(912)], ..Default::default() };
+        let Some(t) = text(&g, 7, 0, 0x2A, &ctx) else { return };
+        let s = String::from_utf8_lossy(&t);
+        // Only properties are checked, so no game text is stored here.
+        assert!(s.contains("67") && s.contains("912"), "numbers substituted");
+        assert!(!t.contains(&1), "no escape bytes left");
+        assert!(!s.contains(".Z"), "no .Z escapes left");
     }
 }
