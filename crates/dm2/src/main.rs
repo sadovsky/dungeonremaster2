@@ -144,6 +144,7 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
     for (i, c) in g.champions.iter().take(4).enumerate() {
         v.champions[i] = Some(ChampionView {
             name: c.name().into_bytes(),
+            wounds: c.wounds(),
             portrait: c.portrait(),
             rune_set: c.raw[0x1E],
             dead: !c.is_alive(),
@@ -156,6 +157,11 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
         });
     }
     v.leader = g.leader;
+    v.map_set = g.dungeon.maps[g.party.map].tileset;
+    v.alt_figures = g.magic_counter != 0;
+    v.asleep = g.party_status.asleep;
+    // Before any selection the leader's action hand is the one left lit.
+    v.hand_highlight = g.hand.highlight.or(g.leader.map(|l| (l, 1)));
     // Icon frame from attribute 6 (0x37F76); `slot` is where the item sits,
     // for the "animate only while equipped" gate.
     let icon = |t: u16, slot: Option<usize>| -> Option<Icon> {
@@ -199,6 +205,9 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
             });
         v.inventory = Some(InventoryView {
             champion: ci,
+            wounds: c.wounds(),
+            leader: g.leader == Some(ci),
+            poison: c.poison_pool(),
             slots: (0..30).map(|s| icon(c.inventory(s), Some(s))).collect(),
             container,
             name: c.name().into_bytes(),
@@ -216,7 +225,7 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
         });
     }
     if let Some(m) = &g.hand.menu {
-        v.menu = Some(MenuView { champion: m.champion, names: m.actions.iter().map(|a| a.name.clone().into_bytes()).collect() });
+        v.menu = Some(MenuView { champion: m.champion, hand: m.hand, names: m.actions.iter().map(|a| a.name.clone().into_bytes()).collect() });
     }
     if demo && g.champions.is_empty() {
         v.champions[0] = Some(ChampionView {
@@ -306,8 +315,17 @@ fn screenshot(args: &[String], title: bool) {
         let f = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(TITLE_FRAME);
         ui::title(&mut d.assets, f)
     } else {
-        let mut g = new_game(&d);
-        // Positional MAP X Y DIR, then --ticks N and --cmd C options.
+        // --load SAVE starts from a save game (e.g. one written by the
+        // original in DOSBox) instead of a new game.
+        let load_path = args.iter().position(|a| a == "--load").and_then(|i| args.get(i + 1));
+        let mut g = match load_path {
+            Some(p) => {
+                let gd = d.game_data.clone().expect("SKULL.EXE is needed to load saves");
+                save::read(std::path::Path::new(p), gd, d.creature_data.clone()).expect("load save")
+            }
+            None => new_game(&d),
+        };
+        // Positional MAP X Y DIR, then --ticks N, --cmd C and --load SAVE options.
         let pos: Vec<&String> = args[1..].iter().take_while(|a| !a.starts_with("--")).collect();
         if pos.len() >= 4 {
             let n: Vec<i32> = pos[..4].iter().map(|s| s.parse().expect("MAP X Y DIR must be numbers")).collect();
@@ -322,6 +340,7 @@ fn screenshot(args: &[String], title: bool) {
             match a.as_str() {
                 "--ticks" => ticks = num(v).expect("--ticks N"),
                 "--cmd" => cmds.push(num(v).expect("--cmd C") as u16),
+                "--load" => {}
                 _ => panic!("unknown option {a}"),
             }
         }
@@ -555,5 +574,48 @@ async fn play(args: Vec<String>) {
             draw_text(&label, 8.0, screen_height() - 12.0, 22.0, YELLOW);
         }
         next_frame().await;
+    }
+}
+
+#[cfg(test)]
+mod screen_tests {
+    use super::*;
+
+    /// FNV-1a over the indexed pixels: a stable fingerprint of a frame
+    /// (no image data is kept in the source).
+    fn fnv(px: &[u8]) -> u64 {
+        px.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| (h ^ b as u64).wrapping_mul(0x100_0000_01b3))
+    }
+
+    /// Hash of the composed game screen after the given interface
+    /// commands on a new game, or None without the user's game data.
+    fn frame(cmds: &[u16]) -> Option<u64> {
+        let dir = assets::default_data_dir();
+        if !dir.join("GRAPHICS.DAT").exists() || !dir.join("../SKULL.EXE").exists() {
+            return None;
+        }
+        let mut d = load(&dir);
+        d.game_data.as_ref()?;
+        let mut g = new_game(&d);
+        for &c in cmds {
+            if let Some(gc) = input::game_command(c) {
+                g.push_command(gc);
+            }
+            g.advance();
+        }
+        let f = game_frame(&mut d, &g, &ui_view(&g, false));
+        Some(fnv(&f.px))
+    }
+
+    /// Screens whose interface matches the original pixel for pixel in
+    /// DOSBox (docs/10, "Interface states"): change these only together
+    /// with a new comparison against the original.
+    #[test]
+    fn pinned_interface_screens() {
+        let cases: [(&str, &[u16], u64); 3] = [("start", &[], 0x23be4bf743c5bd49), ("inventory", &[7], 0xd54bfe305cc1b708), ("action menu", &[0x75], 0x7600a6e0bd246531)];
+        for (name, cmds, want) in cases {
+            let Some(got) = frame(cmds) else { return };
+            assert_eq!(got, want, "{name}: {got:#x}");
+        }
     }
 }

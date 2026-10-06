@@ -298,19 +298,59 @@ The icon is sub 24 of the item's (category, index); 0x37F76 picks a later
 sub for animated or charged items (attribute 6), which the remake does
 not model yet.
 
-### Action area (0x4315D, 0x43759)
+### Action area (0x3FE68 and its helpers)
 
-- **Per champion:** two images from (1, 4) at ids 0x57 + cell and
-  0x53 + cell, where cell is the champion's party cell relative to the
-  facing. They are mirrored for cells 1 and 2; the front image is +1 for
-  the leader. The hand icons sit at ids 74 + n (ready hand) and 70 + n
-  (action hand).
-- **Action menu:** each row is (1, 4, 0x15) at id 0x3F + row with the
-  action's name at 0x42 + row. The names are the part before the colon of
-  the action strings (category, index, 5, 8 + n). With an empty hand the
-  key is the champion's portrait in category 22 (the bare hand). Zone lists
-  @117, @121 and @126 hold the 1-, 2- and 3-row menus (choices 0x71-0x73,
-  cancel 0x70).
+Positions in the action area are by party cell relative to the facing,
+`rel = (cell + 4 - facing) & 3`, never by champion index. The idle panel
+is drawn in this order (all checked pixel for pixel against the original):
+
+- **Hand cells (0x42DA6)**, for each living champion and each hand:
+  - The cell is at id 0x4A + rel for the ready hand, 0x46 + rel for the
+    action hand.
+  - The tile is (1, 4, 2), or (1, 4, 4) when that hand is the last one
+    selected.
+  - The hand's icon is centred on the tile as a 17x17 box:
+    - With an item, a one-pixel drop shadow in colour 0 comes first, and
+      the icon's colour map is run through the 256-byte remap table
+      (1, 0, 7, 1) (0x1AF61), which gives the dimmed look.
+    - With an empty hand, the bare-hand picture (1, 2, 7 + hand) is drawn
+      plainly.
+    - Item icons here always use the base frame: the sub-index routine is
+      called with its context flag off.
+  - A busy hand, or the whole party asleep, adds a checkerboard of colour
+    0 over the cell (0x13745).
+  - A dead champion's cells are cleared to colour 0.
+- **Formation cells (0x4315D):** back image (1, 4, 6 or 8) at 0x57 + rel
+  and front image (1, 4, 10 or 12, +1 for the leader) at 0x53 + rel. Both
+  are mirrored for rel 1 and 2 and keyed on nibble 4. The back image is
+  checkerboard-shaded while the party sleeps or the champion shows damage.
+- **Formation grid (0x42EDD):**
+  - The floor is (8, map graphics set, 0xF5) at 0x2F.
+  - Each living champion's figure is a 17x17 cut from that champion's
+    sheet (1, 6, champion) at x = 17 x (rel + 4 while invisible), drawn at
+    0x35 + rel and keyed on nibble 12. The sheets are 8 cells wide.
+- **Last-selected hand:** the original sets 0x7FB50/0x7FB4C when a hand
+  or party cell is clicked and redraws a cell only when its contents
+  change, so the highlighted tile stays on screen. After a new game it is
+  the leader's action hand. The remake keeps it as presentation state.
+- **Action menu (0x43827):**
+  - Each row is (1, 4, 0x15) at 0x3F + row, with the action's name at
+    0x42 + row as shadowed text at the plain position (no row shift).
+  - Below the rows comes a strip (0x433D6): floor (8, set, 0xF6) at 0x5D,
+    the champion's figure at 0x5E, then (1, 4, 0x10) at 0x60 and
+    (1, 4, 0x12) at 0x61.
+  - The name bar above (0x43332) draws the name the same way.
+- **Which actions are listed (0x3F9F5):** action strings 8-11 are tried,
+  keeping the first three that pass all of these:
+  - they have a command (CM);
+  - their hand restriction (WH) is 0 or the hand + 1;
+  - the champion's level in their skill (SK) reaches the required level
+    (LV);
+  - for a bare hand's command 0x11, there is something to use (0x3FC6D:
+    slot 12 for the action hand, or slots 7-9).
+
+  Items held in the hand have further checks (0x3F927, code 8) that the
+  remake does not model yet.
 - **Open container:** fills the action area with 8 cells at screen ids
   229-236 (zone list @174, commands 0x3A-0x41).
 
@@ -368,36 +408,53 @@ used by the zone lists.
 
 ## Interface states (checked against the original in DOSBox)
 
-Comparing captures of the original with the remake's screenshots gave
-these rules:
+Captures of the original under DOSBox were compared with the remake's
+screenshots (`dm2 --screenshot ... [--cmd C] [--load SAVE]`; `--load`
+renders a state the original saved). These rules make every interface
+pixel match in the states checked (new-game start, inventory open,
+bare-hand action menu):
 
-- **Champion box (0x48890).** The portrait (0x487F9) is drawn only while
-  that champion's inventory is open. Otherwise the box shows the name at
-  0xA5 + n and the two hand slots (0x484B0 for slots 2n and 2n + 1).
-  The leader's name uses colour-table entry 9, others entry 0xF
-  (chosen at 0x48DD3). The dark name tab is part of the box image itself.
-  The hand slots get no extra frame; the box image has the recesses.
-- **Shadowed text.** Text passed with the 0x4000 colour flag (0x1C0BC)
-  appears one row lower than plain text, over a black drop shadow at
-  (+1, +1). The exact role of the low colour byte is still open, because
-  Ghidra mis-decodes the drawing routine.
-- **Right panel (0x3FE68).** With no champion selected (0x7FB6E = 0) it
-  shows only the idle action area: hand icons and the party formation.
-  Selecting a champion shows the name bar (0x43332) with that champion's
-  action menu. Clicking a party cell (commands 0x5F-0x62, 0x458F4 then
-  0x3FE03) or a hand icon (0x74-0x7B, 0x3FD77) selects; 0x3FD17
-  deselects. The spell panel (0x43686) belongs to the selection state
-  too; it is not shown by default.
-- **Inventory name line (0x229).** The name and title are joined by a
-  separator string (pointer at 0x760E0, a single space in this release)
-  unless the title begins with ',', ';' or '-'. The name bar carries five
-  buttons drawn by 0x48863: image (7, 0, sub) at 0x238 (0x11), 0x267
-  (0x13), 0x232 (0x0F), 0x234 (0x0D) and 0x236 (0x0B), each taking the
-  next sub when its state bit in 0x80008 is set.
+- **Champion box (0x48890):**
+  - The portrait (0x487F9) shows only while that champion's inventory is
+    open. Otherwise the box holds the name at 0xA5 + n and the two hand
+    slots.
+  - The leader's name is in colour 9, the others in 0xF (0x48DD3).
+  - The hand slots do get their frame (0x3815D): (1, 2, 4), 5 when that
+    body part is wounded, or 6 for the hand whose menu is open. The 18x18
+    frame is centred on the 16x16 slot box without being clipped, so it
+    starts one pixel up and left of the slot. Empty-slot pictures move
+    one sub further when the part is wounded. The eye, the mouth and the
+    first six inventory slots use the same frame placement.
+- **Shadowed text (colour flag 0x4000):**
+  - The shadow is two copies in colour 0, one row down and one row down
+    and right.
+  - In the champion box and the inventory (name, stats, load line), the
+    text itself is one row lower than plain text. In the action menu and
+    its name bar it stays at the plain position.
+  - The low colour byte passed with the flag (colour 0xC at 0x43332)
+    does not show.
+- **Right panel (0x3FE68):** with nobody selected it shows the idle
+  action area above. Selecting a champion through a hand cell (0x74-0x7B)
+  or a party cell (0x5F-0x62) shows the name bar with that champion's
+  action menu, and 0x3FD17 deselects. The spell panel (0x43686) is also
+  part of the selection state and isn't shown by default.
+- **Inventory open (0x3A464):** the arrows panel is shaded with a colour-0
+  checkerboard (0x13B7C on layout id 9, sized as rectangle 8).
+- **Inventory name line (0x229):**
+  - Name and title are joined by the separator string (pointer at
+    0x760E0; a single space here) unless the title starts with ',', ';' or
+    '-'.
+  - The five name-bar images from 0x48863 are drawn before the name,
+    because the first one, (7, 0, 0x11) at 0x238, covers the whole bar.
+- **Food, water and poison bars (0x398FF):**
+  - The fill fraction is computed in 1/10000 steps as a 16-bit value,
+    then scaled to the box width by 0x19BF2, with a minimum of one pixel.
+  - A colour-0 copy offset by (2, 2) is drawn first as the shadow.
+  - The bar colour becomes 8 below -512 and 0xB below 0.
 
-Still to match: the hand-slot rims in the champion box, the idle action
-area's layout, the menu's lower icon strip, and the inventory panel's
-remaining details.
+Not yet compared: the active spell panel, the held-item cursor, dialogs
+(save, slot list, "game loaded"), the paused screen and the inventory
+with the eye pressed.
 
 ## Open questions
 

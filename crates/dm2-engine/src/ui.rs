@@ -7,7 +7,7 @@ use dm2_formats::gdat::Key;
 
 use crate::assets::Assets;
 use crate::font::Font;
-use crate::gfx::{Bitmap, SCREEN_H, SCREEN_W};
+use crate::gfx::{Bitmap, Sprite, SCREEN_H, SCREEN_W};
 use crate::viewport::VP_SCREEN_POS;
 
 /// What the interface shows for one champion.
@@ -25,6 +25,9 @@ pub struct ChampionView {
     pub bars: [(u16, u16); 3],
     /// Damage to show in the starburst (champion +0x2C), if any.
     pub damage: Option<u16>,
+    /// Wound bits (champion +0x34): bit n wounds body slot n, which picks
+    /// the wounded slot frame and empty picture.
+    pub wounds: u16,
 }
 
 /// An image in the archive: (category, index, sub-index of type 1).
@@ -36,6 +39,11 @@ pub struct InventoryView {
     pub champion: usize,
     /// Icons of the 30 inventory slots.
     pub slots: Vec<Option<Icon>>,
+    /// The champion's wound bits (see `ChampionView::wounds`).
+    pub wounds: u16,
+    /// The champion is the leader: the name is drawn in colour 9, as in
+    /// the champion box (0x48DD3), else colour 0xF.
+    pub leader: bool,
     /// The 8 cells of an open container, if one is shown.
     pub container: Option<Vec<Option<Icon>>>,
     /// Name (+0x00) and title (+0x08); the panel shows them joined
@@ -48,6 +56,8 @@ pub struct InventoryView {
     pub food: i16,
     pub water: i16,
     pub poisoned: bool,
+    /// Poison pool (champion +0x48), drawn on 0..0xC00 when poisoned.
+    pub poison: i16,
     /// Load and maximum load in tenths of a kilogram.
     pub load: (u16, u16),
     /// Name of the held item while the eye is pressed.
@@ -58,6 +68,8 @@ pub struct InventoryView {
 #[derive(Clone, Debug, Default)]
 pub struct MenuView {
     pub champion: usize,
+    /// Hand whose action menu is open (its slot gets the selected frame).
+    pub hand: usize,
     pub names: Vec<Vec<u8>>,
 }
 
@@ -83,6 +95,16 @@ pub struct UiView {
     pub magic: Option<usize>,
     /// Item in the leader's hand, drawn as the cursor.
     pub held: Option<Icon>,
+    /// Graphics set of the party's map; picks the formation grid's floor
+    /// (8, set, 0xF5) drawn by 0x42EDD.
+    pub map_set: u8,
+    /// Invisibility active (0x7FFEE non-zero): the formation figures use
+    /// the alternate half of their sheets.
+    pub alt_figures: bool,
+    /// Party asleep (0x7F234): hand cells and formation cells are shaded.
+    pub asleep: bool,
+    /// Hand cell drawn with the highlighted tile (champion, hand).
+    pub hand_highlight: Option<(usize, usize)>,
 }
 
 /// Layout ids used below.
@@ -119,8 +141,14 @@ mod id {
     pub const HAND1: u16 = 70; // + champion
     pub const CELL_BACK: u16 = 0x57; // + party cell
     pub const CELL_FRONT: u16 = 0x53; // + party cell
+    pub const FORMATION: u16 = 0x2F; // formation grid floor
+    pub const FIGURE: u16 = 0x35; // + party cell
     pub const MENU_ROW: u16 = 0x3F; // + row
     pub const MENU_TEXT: u16 = 0x42; // + row
+    pub const MENU_FLOOR: u16 = 0x5D;
+    pub const MENU_FIGURE: u16 = 0x5E;
+    pub const MENU_LEFT: u16 = 0x60;
+    pub const MENU_RIGHT: u16 = 0x61;
 }
 
 /// Number of entries in the slot table (0x75538): 8 portrait hand cells,
@@ -227,34 +255,65 @@ fn colours(a: &Assets) -> [u8; 16] {
 /// Item icons and slot frames use colour key 12 (0x3815D).
 const ICON_KEY: u8 = 12;
 
-/// A slot (0x3815D): frame (1, 2, 4) for the first six inventory slots
-/// (the champion box image already holds the hand recesses), then the item
-/// icon or the slot's empty picture (7, 0, n).
-fn draw_slot(a: &mut Assets, dst: &mut Bitmap, tables: &UiTables, k: usize, icon: Option<Icon>, selected: bool) {
+/// A slot (0x3815D): the slot frame (1, 2, 4), or 5 when its body part is
+/// wounded, or 6 when it is the selected hand, for the champion box's hand
+/// slots and the first six inventory slots (the original always redraws
+/// the hand frames); then the item icon, or the slot's empty picture
+/// (7, 0, n), offset by one when wounded.
+fn draw_slot(a: &mut Assets, dst: &mut Bitmap, tables: &UiTables, k: usize, icon: Option<Icon>, selected: bool, wounded: bool) {
     let (rid, empty) = tables.slots[k];
-    if (8..14).contains(&k) {
-        a.draw(dst, 1, 2, if selected { 6 } else { 4 }, rid, 0, Some(ICON_KEY));
+    if k < 14 {
+        let frame = if selected { 6 } else if wounded { 5 } else { 4 };
+        slot_frame(a, dst, rid, frame);
     }
-
     match icon {
         Some((c, i, sub)) => {
             a.draw(dst, c, i, sub, rid, 0, Some(ICON_KEY));
         }
         None if empty != 0xFF => {
-            a.draw(dst, 7, 0, empty, rid, 0, Some(ICON_KEY));
+            a.draw(dst, 7, 0, empty + u8::from(wounded), rid, 0, Some(ICON_KEY));
         }
         None => {}
     }
 }
 
+/// A slot frame (1, 2, sub): the 18×18 frame is centred on the 16×16 slot
+/// box at `rid` and not clipped to it (one pixel up and left of the slot).
+fn slot_frame(a: &mut Assets, dst: &mut Bitmap, rid: u16, sub: u8) {
+    if let (Some(f), Some(p)) = (a.sprite(1, 2, sub), a.layout.resolve(rid, 16, 16, (16, 16))) {
+        let at = crate::layout::Placement {
+            x: p.x + (16 - f.w as i32) / 2,
+            y: p.y + (16 - f.h as i32) / 2,
+            w: f.w as i32,
+            h: f.h as i32,
+            skip_x: 0,
+            skip_y: 0,
+        };
+        f.blit(dst, &at, 0, Some(ICON_KEY));
+    }
+}
+
 /// Horizontal bar filling a layout box by value/max (0x398FF).
-fn hbar(a: &Assets, dst: &mut Bitmap, rid: u16, value: i16, lo: i32, hi: i32, colour: u8) {
+fn hbar(a: &Assets, dst: &mut Bitmap, rid: u16, value: i16, lo: i32, hi: i32, colour: u8, col: &[u8; 16]) {
+    // 0x398FF: low values switch colour (below -512: 8, below 0: 0xB).
+    let colour = if value < -0x200 { col[8] } else if value < 0 { col[0xB] } else { colour };
     let Some(rec) = a.layout.get(rid) else { return };
     let Some(par) = a.layout.get(rec.parent as u16) else { return };
     let (w, h) = if par.kind == 9 { (par.x as i32, par.y as i32) } else { return };
-    let Some(p) = a.layout.resolve(rid, w, h, (w, h)) else { return };
-    let fill_w = ((value as i32 - lo).clamp(0, hi - lo) * w) / (hi - lo).max(1);
-    fill(dst, p.x, p.y, fill_w, p.h, colour);
+    // The fraction is taken in 1/10000 steps first (as a 16-bit value),
+    // then scaled to the box width by 0x19BF2, at least one pixel.
+    let ratio = (((value as i32 - lo) as i16 as i32 * 10000) / (hi - lo).max(1)) & 0xFFFF;
+    let mut fw = if ratio == 10000 { w } else { ratio * w / 10000 };
+    if fw == 0 && ratio != 0 {
+        fw = 1;
+    }
+    if fw <= 0 {
+        return;
+    }
+    let Some(p) = a.layout.resolve(rid, fw, h, (fw, h)) else { return };
+    // A colour-0 shadow two pixels right and down, then the bar.
+    fill(dst, p.x + 2, p.y + 2, p.w, p.h, col[0]);
+    fill(dst, p.x, p.y, p.w, p.h, colour);
 }
 
 /// The inventory panel, drawn over the viewport area (0x48890, 0x39A4D).
@@ -263,13 +322,19 @@ pub fn inventory_panel(a: &mut Assets, font: &Font, tables: &UiTables, inv: &Inv
     let col = colours(a);
     a.draw(&mut b, 7, 0, 0, id::INVENTORY, 0, None);
     for (s, icon) in inv.slots.iter().enumerate().take(30) {
-        draw_slot(a, &mut b, tables, 8 + s, *icon, false);
+        draw_slot(a, &mut b, tables, 8 + s, *icon, false, s < 6 && inv.wounds & (1 << s) != 0);
     }
     // Mouth and eye, each in a slot frame.
-    a.draw(&mut b, 1, 2, 4, id::MOUTH, 0, Some(ICON_KEY));
+    slot_frame(a, &mut b, id::MOUTH, 4);
     a.draw(&mut b, 7, 0, 0x25, id::MOUTH, 0, Some(ICON_KEY));
-    a.draw(&mut b, 1, 2, 4, id::EYE, 0, Some(ICON_KEY));
+    slot_frame(a, &mut b, id::EYE, 4);
     a.draw(&mut b, 7, 0, 0x20 + u8::from(inv.container.is_some()), id::EYE, 0, Some(ICON_KEY));
+    // Name-bar buttons (0x48863): image (7, 0, sub) at each id; a set state
+    // bit selects the next sub. Drawn before the name: the first image is
+    // the whole bar.
+    for (sub, rid) in [(0x11u8, 0x238u16), (0x13, 0x267), (0x0F, 0x232), (0x0D, 0x234), (0x0B, 0x236)] {
+        a.draw(&mut b, 7, 0, sub, rid, 0, None);
+    }
     // Name and title (0x48890): joined by the separator unless the title
     // starts with ',', ';' or '-', drawn shadowed at 0x229.
     let mut full = inv.name.clone();
@@ -279,17 +344,13 @@ pub fn inventory_panel(a: &mut Assets, font: &Font, tables: &UiTables, inv: &Inv
         }
         full.extend_from_slice(&inv.title);
     }
-    font.draw_at_shadowed(&mut b, &a.layout, id::INV_NAME, &full, col[0xF], 0);
-    // Name-bar buttons (0x48863): image (7, 0, sub) at each id; a set state
-    // bit selects the next sub.
-    for (sub, rid) in [(0x11u8, 0x238u16), (0x13, 0x267), (0x0F, 0x232), (0x0D, 0x234), (0x0B, 0x236)] {
-        a.draw(&mut b, 7, 0, sub, rid, 0, None);
-    }
+    let fg = if inv.leader { col[9] } else { col[0xF] };
+    font.draw_at_shadowed(&mut b, &a.layout, id::INV_NAME, &full, fg, 0);
     // Health, stamina (in tenths) and mana as "cur/max".
     for (k, &(cur, max)) in inv.stats.iter().enumerate() {
         let (cur, max) = if k == 1 { (cur / 10, max / 10) } else { (cur, max) };
         let t = format!("{cur:>3}/{max:>3}").into_bytes();
-        font.draw_at(&mut b, &a.layout, id::STATS + k as u16, &t, col[0xD], None);
+        font.draw_at_shadowed(&mut b, &a.layout, id::STATS + k as u16, &t, col[0xD], col[0]);
     }
     let (load, max) = inv.load;
     let lc = if load > max { 8 } else if load as u32 * 8 > max as u32 * 5 { 0xB } else { 0xD };
@@ -301,19 +362,19 @@ pub fn inventory_panel(a: &mut Assets, font: &Font, tables: &UiTables, inv: &Inv
     };
     let t = crate::font::text(&a.gdat, 7, 0, 0x2A, &ctx)
         .unwrap_or_else(|| format!("{}.{}/{}", load / 10, load % 10, max / 10).into_bytes());
-    font.draw_at(&mut b, &a.layout, id::LOAD, &t, col[lc], None);
+    font.draw_at_shadowed(&mut b, &a.layout, id::LOAD, &t, col[lc], col[0]);
     if let Some(info) = &inv.info {
         a.draw(&mut b, 7, 0, 1, id::FOOD_PANEL, 0, None);
         font.draw_at(&mut b, &a.layout, id::FOOD_LABEL, info, col[0xF], None);
     } else {
         // Food, water and poison bars (0x39A4D).
         a.draw(&mut b, 7, 0, 1, id::FOOD_PANEL, 0, None);
-        hbar(a, &mut b, id::FOOD_BAR, inv.food, -1024, 2048, col[5]);
-        hbar(a, &mut b, id::WATER_BAR, inv.water, -1024, 2048, col[0xE]);
+        hbar(a, &mut b, id::FOOD_BAR, inv.food, -1024, 2048, col[5], &col);
+        hbar(a, &mut b, id::WATER_BAR, inv.water, -1024, 2048, col[0xE], &col);
         a.draw(&mut b, 7, 0, 6, id::FOOD_LABEL, 0, Some(ICON_KEY));
         a.draw(&mut b, 7, 0, 7, id::WATER_LABEL, 0, Some(ICON_KEY));
         if inv.poisoned {
-            hbar(a, &mut b, id::POISON_BAR, 1, 0, 1, col[8]);
+            hbar(a, &mut b, id::POISON_BAR, inv.poison as i16, 0, 0xC00, col[8], &col);
             a.draw(&mut b, 7, 0, 8, id::POISON_LABEL, 0, Some(ICON_KEY));
         }
     }
@@ -335,31 +396,162 @@ fn action_area(a: &mut Assets, font: &Font, view: &UiView, col: &[u8; 16], s: &m
         return;
     }
     if let Some(m) = &view.menu {
+        // 0x43759: one bar per action with its name, shadowed (0x4000).
         for (row, name) in m.names.iter().enumerate().take(3) {
             a.draw(s, 1, 4, 0x15, id::MENU_ROW + row as u16, 0, None);
-            font.draw_at(s, &a.layout, id::MENU_TEXT + row as u16, name, col[0xF], None);
+            font.draw_at_shadowed_flat(s, &a.layout, id::MENU_TEXT + row as u16, name, col[0xF], col[0]);
         }
+        // 0x433D6: the strip under the menu: a floor tile, the champion's
+        // party figure, and the two images either side of it.
+        a.draw(s, 8, view.map_set, 0xF6, id::MENU_FLOOR, 0, None);
+        let rel = (view.cells[m.champion] & 3) as i32;
+        if let Some(sheet) = a.sprite(1, 6, m.champion as u8) {
+            let x0 = FIGURE * (rel + if view.alt_figures { 4 } else { 0 });
+            if let (Some(fig), Some(p)) = (crop(&sheet, x0, 0, FIGURE, FIGURE), a.layout.resolve(id::MENU_FIGURE, FIGURE, FIGURE, (FIGURE, FIGURE))) {
+                fig.blit(s, &p, 0, Some(ICON_KEY));
+            }
+        }
+        a.draw(s, 1, 4, 0x10, id::MENU_LEFT, 0, None);
+        a.draw(s, 1, 4, 0x12, id::MENU_RIGHT, 0, None);
         return;
     }
+    // Idle action area, in the original's order (0x3FE68): for each
+    // champion its two hand cells (0x42DA6) and its formation cell
+    // (0x4315D); then the formation grid with the figures (0x42EDD). All
+    // positions are by party cell relative to the facing, not by champion.
     for (i, c) in view.champions.iter().enumerate() {
         let Some(c) = c else { continue };
-        let cell = view.cells[i] & 3;
-        let flip = u8::from(cell == 1 || cell == 2);
-        let (back, front) = if cell < 2 { (6, 10) } else { (8, 12) };
-        a.draw(s, 1, 4, back, id::CELL_BACK + cell as u16, flip, None);
-        let lead = u8::from(view.leader == Some(i));
-        a.draw(s, 1, 4, front + lead, id::CELL_FRONT + cell as u16, flip, Some(ICON_KEY));
+        let rel = (view.cells[i] & 3) as u16;
+        for h in 0..2 {
+            let rid = if h == 1 { id::HAND1 } else { id::HAND0 } + rel;
+            let lit = view.hand_highlight == Some((i, h));
+            hand_cell(a, s, col, c.dead, view.hands[i][h], h, rid, lit, view.busy[i][h] || view.asleep);
+        }
         if c.dead {
             continue;
         }
-        for (h, rid) in [(0usize, id::HAND0), (1, id::HAND1)] {
-            if let Some((cat, idx, sub)) = view.hands[i][h] {
-                let sub = if view.busy[i][h] { sub + 1 } else { sub };
-                if !a.draw(s, cat, idx, sub, rid + i as u16, 0, Some(ICON_KEY)) {
-                    a.draw(s, cat, idx, sub.saturating_sub(1), rid + i as u16, 0, Some(ICON_KEY));
+        let flip = u8::from(rel == 1 || rel == 2);
+        let (back, front) = if rel < 2 { (6, 10) } else { (8, 12) };
+        a.draw(s, 1, 4, back, id::CELL_BACK + rel, flip, Some(CELL_KEY));
+        if view.asleep || c.damage.is_some() {
+            shade_at(a, s, 1, 4, back, id::CELL_BACK + rel, col[0]);
+        }
+        let lead = u8::from(view.leader == Some(i));
+        a.draw(s, 1, 4, front + lead, id::CELL_FRONT + rel, flip, Some(CELL_KEY));
+        if view.asleep {
+            shade_at(a, s, 1, 4, front + lead, id::CELL_FRONT + rel, col[0]);
+        }
+    }
+    a.draw(s, 8, view.map_set, 0xF5, id::FORMATION, 0, None);
+    for (i, c) in view.champions.iter().enumerate() {
+        let Some(c) = c else { continue };
+        if c.dead {
+            continue;
+        }
+        let rel = (view.cells[i] & 3) as i32;
+        let Some(sheet) = a.sprite(1, 6, i as u8) else { continue };
+        let x0 = FIGURE * (rel + if view.alt_figures { 4 } else { 0 });
+        if let Some(fig) = crop(&sheet, x0, 0, FIGURE, FIGURE) {
+            if let Some(p) = a.layout.resolve(id::FIGURE + rel as u16, FIGURE, FIGURE, (FIGURE, FIGURE)) {
+                fig.blit(s, &p, 0, Some(ICON_KEY));
+            }
+        }
+    }
+}
+
+/// Formation-cell images (1, 4, 6-13) are keyed on nibble 4 (checked
+/// against the original: their nibble-4 areas show what lies beneath).
+const CELL_KEY: u8 = 4;
+
+/// Size of one party figure in the (1, 6, champion) sheets (0x71726/0x7172A).
+const FIGURE: i32 = 17;
+
+/// A w×h piece of a sprite, keeping its colour map.
+fn crop(sp: &Sprite, x0: i32, y0: i32, w: i32, h: i32) -> Option<Sprite> {
+    if x0 < 0 || y0 < 0 || x0 + w > sp.w as i32 || y0 + h > sp.h as i32 {
+        return None;
+    }
+    let mut px = Vec::with_capacity((w * h) as usize);
+    for y in y0..y0 + h {
+        let row = y as usize * sp.w;
+        px.extend_from_slice(&sp.px[row + x0 as usize..row + (x0 + w) as usize]);
+    }
+    Some(Sprite { w: w as usize, h: h as usize, px, cmap: sp.cmap, off: (0, 0) })
+}
+
+/// Shade the box an image (cat, idx, sub) occupies at `rid` with a
+/// checkerboard of colour `c`, like 0x1BDC3 does for busy hands and
+/// sleeping or wounded champions.
+fn shade_at(a: &mut Assets, s: &mut Bitmap, cat: u8, idx: u8, sub: u8, rid: u16, c: u8) {
+    let Some(sp) = a.sprite(cat, idx, sub) else { return };
+    let Some(p) = a.layout.resolve(rid, sp.w as i32, sp.h as i32, (sp.w as i32, sp.h as i32)) else { return };
+    shade(s, p.x, p.y, p.w, p.h, c);
+}
+
+fn shade(s: &mut Bitmap, x: i32, y: i32, w: i32, h: i32, c: u8) {
+    for yy in y.max(0)..(y + h).min(s.h as i32) {
+        for xx in x.max(0)..(x + w).min(s.w as i32) {
+            if (xx + yy) & 1 == 0 {
+                s.px[yy as usize * s.w + xx as usize] = c;
+            }
+        }
+    }
+}
+
+/// One hand cell of the action area (0x42DA6): the cell tile, then the
+/// hand's icon centred on it (0x3844C). An item gets a one-pixel drop
+/// shadow in colour 0 (16×16 icon in a 17×17 box); an empty hand shows
+/// the bare-hand picture (1, 2, 7 + hand) plainly. A dead champion's cells
+/// are cleared.
+#[allow(clippy::too_many_arguments)]
+fn hand_cell(a: &mut Assets, s: &mut Bitmap, col: &[u8; 16], dead: bool, item: Option<Icon>, hand: usize, rid: u16, lit: bool, shaded: bool) {
+    let Some(tile) = a.sprite(1, 4, if lit { 4 } else { 2 }) else { return };
+    let Some(p) = a.layout.resolve(rid, tile.w as i32, tile.h as i32, (tile.w as i32, tile.h as i32)) else { return };
+    if dead {
+        fill(s, p.x, p.y, p.w, p.h, col[0]);
+        return;
+    }
+    tile.blit(s, &p, 0, None);
+    // 0x3844C asks 0x37F76 with the "no context" flag, so action-area icons
+    // always use the item's base frame: no animation, no equipped variant.
+    let (icon, shadow) = match item {
+        Some((c, i, _)) => (a.sprite(c, i, crate::items::ICON_BASE), true),
+        None => (a.sprite(1, 2, 7 + hand as u8), false),
+    };
+    if let Some(icon) = icon {
+        // Both paths centre a 17×17 box (16×16 icon plus its shadow).
+        let (bw, bh) = (icon.w as i32 + 1, icon.h as i32 + 1);
+        let x = p.x + ((tile.w as i32 + 1) >> 1) - ((bw + 1) >> 1);
+        let y = p.y + ((tile.h as i32 + 1) >> 1) - ((bh + 1) >> 1);
+        let at = |x, y| crate::layout::Placement { x, y, w: icon.w as i32, h: icon.h as i32, skip_x: 0, skip_y: 0 };
+        if shadow {
+            for yy in 0..icon.h {
+                for xx in 0..icon.w {
+                    if icon.px[yy * icon.w + xx] != ICON_KEY {
+                        let (dx, dy) = (x + 1 + xx as i32, y + 1 + yy as i32);
+                        if dx >= 0 && dy >= 0 && (dx as usize) < s.w && (dy as usize) < s.h {
+                            s.px[dy as usize * s.w + dx as usize] = col[0];
+                        }
+                    }
                 }
             }
         }
+        // 0x1AF61: an item icon's colour map goes through the 256-byte remap
+        // table (1, 0, 7, 1) before drawing, which gives the action area its
+        // dimmed item icons.
+        let mut dimmed = Sprite { w: icon.w, h: icon.h, px: icon.px.clone(), cmap: icon.cmap, off: (0, 0) };
+        // Only items take this path; the bare-hand picture is drawn plainly.
+        if let (true, Some(m), Some(t)) = (shadow, dimmed.cmap.as_mut(), a.gdat.get(Key::new(1, 0, 7, 1))) {
+            if t.len() >= 256 {
+                for c in m.iter_mut() {
+                    *c = t[*c as usize];
+                }
+            }
+        }
+        dimmed.blit(s, &at(x, y), 0, Some(ICON_KEY));
+    }
+    if shaded {
+        shade(s, p.x, p.y, p.w, p.h, col[0]);
     }
 }
 
@@ -379,6 +571,16 @@ pub fn compose(a: &mut Assets, font: &Font, tables: &UiTables, view: &UiView, vp
     let base = if view.alt_arrows { 14 } else { 2 };
     for k in 0..6u8 {
         a.draw(&mut s, 1, 3, base + 2 * k, id::ARROWS + k as u16, 0, None);
+    }
+    // Opening an inventory (0x3A464) shades the arrows panel, layout id 9
+    // sized as its rectangle 8, with colour 0 (0x13B7C).
+    if view.inventory.is_some() {
+        if let Some(r) = a.layout.get(8) {
+            let (w, h) = (r.x as i32, r.y as i32);
+            if let Some(p) = a.layout.resolve(9, w, h, (w, h)) {
+                shade(&mut s, p.x, p.y, p.w, p.h, col[0]);
+            }
+        }
     }
 
     // Champion boxes along the top (0x48140, 0x487F9, 0x48733).
@@ -407,7 +609,8 @@ pub fn compose(a: &mut Assets, font: &Font, tables: &UiTables, view: &UiView, vp
             let fg = if view.leader == Some(i) { col[9] } else { col[0xF] };
             font.draw_at_shadowed(&mut s, &a.layout, id::NAME + n, &c.name, fg, 0);
             for h in 0..2 {
-                draw_slot(a, &mut s, tables, i * 2 + h, view.hands[i][h], false);
+                let sel = view.menu.as_ref().is_some_and(|m| m.champion == i && m.hand == h);
+                draw_slot(a, &mut s, tables, i * 2 + h, view.hands[i][h], sel, c.wounds & (1 << h) != 0);
             }
         }
         let colour = col[(tables.champion_colour[i] & 15) as usize];
@@ -430,7 +633,9 @@ pub fn compose(a: &mut Assets, font: &Font, tables: &UiTables, view: &UiView, vp
             a.draw(&mut s, 1, 4, 0x14, id::LEADER_BAR, 0, None);
             a.draw(&mut s, 1, 4, 0x0E, id::LEADER_BAR_END, 0, None);
             let fg = if view.leader == Some(sel) { col[9] } else { col[0xF] };
-            font.draw_at(&mut s, &a.layout, id::LEADER_NAME, &c.name, fg, None);
+            // 0x43332: shadowed (0x4000). The shadow is colour 0; the colour
+            // 0xC the call also passes does not show (checked in DOSBox).
+            font.draw_at_shadowed_flat(&mut s, &a.layout, id::LEADER_NAME, &c.name, fg, col[0]);
             if view.menu.is_none() {
                 a.draw(&mut s, 1, 5, c.rune_set + 1, id::SPELL_PANEL, 0, None);
                 if c.rune_set < 4 {

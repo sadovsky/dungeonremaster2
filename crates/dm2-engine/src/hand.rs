@@ -41,11 +41,16 @@ pub struct HandState {
     pub busy_until: [[u32; 2]; 4],
     /// The eye was clicked: show the held item's details (0x3A409).
     pub show_info: bool,
+    /// Last hand cell selected in the action area (champion, hand), drawn
+    /// with the highlighted tile. Presentation only: the original sets
+    /// 0x7FB50/0x7FB4C when a hand or party cell is clicked and never
+    /// redraws the cell until its contents change, so the highlight stays.
+    pub highlight: Option<(usize, usize)>,
 }
 
 impl Default for HandState {
     fn default() -> Self {
-        HandState { held: EMPTY, inventory_open: None, menu: None, magic: None, busy_until: [[0; 2]; 4], show_info: false }
+        HandState { held: EMPTY, inventory_open: None, menu: None, magic: None, busy_until: [[0; 2]; 4], show_info: false, highlight: None }
     }
 }
 
@@ -415,6 +420,14 @@ pub fn hand_busy(g: &GameState, champion: usize, hand: usize) -> bool {
     champion < 4 && g.tick < g.hand.busy_until[champion][hand.min(1)]
 }
 
+/// 0x3FC6D for the bare-hand command 0x11: the action hand needs an item
+/// in slot 12, or in one of slots 7-9 (approximated the same way for the
+/// ready hand).
+fn has_something_to_use(g: &GameState, champion: usize, hand: usize) -> bool {
+    let c = &g.champions[champion];
+    (hand == 1 && c.inventory(12) != EMPTY) || (7..10).any(|s| c.inventory(s) != EMPTY)
+}
+
 /// Commands 0x74-0x7B: open the action menu for a champion's hand.
 pub fn open_menu(g: &mut GameState, champion: usize, hand: usize) -> bool {
     if champion >= g.champions.len() || !g.champions[champion].is_alive() || hand_busy(g, champion, hand) {
@@ -422,13 +435,36 @@ pub fn open_menu(g: &mut GameState, champion: usize, hand: usize) -> bool {
     }
     let Some(data) = g.data.clone() else { return false };
     let Some((cat, idx)) = action_key(g, champion, hand) else { return false };
-    let actions: Vec<ActionSpec> = (0..3)
-        .filter_map(|n| combat::action_spec(&data.gdat, &data.tables, cat, idx, n))
-        .filter(|a| !a.name.is_empty())
-        .collect();
+    // 0x3F9F5: try action strings 8-11 and keep the first three that have
+    // a command (CM), suit this hand (WH is 0 or hand + 1), and whose skill
+    // level (SK) reaches the required level (LV). A bare hand's command
+    // 0x11 also needs something to use (0x3FC6D).
+    // TODO(0x3F927, code 8): the extra checks for items held in the hand.
+    let bare = g.champions[champion].inventory(hand) == EMPTY;
+    let code = |a: &ActionSpec, slot: usize| a.codes.get(slot).copied().unwrap_or(0);
+    let mut actions: Vec<ActionSpec> = Vec::new();
+    for n in 0..4u8 {
+        if actions.len() >= 3 {
+            break;
+        }
+        let Some(a) = combat::action_spec(&data.gdat, &data.tables, cat, idx, n) else { continue };
+        let cm = code(&a, 2);
+        let wh = code(&a, 0x11);
+        if a.name.is_empty() || cm == 0 || (wh != 0 && wh - 1 != hand as i16) {
+            continue;
+        }
+        if bare && cm == 0x11 && !has_something_to_use(g, champion, hand) {
+            continue;
+        }
+        let level = champions::level(&g.champions[champion], &g.party_status, code(&a, 0).max(0) as usize, true);
+        if (code(&a, 1) as i32) <= level as i32 {
+            actions.push(a);
+        }
+    }
     if actions.is_empty() {
         return false;
     }
+    g.hand.highlight = Some((champion, hand));
     g.hand.menu = Some(ActionMenu { champion, hand, actions });
     g.hand.magic = None;
     true

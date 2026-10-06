@@ -64,7 +64,8 @@ impl Font {
 
     /// Draw text placed at layout id `rid` the way the game draws text with
     /// the 0x4000 colour flag (0x1C0BC): one row lower than `draw_at`, over a
-    /// drop shadow at (+1, +1) in `shadow`. Matches captures of the original.
+    /// shadow in `shadow` made of two copies, one row down and one row down
+    /// and right. Matches captures of the original exactly.
     pub fn draw_at_shadowed(&self, dst: &mut Bitmap, layout: &Layout, rid: u16, text: &[u8], fg: u8, shadow: u8) {
         let (w, h) = Self::measure(text);
         if w == 0 {
@@ -72,6 +73,23 @@ impl Font {
         }
         if let Some(p) = layout.resolve(rid, w, h, (w, h)) {
             let (x, y) = (p.x - p.skip_x, p.y - p.skip_y + 1);
+            self.draw(dst, x, y + 1, text, shadow, None);
+            self.draw(dst, x + 1, y + 1, text, shadow, None);
+            self.draw(dst, x, y, text, fg, None);
+        }
+    }
+
+    /// Shadowed text like `draw_at_shadowed` but at the plain `draw_at`
+    /// position (no one-row shift). The action menu's name bar and rows
+    /// (0x43332, 0x43759) are drawn this way in the original.
+    pub fn draw_at_shadowed_flat(&self, dst: &mut Bitmap, layout: &Layout, rid: u16, text: &[u8], fg: u8, shadow: u8) {
+        let (w, h) = Self::measure(text);
+        if w == 0 {
+            return;
+        }
+        if let Some(p) = layout.resolve(rid, w, h, (w, h)) {
+            let (x, y) = (p.x - p.skip_x, p.y - p.skip_y);
+            self.draw(dst, x, y + 1, text, shadow, None);
             self.draw(dst, x + 1, y + 1, text, shadow, None);
             self.draw(dst, x, y, text, fg, None);
         }
