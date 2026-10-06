@@ -315,24 +315,24 @@ kind 0x17 plays a sound on set. Types not listed below do nothing.
 | 0x0E, 0x0F | 0x57A63 | As above, but launches the item(s) currently lying on that cell |
 | 0x12 | inline | End the game: stop sound, set 0x7F23C, start the ending (0x2005B) |
 | 0x16 | inline | Cross-map relay: forward the same action, at the same tick and priority, to square (word 3 x, y) on map *data* & 0x3F. Cell = *data* bits 6-7 if the target is a wall, else 0. |
-| 0x1D | inline | Up/down counter in *data*: a clear increments it, a set decrements it (a set only when it's enabled or non-zero). When it crosses zero it fires the target; in "follow" mode the action reflects whether the count is zero. |
-| 0x1E, 0x33-0x37 | inline, then 0x592FA | State switch plus clock. The action sets or clears word 2 bit 2. While enabled and not busy, it schedules event 0x56 at a random phase within a period of *data* × {1, 8, 16, 32, 64, 128} ticks (by type) and marks itself busy. |
-| 0x20 | 0x572A8 | Timer: if enabled and the action matches (with inversion), fire the target after (word 2 bits 7-10) + *data* ticks |
+| 0x1D | inline | Up/down counter in *data* (9 bits; a value with bit 8 set counts as below zero): a clear increments it, a set decrements it (a set is ignored when word 2 bit 2 is set and the count is already 0). Only a change between "zero or below" and "above zero" fires: in "follow" mode it sends clear when (at zero) equals the inverted bit and set otherwise; in other modes it fires the configured action only on reaching zero. |
+| 0x1E, 0x33-0x37 | inline, then 0x592FA | State switch plus clock. The action sets or clears word 2 bit 2. While enabled and not busy, it schedules event 0x56 and marks itself busy. The period is *data* × {1, 8, 16, 32, 64, 128} ticks (by type); the first event is due at `tick + tick mod period`, so the phase depends on the current tick, not on the random generator. Event 0x56 (0x593CF) keeps the multiplier in byte +8 and a phase bit in byte +9. In "follow" mode each period flips the phase and sends set on phase 1, clear on phase 0, continuing while the phase is 1 or the clock is enabled. Otherwise each period fires the configured action while enabled; once disabled the clock stops and clears its busy bit. |
+| 0x20 | 0x572A8 | Timer. When word 2 bit 2 is clear it relays every action; when set, only a matching action (set, or clear if inverted), and it then sends its configured action instead of the incoming one. The target event is due after (word 2 bits 7-10) + *data* ticks. |
 | 0x26 | inline | State switch only: word 2 bit 2 follows the action |
 | 0x2C | 0x56F11 | Unknown; schedules 0x59 |
-| 0x2D | inline | If *data* is 1-400: decrement it and forward the action. If 401-499: percentage gate, which passes when `random(100)` falls at or below a threshold derived from *data* − 400. Tentative on the exact comparison. |
+| 0x2D | inline | If *data* is 1-400: decrement it and forward the incoming action. If 401-499: a percentage gate. One `random(100)` call; the gate fails when *data* − 400 ≤ the roll, so it passes with probability (*data* − 400)%. In "follow" mode it sends set on a pass and clear on a fail; otherwise it forwards the incoming action only on a pass. |
 | 0x2E | inline | Creature generator: on set, create a creature of type *data* at the target square through 0x30BA6. Direction comes from word 2 bits 3-4, or random if bit 2 is set. If bit 5 is set, also store a value from word 2 into the creature's word +8; bit 6 plays a sound. |
 | 0x31 | inline | Debounced relay: if not busy, mark busy and schedule a re-arm (0x5B) after *data* ticks; if the action matches, fire the target (with the configured action when bit 2 is set) |
 | 0x32 | 0x570B1 | Unknown; schedules 0x55 |
 | 0x3B, 0x40, 0x47, 0x48, 0x49 | 0x57E6C | Item relay between the event's square and the actuator's target. 0x40 matches against an item-kind list loaded from GRAPHICS.DAT instead of the single *data* kind. 0x47 and 0x49 reverse the direction. 0x48 and 0x49 move only the first match. Items carried by creatures on the square are searched too. |
 | 0x3C | inline | Item generator: on set (or clear if inverted), create an item of kind *data* and place it at the target square and cell (0x57D4C) |
-| 0x3D | 0x571F3 | Relay. In "follow" mode it forwards the incoming action (inverted if bit 5), with *data* as extra delay; otherwise it fires the configured action on a matching trigger. |
+| 0x3D | 0x571F3 | Relay with *data* as extra delay. In "follow" mode: not inverted, it forwards the incoming action after the delay; inverted, it forwards the action at once and then sends the opposite action (toggle stays toggle) after *data* ticks, making a pulse. Other modes fire the configured action on a matching trigger (set, or clear if inverted). |
 | 0x41 | inline | Randomise: set *data* to a random value below an ornament attribute (category 9 or 10, attribute 0x0D). Tentative: the ornament frame count. |
 | 0x42 | 0x56B39 | Unknown |
 | 0x43 | 0x5737C | Unknown |
 | 0x44 | 0x573E9 | Unknown |
 | 0x45 | 0x572A8 | Long timer: like 0x20, but the delay is *data* << (word 2 bits 7-10) |
-| 0x46 | inline | Unknown; reads the target square's thing (0x1D2CC) |
+| 0x46 | inline | Set, clear or toggle bit 13 of word 1 of the door or teleporter record on the target square (meaning of that bit still unknown) |
 
 ### Floor actuator types (handler 0x57476, code)
 
@@ -408,8 +408,24 @@ sets the animating bit and starts the type-1 event.
   (closed) or 0 (open) ends the animation. Sound 0x8F plays when it shuts;
   0x8E plays on other steps.
 
-**Bashing (0x18D9E).** Running into a closed door, or hitting it, damages
-it. A strong enough hit schedules event 0x02, which destroys it.
+**Door type and attributes.** Word 1 bit 0 selects the map's door type 0
+or 1 (descriptor word 14, each enabled by a descriptor flag); with neither
+enabled the type is 0xFF (0x1FE1C). Attribute (14, type, 11, 0x0E) is the
+door's strength and (14, type, 11, 0x0F) the damage it does when closing on
+something. Missing attributes read as 0.
+
+**Closing details (0x564C6).** The party check applies only while the door
+is part-way (state ≠ 0). A creature is hit when its size is at most the
+current state; the size is 1 unless door word 1 bit 5 is set, in which case
+it comes from the creature attribute bits 6-7. A blocked step costs an extra
+tick before the next one.
+
+**Bashing (0x18D9E).** Arguments: square, damage, delay, and whether the
+hit is magical. Physical hits require door word 1 bit 8, magical hits bit 7.
+If the door is closed (state 4) and the damage is at least its strength, it
+is destroyed at once (delay 0) or by event 0x02 after the delay. The party's
+bash (moving into a closed door) adds, for each of the two front champions,
+a strength term plus `rnd() & 15`.
 
 ## Party movement (code)
 
@@ -444,10 +460,30 @@ active the move is queued.
 | Solid rock | Yes |
 
 **Stairs (0x232DD).** Bit 2 of the stairs square picks the direction: 0
-means layer +1, 1 means layer −1. 0x1CC7E converts the party's position
-to the map on the adjacent layer using the maps' origin offsets
-(descriptor bytes 6/7). The new map becomes pending, and the facing is
-taken from the stairs on the arrival map (0x1CE6F).
+means layer +1, 1 means layer −1. The party leaves its square (leaving
+sensors run), 0x1CC7E converts its position to the map on the adjacent
+layer, that map becomes pending, and the facing comes from the arrival
+stairs (0x1CE6F).
+
+**Adjacent-layer lookup (0x1CC7E).** The position is made global with the
+map's origin. The game walks a per-layer list of maps and takes the first
+whose bounds, widened by one square on every side, contain the position and
+whose square there is not rock. A teleporter square whose record has word 2
+bit 0 set counts as rock. Out-of-map lookups read as rock, so in practice
+the square must lie inside the map.
+
+**Stairs facing (0x1CE6F).** Stairs bit 3 picks the axis: clear means
+east-west, set means north-south. The game looks at the neighbour to the
+east (or north). If it is a wall or stairs the facing is west (or south),
+otherwise east (or north): the party faces out of the stairwell.
+
+**Walking animation.** When the slowest champion's move time is above 1,
+0x235BF does not move at once: it records the command and starts the
+mid-step countdown (0x7F258), and the move completes when it runs out. The
+cooldown added is the larger of half the move time and the countdown flag.
+
+**Stamina.** Every attempted step charges each living champion a stamina
+cost derived from their load (0x47707).
 
 **Turning.** 0x45869 sets the party's facing. Rotation from teleporters and
 actuator 0x2E goes through the same routine.
@@ -498,8 +534,12 @@ party, and finally sets the facing.
 
 **Map edges and teleporter links (0x1D074 / 0x1D113).** A teleporter square
 doubles as an edge link to a neighbouring map. 0x1D074 checks the square
-holds a teleporter and finds its record. An actuator of type 0x27 on the
-square marks the link as disabled. The record gives the destination:
+holds a teleporter and an actuator of type 0x27; only then is it a link, and
+its direction is the teleporter's rotation (word 1 bits 10-11) + 2. A square
+action on that actuator toggles its own word 2 bit 0. The party move uses the
+link when the destination square is one, the party is not standing on
+stairs, and the partner's direction + 2 differs from the party's facing.
+The record gives the destination:
 
 - x from word 1 bits 0-4;
 - y from word 1 bits 5-9;
@@ -583,15 +623,99 @@ Each tick:
 6. **Reschedule:** the event goes back on the timeline for the next tick
    and its new index is stored in the missile record.
 
+## Pits, teleporters and stairs in a move (0x4A34A, code)
+
+The destination resolver loops up to 50 times, starting at the target
+square:
+
+- **Active teleporter** (square bit 3). The record's word 1 bits 13-14 are a
+  scope mask, tested against the mover class: party 2, creature 1 or 2 (2 if
+  its info has attribute 0x1E), anything else 3. Scope 1 accepts creatures
+  only. Otherwise the move passes when the class is 3 or `scope & class` is
+  non-zero. Destination: word 1 bits 0-4 x, bits 5-9 y, word 2 bits 8-15
+  map. Rotation is word 1 bits 10-11, absolute when bit 12 is set. The party
+  turns. Items rotate their cell unless rotation is absolute. Creatures and
+  missiles have their own routines. Bit 15 plays the teleport sound. A
+  teleporter that targets itself ends the loop.
+- **Open pit** (bit 3 set, bit 0 clear). Anything not airborne (0x49FCB)
+  falls to the same global square one layer down (0x1CC7E with +1). The fall
+  counter increases. Each living champion takes
+  `(min(max HP / 4, 17) + rand4()) × falls` with attack type 0x30, so a
+  second level in one move hurts twice as much. A fallen creature takes 20.
+  If the map's graphics set has attribute 0x6A, the destination instead
+  comes from a text thing on the pit square (word 1 kind 0x0C), choosing at
+  random among listed targets (0x4D88A); this is not yet modelled.
+- **Stairs**, for things other than the party, creatures and missiles: the
+  item goes down a layer if stairs bit 2 is clear. It then moves one square
+  in the stairs' exit direction (0x1CE6F) and its cell turns to match.
+- Anything else ends the loop.
+
+## Floor sensors (0x4CDCC, code)
+
+Called by the move routine for a mover (the party or a thing) leaving or
+entering a square. For a thing, the routine removes it from the square's
+list before scanning when leaving, and adds it after scanning when
+entering. The scan therefore sees only the other occupants:
+
+- creatures (not airborne): "creatures present";
+- items and other things of type 5-13: "items present", plus "matching
+  present" if one has the mover's item number, and "other present" if one
+  doesn't;
+- on a party entry (unless the party is being re-placed on its own square),
+  visible text things in mode 0 are shown.
+
+If the square is a wall (things pushed into a wall alcove), only things on
+the mover's cell count, and different actuator types apply.
+
+Then every actuator on the square is checked; the walk stops at the first
+thing of type 4 or above. The "sensed state" starts as "entering".
+
+| Type | Fires when |
+|------|------------|
+| 1 | Nothing else counts: no party already there, no items, no creatures |
+| 2 | The mover is the party or a creature, and no party or creatures remain |
+| 3 | Party only, with at least one champion. With *data* 0: as type 1 for the party. With *data* = 1 + direction: the state is "entering while facing that way" (leaving reports a clear). |
+| 4 | The mover's item number equals *data* and no other matching item remains |
+| 7 | The mover is a creature and no creatures remain |
+| 8 | Party only: the state is whether the party carries item *data* (0x4BD6C) |
+| 0x29 (wall) | No items remain on the cell |
+| 0x2A (wall) | The mover is item *data* and no other matching item remains |
+| 0x2B (wall) | The mover is not item *data* and no other item remains |
+| 0x1A (wall) | Alcove compare against an ornament attribute; not yet written up |
+
+Firing: the state is XORed with the inverted bit. In "follow" mode the
+action becomes set for a true state and clear for false. In other modes a
+false state does nothing. Word 2 bit 6 plays a sound. The actuator then
+fires its target (0x4BC4C).
+
+Text things in mode 1 also act as sensors. Kind 9: when the party enters
+or leaves a square it isn't already on, one `random(100)` roll is made,
+and if it is below word 1 bits 3-10 and the text's bit 0 differs from
+"entering", the square gets a set action next tick and a clear 5 ticks
+later. Kind 10: the party can be pushed back by a delayed teleport (event
+0x5D), with a chance of `min(90, 10 × load term + 25 or 50)`%; this is still
+to be modelled.
+
+## Wall sensors (0x4C134, partly)
+
+Clicking a wall cell, possibly holding an item, checks the actuators on
+that cell:
+
+| Type | Behaviour |
+|------|-----------|
+| 1 | Any click fires (not allowed in follow mode) |
+| 2 | Fires when "hand empty" differs from the inverted bit, i.e. normally when holding something; follow mode sends that state |
+| 3 | Fires when "holding item *data*" differs from the inverted bit; with word 2 bit 2 the item is consumed |
+| 0x15 | Like 3 but only for items with charges |
+| 0x17 | With an empty hand: toggles word 2 bit 2, and fires when that bit differs from the inverted bit |
+| 0x1A, 0x1B, 0x1C, 0x18, others | Alcoves, counting keyholes and item slots; not yet written up |
+
 ## Open questions
 
 - The tick increment returned by launcher service 0x0F (expected 1, giving 7.5 ticks per second).
 - New-game RNG seed: confirm it stays 0, or comes from a header.
-- The rest of the teleporter record: rotation and scope (DM1 layout
-  assumed).
-- Pit falling for things and creatures (0x58C6F), and the landing
-  attribute (8, set, 11, 0x6A).
-- Floor and wall sensor trigger conditions (0x4CDCC, 0x4C134).
+- The pit "random destination" mode (graphics-set attribute 0x6A, 0x4D88A).
+- The rest of the wall sensor types (0x1A-0x1C, 0x18) and floor text kind 10.
 - Event types 0x0E, 0x46, 0x55, 0x5A and actuator types 0x2C, 0x32, 0x42,
   0x43, 0x44, 0x46.
 - The meaning of the 512-tick (0x39044) and 64-tick (0x47CC3) periodic

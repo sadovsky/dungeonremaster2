@@ -7,9 +7,12 @@
 use dm2_formats::dungeon::Dungeon;
 
 use crate::champions::{self, Champion, PartyStatus};
+use crate::attrs::Attributes;
+use crate::effects::Effect;
 use crate::events;
+use crate::movement;
 use crate::rng::Rng;
-use crate::timeline::Timeline;
+use crate::timeline::{Event, Timeline};
 use crate::world::PartyPos;
 
 /// Event pool size. The original's capacity comes from a global; this is
@@ -39,6 +42,12 @@ pub struct GameState {
     pub champions: Vec<Champion>,
     /// Party-wide flags and counters used by the champion formulas.
     pub party_status: PartyStatus,
+    /// GRAPHICS.DAT numeric attributes (door strength, ...). Empty unless
+    /// loaded with `set_attributes`.
+    pub attrs: Attributes,
+    /// Requests for the presentation layer (sounds, text) and outcomes for
+    /// other systems. Drained by the frontend.
+    pub effects: Vec<Effect>,
     commands: std::collections::VecDeque<Command>,
 }
 
@@ -57,8 +66,20 @@ impl GameState {
             pending_map: None,
             champions: Vec::new(),
             party_status: PartyStatus::default(),
+            attrs: Attributes::default(),
+            effects: Vec::new(),
             commands: Default::default(),
         }
+    }
+
+    pub fn set_attributes(&mut self, attrs: Attributes) {
+        self.attrs = attrs;
+    }
+
+    /// Schedule an event. A full pool drops the event (the original stops
+    /// with error 0x2D).
+    pub fn schedule(&mut self, ev: Event) -> Option<u16> {
+        self.timeline.schedule(ev).ok().flatten()
     }
 
     /// Queue a player command; like the original, at most 3 are held.
@@ -71,7 +92,7 @@ impl GameState {
     /// Run one game tick (0x24691), minus rendering.
     pub fn advance(&mut self) {
         if let Some(p) = self.pending_map.take() {
-            self.party = p;
+            movement::arrive(self, p);
         }
         while self.timeline.due(self.tick) {
             let Some(ev) = self.timeline.pop() else { break };
@@ -93,19 +114,10 @@ impl GameState {
                 if self.tick < self.move_ready {
                     return;
                 }
-                let before = self.party;
-                let mut p = self.party;
-                if p.step(&self.dungeon, m) {
-                    if p.map != before.map {
-                        // Map changes take effect next tick.
-                        self.pending_map = Some(p);
-                    } else {
-                        self.party = p;
-                    }
+                if movement::party_command(self, m) {
                     let t = champions::party_move_time(&self.champions, &self.party_status, &mut self.rng);
                     self.move_ready = self.tick + t as u32;
                     self.party_status.last_moved = self.tick;
-                    crate::events::party_moved(self, before);
                 }
             }
         }
