@@ -758,8 +758,7 @@ pub fn apply_pending(champions: &mut [Champion], party: &mut PartyStatus) {
 }
 
 /// Death (0x46ECA), champion side only.
-// TODO(docs/06 "Death"): drop possessions on the party square, create the
-// bones thing, close the champion's panels and pass leadership.
+// The dungeon side (possessions, bones, leadership) is party::on_death.
 fn die(c: &mut Champion) {
     c.set_health(0);
     c.raw[0x1E] = 0;
@@ -826,7 +825,18 @@ pub fn drink_water(c: &mut Champion) {
 pub fn tick(g: &mut GameState) {
     let tick = g.tick;
     regenerate(&mut g.champions, &mut g.party_status, tick, &mut g.rng);
+    let seen = g.party_status.notices.len();
     apply_pending(&mut g.champions, &mut g.party_status);
+    let died: Vec<usize> = g.party_status.notices[seen..]
+        .iter()
+        .filter_map(|n| match n {
+            Notice::Died { champion } => Some(*champion),
+            _ => None,
+        })
+        .collect();
+    for idx in died {
+        crate::party::on_death(g, idx);
+    }
 }
 
 #[cfg(test)]

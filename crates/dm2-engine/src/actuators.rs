@@ -704,19 +704,18 @@ fn item_relay(g: &mut GameState, ev: Event, a: &Actuator) {
     }
 }
 
-/// Item generator 0x3C: create item number `data` at the target (0x1F180,
-/// 0x1F1FC for the number; placement as 0x57D4C).
-fn generate_item(g: &mut GameState, map: usize, a: &Actuator) {
-    let n = a.data();
+/// Create a free-standing item from its item number (0x1F180 ranges);
+/// the caller places it.
+pub fn create_item(g: &mut GameState, n: u16) -> Option<ThingRef> {
     let (ty, idx) = match n {
         0..=127 => (ThingType::Weapon, n),
         128..=255 => (ThingType::Clothing, n - 128),
         256..=383 => (ThingType::Misc, n - 256),
         384..=431 => (ThingType::Potion, n - 384),
         // TODO: creatures (432-479), containers (480-507) and scrolls (508).
-        _ => return,
+        _ => return None,
     };
-    let Some(t) = alloc_thing(g, ty) else { return };
+    let t = alloc_thing(g, ty)?;
     // Bit 7 (weapons, clothing, misc) and bit 15 (potions) are set on every
     // item in the original file. TODO(0x1F07C): initial charges.
     let w1 = match ty {
@@ -724,6 +723,13 @@ fn generate_item(g: &mut GameState, map: usize, a: &Actuator) {
         _ => 0x80 | idx,
     };
     g.dungeon.set_record_word(t, 1, w1);
+    Some(t)
+}
+
+/// Item generator 0x3C: create item number `data` at the target (0x1F180,
+/// 0x1F1FC for the number; placement as 0x57D4C).
+fn generate_item(g: &mut GameState, map: usize, a: &Actuator) {
+    let Some(t) = create_item(g, a.data()) else { return };
     let (tx, ty_, cell) = a.target();
     let placed = ThingRef(t.0 & 0x3FFF | (cell as u16) << 14);
     if g.dungeon.square(map, tx, ty_).element() == Element::Wall {

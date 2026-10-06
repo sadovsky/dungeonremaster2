@@ -4,10 +4,13 @@
 //! the frontend feeds it commands. Subsystems live in their own modules and
 //! receive `&mut GameState`.
 
+use std::rc::Rc;
+
 use dm2_formats::dungeon::Dungeon;
 
 use crate::champions::{self, Champion, PartyStatus};
 use crate::attrs::Attributes;
+use crate::data::GameData;
 use crate::effects::Effect;
 use crate::events;
 use crate::movement;
@@ -48,6 +51,17 @@ pub struct GameState {
     /// Requests for the presentation layer (sounds, text) and outcomes for
     /// other systems. Drained by the frontend.
     pub effects: Vec<Effect>,
+    /// Shared read-only data (GRAPHICS.DAT, SKULL.EXE tables). Systems that
+    /// need item attributes or formula tables do nothing without it.
+    pub data: Option<Rc<GameData>>,
+    /// Leader champion (0x7F222), None when the party is empty.
+    pub leader: Option<usize>,
+    /// Party light level adjustments from spells and items (0x412E1).
+    pub light: i16,
+    /// Duration counter decremented by event 0x47 (0x7FFEE).
+    pub magic_counter: u16,
+    /// Set when the last champion dies (0x7F24C).
+    pub game_over: bool,
     commands: std::collections::VecDeque<Command>,
 }
 
@@ -55,9 +69,12 @@ impl GameState {
     /// Fresh game from the original dungeon (new-game path of 0x370D2).
     pub fn new_game(dungeon: &Dungeon) -> GameState {
         let s = &dungeon.start;
+        let mut dungeon = dungeon.clone();
+        // A new game appends spare thing records and list slots (docs/03).
+        dungeon.add_spares();
         GameState {
             party: PartyPos { map: 0, x: s.x as i32, y: s.y as i32, dir: s.facing },
-            dungeon: dungeon.clone(),
+            dungeon,
             // TODO(docs/05 open question): whether a new game keeps seed 0.
             rng: Rng::new(0),
             tick: 0,
@@ -68,8 +85,24 @@ impl GameState {
             party_status: PartyStatus::default(),
             attrs: Attributes::default(),
             effects: Vec::new(),
+            data: None,
+            leader: None,
+            light: 0,
+            magic_counter: 0,
+            game_over: false,
             commands: Default::default(),
         }
+    }
+
+    /// Fresh game with the shared data attached, including the starting
+    /// champion the original recruits automatically (0x49D46, docs/06
+    /// "Starting party").
+    pub fn new_game_with(dungeon: &Dungeon, data: Rc<GameData>) -> GameState {
+        let mut g = GameState::new_game(dungeon);
+        g.attrs = Attributes::from_gdat(&data.gdat);
+        g.data = Some(data);
+        crate::party::recruit_starting_champion(&mut g);
+        g
     }
 
     pub fn set_attributes(&mut self, attrs: Attributes) {
@@ -103,6 +136,7 @@ impl GameState {
         while let Some(c) = self.commands.pop_front() {
             self.execute(c);
         }
+        crate::apply::apply_effects(self);
         self.tick = self.tick.wrapping_add(1);
     }
 

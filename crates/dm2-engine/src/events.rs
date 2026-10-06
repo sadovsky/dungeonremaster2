@@ -23,10 +23,13 @@ pub fn dispatch(g: &mut GameState, ev: Event) {
         0x5C => actuators::set_visible(g, ev),
         0x5D => delayed_teleport(g, ev),
         0x4B => crate::champions::poison_event(g, &ev),
+        0x0C | 0x0D | 0x47 | 0x48 | 0x54 => crate::party::event(g, ev),
+        0x19 => crate::missiles::cloud_event(g, ev),
+        0x1D | 0x1E => crate::missiles::flight_event(g, ev),
+        0x46 => crate::apply::light_expired(g, ev),
         0x5E => creatures::text_spawn_event(g, ev.map as usize, ev.x as i32, ev.y as i32, ev.b9),
-        // TODO: 0x0C/0x47/0x48/0x54 (champions), 0x0D (floor staged
-        // effect), 0x15 (sounds), 0x19/0x1D/0x1E (explosions, missiles),
-        // 0x21/0x22 (creatures), 0x3C/0x3D (deferred arrival), 0x55/0x5A.
+        // TODO: 0x15 (sounds), 0x21/0x22 (creatures), 0x3C/0x3D (deferred
+        // arrival), 0x55/0x5A.
         _ => {}
     }
 }
