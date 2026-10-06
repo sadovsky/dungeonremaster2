@@ -44,16 +44,19 @@ fn fnv(px: &[u8]) -> u64 {
 fn pinned_views() {
     let Ok(mut a) = assets::Assets::load(&assets::default_data_dir()) else { return };
     let dg = a.dungeon.clone();
+    // Views with wall ornaments changed when ornaments started honouring the
+    // anchor override from attribute 5 (0 = centred on the grid point),
+    // checked against the original's start view in DOSBox.
     let views: [((usize, i32, i32, u8), u64); 8] = [
         ((3, 10, 9, 0), 0x8cea3120aed4479b),
-        ((6, 8, 8, 1), 0x8ed5fd131ea8de24),
+        ((6, 8, 8, 1), 0x53566c2c295f1b8f),
         ((4, 6, 11, 2), 0xd788da890a57df50),
-        ((8, 12, 3, 0), 0x63937f659a8ab17e),
-        ((7, 12, 11, 1), 0xb6be0da00e90b5ff),
-        ((0, 3, 4, 0), 0xa679cc154d628c53),
+        ((8, 12, 3, 0), 0x34eaa6dde0fdba81),
+        ((7, 12, 11, 1), 0x8a9dbdd9e46d85e9),
+        ((0, 3, 4, 0), 0xc9631cee3dab9307),
         // Creature in cell 6 now offset by its descriptor shift byte (0x50DEE).
         ((1, 2, 9, 0), 0xe2aebbcfc33ceec7),
-        ((5, 12, 23, 0), 0x7b768a367eb43359),
+        ((5, 12, 23, 0), 0x5ab19ad645935b17),
     ];
     let mut bad = Vec::new();
     for ((m, x, y, d), want) in views {

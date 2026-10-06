@@ -612,7 +612,7 @@ mod screen_tests {
     /// with a new comparison against the original.
     #[test]
     fn pinned_interface_screens() {
-        let cases: [(&str, &[u16], u64); 3] = [("start", &[], 0x23be4bf743c5bd49), ("inventory", &[7], 0xd54bfe305cc1b708), ("action menu", &[0x75], 0x7600a6e0bd246531)];
+        let cases: [(&str, &[u16], u64); 3] = [("start", &[], 0x5419f7d0883bebfb), ("inventory", &[7], 0xd54bfe305cc1b708), ("action menu", &[0x75], 0xb1c79885b597f7c3)];
         for (name, cmds, want) in cases {
             let Some(got) = frame(cmds) else { return };
             assert_eq!(got, want, "{name}: {got:#x}");
