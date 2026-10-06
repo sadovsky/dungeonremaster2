@@ -243,16 +243,49 @@ save path asks dialog 0x1B and then 0x0D, and the load path 0x0F and 0x0E.
 
 ## Title screen
 
-The title loop is at 0x386F5. It draws the 320×200 image (5, 0, 1, 1).
-Its hotspot data is in (5, 0, 7, 4), and its commands are the title-menu
-commands above (0xD7-0xDA, 0xE0), clicked on rectangles 407-434 (list @0)
-or chosen by key. The hotspot entry's own format is not yet decoded
-(TODO); the zone list already gives what a remake needs.
+The title loop is at 0x386F5. The menu picture is the 320×200 image
+(5, 0, 1, 4): a signpost whose New, Resume and Quit boards line up with
+zone rectangles 407 (91,52 48×26), 409 (14,65 65×27) and 434 (38,94
+45×30); rectangle 411 is a small plaque at the bottom (command 0xDA).
+Image (5, 0, 1, 1) is a credits screen, not the menu. Commands come from
+zone list @0 and key list @0 (Enter = 0xD7, Alt+Q = 0xE0). The hotspot
+entry (5, 0, 7, 4) is not decoded (TODO); the zone list is enough.
+
+## Main game screen (verified by rendering)
+
+The interface is drawn with the draw-at-layout routine 0x1BE6A
+`(cat, idx, sub, target, layout id, colour key)`, where a key of −1/0xFFFF
+means opaque. Most panels are first built in an off-screen buffer the size
+of a layout rectangle (0x1BABB) and then copied to the screen (0x1BB0E),
+but resolving the same ids straight to screen coordinates gives the same
+result. Colours come from the 16-byte table (1, 0, 13, 254), loaded once
+(global 0x7F210).
+
+| Element | Image | Layout id | Notes |
+|---------|-------|-----------|-------|
+| Movement arrows (0x42AE4) | (1, 3, 2 + 2k), or 14 + 2k for the alternate set (flag 0x7F3A4) | 40-45 | Grid of 29×23 buttons from (229, 129) |
+| Champion box (0x48140) | (1, 2, s): s = 0 alive, 1 dead (health 0), 9 inventory open | 161 + n | Boxes are 77×37 along the top edge, x = 0, 81, 162, 243 |
+| Portrait (0x487F9) | (22, portrait, 0) | 173 + n | Portrait index is champion byte +0x101 |
+| Dead champion's name (0x48890) | text, colour [15], transparent | 165 + n | Only drawn in the dead state |
+| Stat bars (0x481DC) | filled rectangles | 193 + n + 4·bar | Health, stamina, mana. Height = parent box × current / maximum (0x19BF2, minimum 1 px), placed through the bar record's own anchor. A shadow copy offset by the words at 0x71724/0x71726 is filled first with colour [0]; the bar uses colour [table 0x759CC, one byte per champion] |
+| Damage starburst (0x48733) | (1, 2, 3), key 10, plus the number in colour [15] on [8] | 177 + n | Only while the champion has damage to show |
+| Leader bar (0x43332) | (1, 4, 20) and (1, 4, 14) | 60 and 59 | Name text at 61 in colour [9] (leader) or [15] |
+| Spell panel (0x43686) | (1, 5, set + 1), set = champion byte +0x1E | 92 | Six rune symbols drawn as font characters `'`' + 6·set + k` at ids 255-260; entered runes at 261 and up (0x435D3) |
+
+## Zone rectangles
+
+A zone's rectangle id is a record placed inside a size box (its parent,
+kind 9); the clickable area is that box's size at the record's placement.
+Anchor flag 0x8000 makes the box relative to the viewport frame (rect 7,
+screen (0, 40)); 0x4000 relative to rect 18. This rule resolves every id
+used by the zone lists.
 
 ## Open questions
 
 - Meaning of the zone flag bits 0x80, 0x40, 0x20 and 0x10, and of button
   bits other than 0x01 and 0x02.
-- The predicate functions at 0x722A4 (which state each selects).
+- The predicate functions at 0x722A4 (which state each selects). The
+  remake chooses the same lists from explicit UI state instead
+  (`crates/dm2-engine/src/input.rs`).
 - Commands 0x52, 0x7D-0x81, 0x8D-0x8F and 0x92-0x93.
 - Rectangle anchor details for kinds 0-8 (which index is which corner).

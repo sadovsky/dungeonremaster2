@@ -88,6 +88,14 @@ pub struct Gdat {
     sizes: Vec<usize>,
     pub records: Vec<Record>,
     index: HashMap<Key, usize>,
+    language: u8,
+}
+
+/// Language codes stored in the high nibble of a record's F field.
+pub mod language {
+    pub const ENGLISH: u8 = 0x10;
+    pub const GERMAN: u8 = 0x30;
+    pub const FRENCH: u8 = 0x40;
 }
 
 impl Gdat {
@@ -124,7 +132,7 @@ impl Gdat {
         if off != data.len() {
             return Err(bad(format!("entry sizes end at {off}, file is {}", data.len())));
         }
-        let mut g = Gdat { data, version, offsets, sizes, records: Vec::new(), index: HashMap::new() };
+        let mut g = Gdat { data, version, offsets, sizes, records: Vec::new(), index: HashMap::new(), language: language::ENGLISH };
         g.parse_index()?;
         Ok(g)
     }
@@ -177,11 +185,33 @@ impl Gdat {
                 g: field(row, b'G') as u8,
                 value: field(row, b'P') as u16,
             };
-            // First record wins, like the game's sorted binary search on unique keys.
-            self.index.entry(rec.key).or_insert(self.records.len());
             self.records.push(rec);
         }
+        self.build_index();
         Ok(())
+    }
+
+    /// Keep language-neutral records plus those of the chosen language, as
+    /// the game's index builder does (filter callback 0x3CD2F).
+    fn build_index(&mut self) {
+        self.index.clear();
+        for (i, rec) in self.records.iter().enumerate() {
+            let code = rec.f & 0xF0;
+            if code == 0 || code == self.language {
+                // First record wins, like the game's sorted binary search on unique keys.
+                self.index.entry(rec.key).or_insert(i);
+            }
+        }
+    }
+
+    /// Select the language (see `language`); English by default.
+    pub fn set_language(&mut self, code: u8) {
+        self.language = code & 0xF0;
+        self.build_index();
+    }
+
+    pub fn language(&self) -> u8 {
+        self.language
     }
 
     pub fn record(&self, key: Key) -> Option<&Record> {
