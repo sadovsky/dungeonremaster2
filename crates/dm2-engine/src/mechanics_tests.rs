@@ -271,6 +271,50 @@ fn one_shot_ornament_plays_a_single_cycle() {
 }
 
 #[test]
+fn random_pits_drop_items_on_a_marker_square() {
+    let Some(mut g) = game() else { return };
+    // A pit with a kind-0x0C marker on a map whose graphics set has 0x6A.
+    let marker = |g: &GameState, m: usize, x: i32, y: i32, kind: u16| {
+        g.dungeon.things_at(m, x, y).into_iter().filter(|t| t.kind() == ThingType::Text).find_map(|t| {
+            let w = g.dungeon.record_word(t, 1)?;
+            (w & 6 == 2 && w >> 11 == kind).then_some(w >> 3 & 0xFF)
+        })
+    };
+    let mut found = None;
+    'outer: for (m, md) in g.dungeon.maps.iter().enumerate() {
+        if g.attrs.get(8, md.tileset, 0x6A) == 0 {
+            continue;
+        }
+        for x in 0..md.width as i32 {
+            for y in 0..md.height as i32 {
+                let sq = g.dungeon.square(m, x, y);
+                if sq.element() == Element::Pit {
+                    if let Some(id) = marker(&g, m, x, y, 0x0C) {
+                        found = Some((m, x, y, id));
+                        break 'outer;
+                    }
+                }
+            }
+        }
+    }
+    let Some((m, x, y, id)) = found else { return };
+    // Make sure the pit is open.
+    let sq = g.dungeon.square(m, x, y).0;
+    g.dungeon.set_square(m, x, y, (sq | 8) & !1);
+    let item = actuators::alloc_thing(&mut g, ThingType::Weapon).unwrap();
+    g.dungeon.set_record_word(item, 1, 0x80);
+    movement::move_thing(&mut g, item, None, Some((m, x, y)));
+    let landed = g.dungeon.maps.iter().enumerate().find_map(|(mm, md)| {
+        (0..md.width as i32)
+            .flat_map(|xx| (0..md.height as i32).map(move |yy| (xx, yy)))
+            .find(|&(xx, yy)| g.dungeon.things_at(mm, xx, yy).iter().any(|t| t.0 & 0x3FFF == item.0 & 0x3FFF))
+            .map(|(xx, yy)| (mm, xx, yy))
+    });
+    let (lm, lx, ly) = landed.expect("the item lands somewhere");
+    assert_eq!(marker(&g, lm, lx, ly, 0x0B), Some(id), "it lands on a matching marker square");
+}
+
+#[test]
 fn script_variables_cover_flags_bytes_and_words() {
     let Some(mut g) = game() else { return };
     use actuators::{script_var as get, script_var_op as op};

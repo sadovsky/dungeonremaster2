@@ -47,6 +47,49 @@ fn teleporter_at(g: &GameState, map: usize, x: i32, y: i32) -> Option<ThingRef> 
     g.dungeon.things_at(map, x, y).into_iter().find(|t| t.kind() == ThingType::Teleporter)
 }
 
+/// Text-thing marker on a square: word 1 bits 1-2 equal to 1, kind in bits
+/// 11-15, id in bits 3-10. Returns (kind, id) for each such text thing.
+fn markers(g: &GameState, map: usize, x: i32, y: i32) -> Vec<(u16, u16)> {
+    g.dungeon
+        .things_at(map, x, y)
+        .into_iter()
+        .filter(|t| t.kind() == ThingType::Text)
+        .filter_map(|t| g.dungeon.record_word(t, 1))
+        .filter(|w| w & 6 == 2)
+        .map(|w| (w >> 11, w >> 3 & 0xFF))
+        .collect()
+}
+
+/// Random pit destination (0x4A34A with 0x4D88A). When the map's graphics
+/// set has attribute 0x6A, a pit holding a kind-0x0C marker with id n sends
+/// the faller to a random kind-0x0B marker with the same id anywhere in the
+/// dungeon: count them all (maps in order, squares column-major, things in
+/// list order), roll random(count), and take the (roll + 1)-th.
+fn random_pit_destination(g: &mut GameState, map: usize, x: i32, y: i32) -> Option<(usize, i32, i32)> {
+    let tileset = g.dungeon.maps[map].tileset;
+    if g.attrs.get(8, tileset, 0x6A) == 0 {
+        return None;
+    }
+    let id = markers(g, map, x, y).into_iter().find(|&(k, _)| k == 0x0C).map(|(_, id)| id)?;
+    let mut targets = Vec::new();
+    for (m, md) in g.dungeon.maps.iter().enumerate() {
+        for tx in 0..md.width as i32 {
+            for ty in 0..md.height as i32 {
+                if !g.dungeon.square(m, tx, ty).has_things() {
+                    continue;
+                }
+                for (k, n) in markers(g, m, tx, ty) {
+                    if k == 0x0B && n == id {
+                        targets.push((m, tx, ty));
+                    }
+                }
+            }
+        }
+    }
+    let r = g.rng.random(targets.len() as u16) as usize;
+    targets.get(r).copied()
+}
+
 /// Follow pits, active teleporters and (for items) stairs from a square
 /// (0x4A34A). Applies the side effects the original applies while walking
 /// the chain: party facing changes, fall damage, teleporter sounds.
@@ -115,8 +158,22 @@ pub fn resolve(g: &mut GameState, mover: Mover, map: usize, x: i32, y: i32) -> D
                 if sq.0 & 8 == 0 || sq.0 & 1 != 0 || airborne {
                     break;
                 }
-                // TODO(0x4D88A): graphics sets with attribute 0x6A send falls to a
-                // random destination listed by a text thing; treated as a plain fall.
+                // Graphics sets with attribute 0x6A send non-creature falls to a
+                // random marker square instead of the layer below (0x4A34A).
+                if ty != Some(ThingType::Creature) {
+                    if let Some((m, nx, ny)) = random_pit_destination(g, map, x, y) {
+                        map = m;
+                        x = nx;
+                        y = ny;
+                        if ty.is_none() {
+                            if falls > 0 && hooks::champion_count(g) != 0 {
+                                hooks::fall_damage(g, falls);
+                            }
+                            g.effects.push(Effect::PartyFell { falls });
+                        }
+                        continue;
+                    }
+                }
                 falls += 1;
                 let Some((m, nx, ny)) = world::layer_map(&g.dungeon, map, 1, x, y) else { break };
                 map = m;

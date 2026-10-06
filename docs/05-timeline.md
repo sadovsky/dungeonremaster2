@@ -571,8 +571,8 @@ When the party's move ends on an open pit, the move routine loops:
 1. **Fall one layer:** go to the map one layer down at the same world
    position (0x1CC7E with +1) and count one more level fallen.
 2. **Stop condition:** the loop stops on a non-pit square. The map set's
-   attribute (8, set, 11, 0x6A) also controls landing; it is read but its
-   exact effect isn't traced.
+   attribute (8, set, 11, 0x6A) switches pits to random destinations (see
+   "Random pits" below).
 3. **Animation:** while falling (and not climbing down on purpose), each
    intermediate level redraws the view (0x54B3F, then 0x138D9), so the
    player sees the fall.
@@ -658,9 +658,17 @@ square:
   counter increases. Each living champion takes
   `(min(max HP / 4, 17) + rand4()) × falls` with attack type 0x30, so a
   second level in one move hurts twice as much. A fallen creature takes 20.
-  If the map's graphics set has attribute 0x6A, the destination instead
-  comes from a text thing on the pit square (word 1 kind 0x0C), choosing at
-  random among listed targets (0x4D88A); this is not yet modelled.
+  **Random pits.** If the map's graphics set has attribute (8, set, 11,
+  0x6A) and the faller is not a creature, the pit can send it elsewhere.
+  The pit square holds a marker text thing: word 1 with bits 1-2 equal to 1,
+  kind 0x0C in bits 11-15, and an id in bits 3-10. 0x4D88A in counting mode
+  counts every kind-0x0B marker with the same id in the whole dungeon
+  (maps in order, squares column-major, things in list order); one
+  `random(count)` call picks r, and the same routine in search mode returns
+  the map and square of the (r + 1)-th marker. The faller goes there, on any
+  map, and the move continues from that square. This jump does not count
+  as a fall level, so it adds no fall damage of its own. The shipped
+  dungeon uses it (for example a pit on map 38).
 - **Stairs**, for things other than the party, creatures and missiles: the
   item goes down a layer if stairs bit 2 is clear. It then moves one square
   in the stairs' exit direction (0x1CE6F) and its cell turns to match.
@@ -730,7 +738,7 @@ that cell:
 
 - The tick increment returned by launcher service 0x0F (expected 1, giving 7.5 ticks per second).
 - New-game RNG seed: confirm it stays 0, or comes from a header.
-- The pit "random destination" mode (graphics-set attribute 0x6A, 0x4D88A).
+
 - The rest of the wall sensor types (0x1A-0x1C, 0x18) and floor text kind 10.
 - Event types 0x0E, 0x46, 0x55, 0x5A and actuator types 0x2C, 0x32, 0x42,
   0x43, 0x44, 0x46.
