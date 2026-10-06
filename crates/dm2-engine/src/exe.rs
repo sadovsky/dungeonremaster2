@@ -60,6 +60,18 @@ impl Exe {
         self.u16_at(addr).map(|v| v as i16)
     }
 
+    /// `len` bytes of the data object starting at `addr`.
+    pub fn slice(&self, addr: u32, len: usize) -> Option<&[u8]> {
+        let o = addr.checked_sub(self.data_base)? as usize;
+        self.data.get(o..o + len)
+    }
+
+    /// Address of the data object's first byte; unrelocated pointers in it
+    /// are offsets from here.
+    pub fn data_base(&self) -> u32 {
+        self.data_base
+    }
+
     pub fn u16_at(&self, addr: u32) -> Option<u16> {
         let o = addr.checked_sub(self.data_base)? as usize;
         self.data.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]))

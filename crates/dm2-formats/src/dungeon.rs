@@ -272,6 +272,60 @@ impl<'a> Reader<'a> {
 
 impl Dungeon {
     pub fn parse(b: &[u8]) -> Result<Dungeon, Error> {
+        Self::parse_inner(b, true).map(|(d, _)| d)
+    }
+
+    /// Parse the dungeon snapshot inside a save game: the same sections as
+    /// DUNGEON.DAT but no trailing checksum. Returns the dungeon and the
+    /// number of bytes consumed.
+    pub fn parse_snapshot(b: &[u8]) -> Result<(Dungeon, usize), Error> {
+        Self::parse_inner(b, false)
+    }
+
+    /// Serialise in DUNGEON.DAT section order, with the current counts and
+    /// without the checksum (the save-game snapshot, docs/12).
+    pub fn to_snapshot(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        let w = |out: &mut Vec<u8>, v: u16| out.extend_from_slice(&v.to_le_bytes());
+        w(&mut out, self.seed);
+        w(&mut out, self.map_data.len() as u16);
+        w(&mut out, self.maps.len() as u16);
+        w(&mut out, self.text.len() as u16);
+        let s = &self.start;
+        w(&mut out, s.x as u16 & 0x1F | (s.y as u16 & 0x1F) << 5 | (s.facing as u16 & 3) << 10);
+        w(&mut out, self.object_list.len() as u16);
+        for t in 0..16 {
+            let n = if THING_SIZES[t] == 0 { 0 } else { self.things[t].len() / THING_SIZES[t] };
+            w(&mut out, n as u16);
+        }
+        for m in &self.maps {
+            w(&mut out, m.data_offset);
+            w(&mut out, m.flags);
+            w(&mut out, m.flags2);
+            out.push(m.origin_x);
+            out.push(m.origin_y);
+            w(&mut out, m.depth as u16 & 0x3F | ((m.width as u16 - 1) & 0x1F) << 6 | (m.height as u16 - 1) << 11);
+            for &rw in &m.raw_words {
+                w(&mut out, rw);
+            }
+        }
+        for &c in &self.column_first {
+            w(&mut out, c);
+        }
+        for r in &self.object_list {
+            w(&mut out, r.0);
+        }
+        for &t in &self.text {
+            w(&mut out, t);
+        }
+        for t in &self.things {
+            out.extend_from_slice(t);
+        }
+        out.extend_from_slice(&self.map_data);
+        out
+    }
+
+    fn parse_inner(b: &[u8], checksum: bool) -> Result<(Dungeon, usize), Error> {
         let mut r = Reader { b, pos: 0 };
         let hdr = r.words(HEADER_LEN / 2)?;
         if hdr[0] == COMPRESSED_SIGNATURE {
@@ -308,10 +362,12 @@ impl Dungeon {
         }
         let map_data = r.take(map_data_size)?.to_vec();
         let body_end = r.pos;
-        let stored = r.words(1)?[0];
-        let computed = b[..body_end].iter().fold(0u16, |s, &x| s.wrapping_add(x as u16));
-        if stored != computed {
-            return Err(Error::BadChecksum { stored, computed });
+        if checksum {
+            let stored = r.words(1)?[0];
+            let computed = b[..body_end].iter().fold(0u16, |s, &x| s.wrapping_add(x as u16));
+            if stored != computed {
+                return Err(Error::BadChecksum { stored, computed });
+            }
         }
         for m in &maps {
             let end = m.data_offset as usize + m.square_count() + m.list_len();
@@ -319,17 +375,20 @@ impl Dungeon {
                 return Err(Error::BadLayout("map squares extend past the map data"));
             }
         }
-        Ok(Dungeon {
-            seed: hdr[0],
-            start,
-            maps,
-            column_first,
-            object_list,
-            text,
-            things,
-            map_data,
-            map_first_column,
-        })
+        Ok((
+            Dungeon {
+                seed: hdr[0],
+                start,
+                maps,
+                column_first,
+                object_list,
+                text,
+                things,
+                map_data,
+                map_first_column,
+            },
+            body_end,
+        ))
     }
 
     pub fn thing_count(&self, t: ThingType) -> usize {
@@ -755,5 +814,18 @@ mod tests {
         assert_eq!(d.free_count(ThingType::Missile), THING_SPARES[14] - 1);
         d.free_thing(m);
         assert_eq!(d.alloc_thing(ThingType::Missile), Some(m));
+    }
+
+    #[test]
+    fn snapshot_round_trip() {
+        let Some(b) = original() else { return };
+        let d = Dungeon::parse(&b).unwrap();
+        let snap = d.to_snapshot();
+        assert_eq!(snap, b[..b.len() - 2].to_vec());
+        let mut d2 = d.clone();
+        d2.add_spares();
+        let (d3, used) = Dungeon::parse_snapshot(&d2.to_snapshot()).unwrap();
+        assert_eq!(used, d2.to_snapshot().len());
+        assert_eq!(d3.to_snapshot(), d2.to_snapshot());
     }
 }

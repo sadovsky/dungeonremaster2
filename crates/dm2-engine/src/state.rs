@@ -30,6 +30,7 @@ pub enum Command {
     TurnRight,
 }
 
+#[derive(Clone)]
 pub struct GameState {
     pub dungeon: Dungeon,
     pub party: PartyPos,
@@ -68,6 +69,9 @@ pub struct GameState {
     pub creature_data: Option<std::rc::Rc<crate::creatures::data::CreatureData>>,
     /// Map whose creatures were last activated for the party.
     pub creature_map_seen: Option<usize>,
+    /// Save-game fields the engine does not model yet (script variables,
+    /// unknown globals); kept so a loaded save writes them back unchanged.
+    pub legacy: crate::save::Legacy,
     commands: std::collections::VecDeque<Command>,
 }
 
@@ -99,6 +103,7 @@ impl GameState {
             creature_slots: Vec::new(),
             creature_data: None,
             creature_map_seen: None,
+            legacy: Default::default(),
             commands: Default::default(),
         }
     }
