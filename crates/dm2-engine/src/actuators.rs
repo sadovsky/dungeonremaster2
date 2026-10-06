@@ -440,7 +440,9 @@ fn floor_actuator(g: &mut GameState, ev: Event, t: ThingRef) {
         0x3D => relay(g, ev, &a, a.data() as u32),
         0x2C => animated_ornament(g, ev, &a, false),
         0x32 => one_shot_ornament(g, ev, &a, false),
-        // TODO: 0x42-0x44.
+        0x42 => face_creatures(g, ev, &a),
+        0x43 => set_variable(g, ev, &a),
+        0x44 => test_variable(g, ev, &a),
         _ => {}
     }
 }
@@ -585,7 +587,10 @@ pub(crate) fn wall_actuator(g: &mut GameState, ev: Event, t: ThingRef) {
         }
         0x2C => animated_ornament(g, ev, &a, true),
         0x32 => one_shot_ornament(g, ev, &a, true),
-        // TODO: 0x41 (randomise from an ornament attribute), 0x42-0x44.
+        0x41 => randomise(g, map, &a, true),
+        0x42 => face_creatures(g, ev, &a),
+        0x43 => set_variable(g, ev, &a),
+        0x44 => test_variable(g, ev, &a),
         _ => {}
     }
 }
@@ -683,6 +688,108 @@ fn one_shot_ornament(g: &mut GameState, ev: Event, a: &Actuator, wall: bool) {
     if a.w2 & 4 != 0 {
         let a = Actuator::load(g, a.thing);
         relay(g, ev, &a, 0);
+    }
+}
+
+/// Read dungeon script variable `id` (0x150AE): 0-63 are flag bits (0x7F100),
+/// 64-127 bytes (0x7F0C0), 128-191 words (0x7F108); others read 0. The
+/// save game keeps them in `GameState::legacy`.
+pub fn script_var(g: &GameState, id: u16) -> u16 {
+    let v = &g.legacy;
+    match id {
+        0..=63 => u16::from(v.flags[(id >> 3) as usize] & 1 << (id & 7) != 0),
+        64..=127 => v.byte_vars[(id - 64) as usize] as u16,
+        128..=191 => v.word_vars[(id - 128) as usize],
+        _ => 0,
+    }
+}
+
+/// Apply operation `op` to script variable `id` (0x1512E): 0 set to 1,
+/// 1 clear to 0, 2 toggle, 3 add `operand`, 4 subtract it, 6 assign it,
+/// anything else leaves the value. Flags store "non-zero", bytes clamp to
+/// 0-255, words wrap.
+pub fn script_var_op(g: &mut GameState, id: u16, op: u16, operand: i32) {
+    let cur = script_var(g, id) as i32;
+    let new = match op {
+        0 => 1,
+        1 => 0,
+        2 => i32::from(cur == 0),
+        3 => cur + operand,
+        4 => cur - operand,
+        6 => operand,
+        _ => cur,
+    };
+    let v = &mut g.legacy;
+    match id {
+        0..=63 => {
+            let (i, bit) = ((id >> 3) as usize, 1u8 << (id & 7));
+            if new != 0 {
+                v.flags[i] |= bit;
+            } else {
+                v.flags[i] &= !bit;
+            }
+        }
+        64..=127 => v.byte_vars[(id - 64) as usize] = new.clamp(0, 255) as u8,
+        128..=191 => v.word_vars[(id - 128) as usize] = new as u16,
+        _ => {}
+    }
+}
+
+/// The action an actuator sends on: its configured action when word 2
+/// bit 2 is set, otherwise the incoming one.
+fn outgoing(a: &Actuator, incoming: u8) -> u8 {
+    if a.enabled() {
+        a.action()
+    } else {
+        incoming
+    }
+}
+
+/// Actuator 0x41: set *data* to a random value below the ornament's
+/// cycle length (its attribute 0x0D, category 9 or 10). Tentative: from
+/// docs/05; the handler is inline in the dispatcher.
+fn randomise(g: &mut GameState, map: usize, a: &Actuator, wall: bool) {
+    let n = ornament_cycle(g, map, a, wall).min(0x1FF) as u16;
+    let r = g.rng.random(n.max(1));
+    set_w(g, a.thing, 1, a.w1 & 0x7F | r << 7);
+}
+
+/// Actuator 0x42 (0x56B39): on a matching trigger (set, or clear when
+/// inverted), turn the creature group on the target square to face
+/// *data* & 3 (0x49EF8 in absolute mode). The original also turns the cells
+/// of things the group carries for some types; not modelled.
+fn face_creatures(g: &mut GameState, ev: Event, a: &Actuator) {
+    if !a.triggered_by(ev.b9) {
+        return;
+    }
+    let (tx, ty, _) = a.target();
+    if let Some(grp) = creatures::group_at(g, ev.map as usize, tx, ty) {
+        creatures::set_facing(g, grp, (a.data() & 3) as u8);
+    }
+}
+
+/// Actuator 0x43 (0x5737C): apply the incoming action to script variable
+/// *data* (set, clear or toggle; when inverted, set adds 1 and clear
+/// subtracts 1), then fire the target.
+fn set_variable(g: &mut GameState, ev: Event, a: &Actuator) {
+    let op = ev.b9 as u16 + if a.inverted() { 3 } else { 0 };
+    script_var_op(g, a.data(), op, 1);
+    fire(g, ev.map as usize, a, outgoing(a, ev.b9), 0);
+}
+
+/// Actuator 0x44 (0x573E9): test script variable *data*. With r = (value
+/// is non-zero) compared against the inverted bit, a set or toggle passes
+/// when they differ and a clear passes when they agree; a passing event
+/// fires the target.
+fn test_variable(g: &mut GameState, ev: Event, a: &Actuator) {
+    let r = script_var(g, a.data()) != 0;
+    let pass = match ev.b9 {
+        SET | TOGGLE => r != a.inverted(),
+        CLEAR => r == a.inverted(),
+        _ => false,
+    };
+    if pass {
+        fire(g, ev.map as usize, a, outgoing(a, ev.b9), 0);
     }
 }
 

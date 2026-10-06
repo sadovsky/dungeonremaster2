@@ -327,12 +327,28 @@ kind 0x17 plays a sound on set. Types not listed below do nothing.
 | 0x3B, 0x40, 0x47, 0x48, 0x49 | 0x57E6C | Item relay between the event's square and the actuator's target. 0x40 matches against an item-kind list loaded from GRAPHICS.DAT instead of the single *data* kind. 0x47 and 0x49 reverse the direction. 0x48 and 0x49 move only the first match. Items carried by creatures on the square are searched too. |
 | 0x3C | inline | Item generator: on set (or clear if inverted), create an item of kind *data* and place it at the target square and cell (0x57D4C) |
 | 0x3D | 0x571F3 | Relay with *data* as extra delay. In "follow" mode: not inverted, it forwards the incoming action after the delay; inverted, it forwards the action at once and then sends the opposite action (toggle stays toggle) after *data* ticks, making a pulse. Other modes fire the configured action on a matching trigger (set, or clear if inverted). |
-| 0x41 | inline | Randomise: set *data* to a random value below an ornament attribute (category 9 or 10, attribute 0x0D). Tentative: the ornament frame count. |
-| 0x42 | 0x56B39 | Unknown |
-| 0x43 | 0x5737C | Unknown |
-| 0x44 | 0x573E9 | Unknown |
+| 0x41 | inline | Randomise: set *data* to a random value below an ornament attribute (category 9 or 10, attribute 0x0D). Tentative: the ornament frame count. The engine uses the ornament's cycle length (0x56CF4), which starts from that attribute. |
+| 0x42 | 0x56B39 | Face creatures: on a matching trigger (set, or clear when inverted), the creature group on the target square is turned to face *data* & 3 (0x49EF8 in absolute mode; for types with flag bit 0 the routine also turns the cells of the things the group carries). |
+| 0x43 | 0x5737C | Set a script variable: apply the incoming action to variable *data* through 0x1512E with operation = action, plus 3 when inverted (so inverted set adds 1, inverted clear subtracts 1, inverted toggle does nothing), then fire the target with the configured action (word 2 bit 2 set) or the incoming one. |
+| 0x44 | 0x573E9 | Test a script variable: r = (variable *data* is non-zero). A set or toggle passes when r differs from the inverted bit; a clear passes when they agree. A passing event fires the target, with the configured or incoming action as for 0x43. |
 | 0x45 | 0x572A8 | Long timer: like 0x20, but the delay is *data* << (word 2 bits 7-10) |
 | 0x46 | inline | Set, clear or toggle bit 13 of word 1 of the door or teleporter record on the target square (meaning of that bit still unknown) |
+
+### Script variables (0x150AE read, 0x1512E write)
+
+Actuators 0x43 and 0x44 work on 192 dungeon script variables, the same
+ones a save game stores:
+
+| Ids | Storage | Notes |
+|-----|---------|-------|
+| 0-63 | Bits of the 8-byte bitmap at 0x7F100 | A write stores "non-zero" |
+| 64-127 | Bytes at 0x7F080 + id (0x7F0C0 onward) | Clamped to 0-255 |
+| 128-191 | Words at 0x7F008 + 2·id (0x7F108 onward) | 16 bits, wrapping |
+
+Ids from 192 up read as 0 and ignore writes. The write routine takes an
+operation and an operand (EDX): 0 set to 1, 1 clear to 0, 2 toggle (1 when
+0, else 0), 3 add the operand, 4 subtract it, 6 assign it; other values
+leave the variable unchanged.
 
 ### Floor actuator types (handler 0x57476, code)
 

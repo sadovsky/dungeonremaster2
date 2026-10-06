@@ -269,3 +269,52 @@ fn one_shot_ornament_plays_a_single_cycle() {
     assert!(a.data() > 0, "the counter advanced");
     assert!(!g.timeline.iter().any(|(_, e)| e.kind == actuators::EVENT_ORNAMENT_STEP));
 }
+
+#[test]
+fn script_variables_cover_flags_bytes_and_words() {
+    let Some(mut g) = game() else { return };
+    use actuators::{script_var as get, script_var_op as op};
+    op(&mut g, 9, 0, 0);
+    assert_eq!(get(&g, 9), 1, "flag set");
+    op(&mut g, 9, 2, 0);
+    assert_eq!(get(&g, 9), 0, "flag toggled off");
+    op(&mut g, 70, 6, 300);
+    assert_eq!(get(&g, 70), 255, "bytes clamp to 255");
+    op(&mut g, 70, 4, 1000);
+    assert_eq!(get(&g, 70), 0, "and to 0");
+    op(&mut g, 130, 6, 40000);
+    op(&mut g, 130, 3, 5);
+    assert_eq!(get(&g, 130), 40005, "words hold 16 bits");
+    op(&mut g, 130, 5, 7);
+    assert_eq!(get(&g, 130), 40005, "unknown operation leaves the value");
+}
+
+#[test]
+fn variable_actuators_set_and_test() {
+    let Some(mut g) = game() else { return };
+    // 0x43 on variable 3, then 0x44 testing variable 3, both firing at (1,1).
+    let set_var = actuators::alloc_thing(&mut g, ThingType::Actuator).unwrap();
+    g.dungeon.set_record_word(set_var, 1, 0x43 | 3 << 7);
+    g.dungeon.set_record_word(set_var, 2, 0);
+    g.dungeon.set_record_word(set_var, 3, 1 << 6 | 1 << 11);
+    let test_var = actuators::alloc_thing(&mut g, ThingType::Actuator).unwrap();
+    g.dungeon.set_record_word(test_var, 1, 0x44 | 3 << 7);
+    g.dungeon.set_record_word(test_var, 2, 0);
+    g.dungeon.set_record_word(test_var, 3, 1 << 6 | 1 << 11);
+    let mut ev = crate::timeline::Event::new(4, 0, 0);
+    ev.b9 = SET;
+    // The variable is clear: a set fails the test.
+    actuators::wall_actuator(&mut g, ev, test_var);
+    assert!(g.timeline.is_empty());
+    // 0x43 sets it and fires its own target.
+    actuators::wall_actuator(&mut g, ev, set_var);
+    assert_eq!(actuators::script_var(&g, 3), 1);
+    assert_eq!(g.timeline.len(), 1);
+    // Now the set passes the test and fires.
+    actuators::wall_actuator(&mut g, ev, test_var);
+    assert_eq!(g.timeline.len(), 2);
+    // A clear passes only when the variable agrees with "not inverted" = clear.
+    ev.b9 = actuators::CLEAR;
+    actuators::wall_actuator(&mut g, ev, test_var);
+    assert_eq!(g.timeline.len(), 2);
+}
