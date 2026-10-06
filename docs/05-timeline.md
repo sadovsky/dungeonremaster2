@@ -310,9 +310,9 @@ kind 0x17 plays a sound on set. Types not listed below do nothing.
 
 | Type | Handler | Behaviour |
 |------|---------|-----------|
-| 0x07, 0x09 | 0x57A63 | Shooter: create one (0x07) or two side-by-side (0x09) items of kind *data* and launch them as missiles from the target cell. Kinetic energy comes from word 3 bits 4-11 and step energy from bits 12-15. A single shot gets a random 1-bit sideways offset in its direction. |
+| 0x07, 0x09 | 0x57A63 | Shooter: create one (0x07) or two side-by-side (0x09) items of kind *data* and launch them as missiles. The shot is placed from the event itself, not from a target: it starts on the square one step from the event square (+6/+7) in direction *d* (event +8), flying in direction *d*, in cell (*d* + 2) & 3 (and the next cell for the second shot). Word 3 holds no target here: bits 4-11 are the kinetic energy and bits 12-15 the step energy; the attack byte is always 100. A single shot adds a random bit to its cell, drawn after the item is created. |
 | 0x08, 0x0A | 0x57A63 | As above, but launches spell missiles (explosion type 0xFF80 + *data*) |
-| 0x0E, 0x0F | 0x57A63 | As above, but launches the item(s) currently lying on that cell |
+| 0x0E, 0x0F | 0x57A63 | As above, but launches the item(s) lying on the event square in cells *d* and *d* + 1 |
 | 0x12 | inline | End the game: stop sound, set 0x7F23C, start the ending (0x2005B) |
 | 0x16 | inline | Cross-map relay: forward the same action, at the same tick and priority, to square (word 3 x, y) on map *data* & 0x3F. Cell = *data* bits 6-7 if the target is a wall, else 0. |
 | 0x1D | inline | Up/down counter in *data* (9 bits; a value with bit 8 set counts as below zero): a clear increments it, a set decrements it (a set is ignored when word 2 bit 2 is set and the count is already 0). Only a change between "zero or below" and "above zero" fires: in "follow" mode it sends clear when (at zero) equals the inverted bit and set otherwise; in other modes it fires the configured action only on reaching zero. |

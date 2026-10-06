@@ -399,3 +399,52 @@ fn explosion_rolls_once_and_hurts_the_party_first() {
     assert!(base > 0);
     assert!(total(&g) < before, "the party took the blast");
 }
+
+/// Regression: shooters launched from the actuator's word 3 read as a
+/// target, but word 3 holds the shot energies (0x57A63). Shots start one
+/// square ahead of the event square in its direction, with attack 100,
+/// and never off the map.
+#[test]
+fn shooters_fire_from_the_square_ahead() {
+    let Some(mut g) = game() else { return };
+    let shooters: Vec<_> = things(&g, ThingType::Actuator)
+        .into_iter()
+        .filter(|&(_, _, _, t)| matches!(crate::actuators::Actuator::load(&g, t).kind(), 0x08 | 0x0A))
+        .collect();
+    let had_shooters = !shooters.is_empty();
+    let mut fired = 0;
+    for (map, x, y, t) in shooters {
+        let md = &g.dungeon.maps[map];
+        let Some(dir) = (0..4u8).find(|&d| {
+            let (ax, ay) = (x + DX[d as usize], y + DY[d as usize]);
+            ax >= 0 && ay >= 0 && ax < md.width as i32 && ay < md.height as i32
+        }) else {
+            continue;
+        };
+        let before: Vec<_> = things(&g, ThingType::Missile).into_iter().map(|m| m.3 .0 & 0x3FFF).collect();
+        let mut ev = crate::timeline::Event::new(4, map as u8, g.tick);
+        (ev.x, ev.y, ev.b8) = (x as u8, y as u8, dir);
+        crate::actuators::wall_actuator(&mut g, ev, t);
+        crate::apply::apply_effects(&mut g);
+        for (mm, mx, my, m) in things(&g, ThingType::Missile) {
+            if before.contains(&(m.0 & 0x3FFF)) {
+                continue;
+            }
+            assert_eq!((mm, mx, my), (map, x + DX[dir as usize], y + DY[dir as usize]), "shot from the square ahead");
+            assert_eq!(g.dungeon.record(m).unwrap()[5], 100, "fixed attack byte");
+            fired += 1;
+        }
+        if fired >= 3 {
+            break;
+        }
+    }
+    assert!(!had_shooters || fired > 0, "the dungeon has spell shooters but none fired");
+    // Every scheduled missile event carries an on-map position.
+    for (_, e) in g.timeline.iter() {
+        if matches!(e.kind, 0x1D | 0x1E) {
+            let (px, py) = ((e.w8() & 0x1F) as i32, (e.w8() >> 5 & 0x1F) as i32);
+            let md = &g.dungeon.maps[e.map as usize];
+            assert!(px < md.width as i32 && py < md.height as i32, "missile event off its map: {e:?}");
+        }
+    }
+}
