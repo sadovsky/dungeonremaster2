@@ -48,6 +48,12 @@ pub struct GameState {
     /// Requests for the presentation layer (sounds, text) and outcomes for
     /// other systems. Drained by the frontend.
     pub effects: Vec<Effect>,
+    /// Active creature slots (docs/08); None = free.
+    pub creature_slots: Vec<Option<crate::creatures::slot::Slot>>,
+    /// Creature tables from the user's files; creatures stay inert without them.
+    pub creature_data: Option<std::rc::Rc<crate::creatures::data::CreatureData>>,
+    /// Map whose creatures were last activated for the party.
+    pub creature_map_seen: Option<usize>,
     commands: std::collections::VecDeque<Command>,
 }
 
@@ -68,6 +74,9 @@ impl GameState {
             party_status: PartyStatus::default(),
             attrs: Attributes::default(),
             effects: Vec::new(),
+            creature_slots: Vec::new(),
+            creature_data: None,
+            creature_map_seen: None,
             commands: Default::default(),
         }
     }
@@ -98,7 +107,7 @@ impl GameState {
             let Some(ev) = self.timeline.pop() else { break };
             events::dispatch(self, ev);
         }
-        // TODO: creature updates (docs/08).
+        crate::creatures::update(self);
         champions::tick(self);
         while let Some(c) = self.commands.pop_front() {
             self.execute(c);

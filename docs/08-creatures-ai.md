@@ -118,14 +118,21 @@ again; it raises error 0x47 if that fails.
 
 ## The creature tick
 
-Creatures run off the timeline (docs/05). Event 0x21 wakes an inactive
-creature and 0x22 is the regular step. Both go through 0x24A88, which
+Creatures run off the timeline (docs/05). Event 0x22 starts a new action
+(taking the queued one, or running think), and event 0x21 continues the
+current animation sequence: the driver schedules 0x21 while the frame
+stepper reports more frames to play and 0x22 once the sequence ends.
+(Earlier notes called 0x21 a wake-up event; the driver at 0x25420 shows
+otherwise.) Both go through 0x24A88, which
 loads the creature, slot, info and animation pointers into globals at
 0x7F548 to 0x7F57E, the context every other AI function uses.
 
-1. **0x257CC (step event):** clear the slot's timer; apply regeneration
-   (info+3 and info+4); apply damage owed from slot +0x14 through
-   0x31348. An inanimate creature (info flag bit 0) only plays its
+1. **0x257CC (step event):** clear the slot's timer. A creature at 0 HP
+   is set to 1 HP with 1 point owed. Regeneration (info+3): every
+   |n| × 4 ticks since the slot's stamp (+6), a positive n heals up to the
+   base HP (info+4) and a negative n adds the same amount to the damage
+   owed, so it slowly wears down. Owed damage (+0x14) is applied through
+   0x31348, after clearing status bit 15 on animate creatures. An inanimate creature (info flag bit 0) only plays its
    animation. Everything else goes to the animation driver 0x25420.
 2. **0x25420 (animation driver):** if a queued action exists (+0x17),
    make it current (+0x1A); otherwise call **think** (0x262F7) to choose
@@ -170,8 +177,30 @@ Each class has a list of 7-byte entries (pointer at 0x7F584 + 2):
 |------|---------|
 | 0 | Program number |
 | 1 | Probability: n > 0 means a 1-in-n chance; n < 0 means a (1 − 1/abs(n)) chance; 0 means always |
-| 2-5 | Arguments passed to the goal builder (0x26873) |
+| 2-5 | Pointer to goal data in the data object (raw value + 0x70000), passed to the goal builder |
 | 6 | Non-zero = more entries follow |
+
+**Choosing the list (0x25962, 0x259CC).** The class's entry in the
+pointer table at 0x7518C leads to a list of 6-byte *behaviour sets*: a
+16-bit condition mask and a pointer to a behaviour list, ending with a
+zero mask (whose list is the default). Before choosing, status bit 3
+("badly hurt") is refreshed with probability 1/n, where n is 2 when the
+class has flag 0x02 and otherwise depends on the low two bits of the
+creature's thing index: the bit is set when HP is under 25% of the base
+HP, cleared otherwise. Status bit 1 is then cleared. The chosen set is
+the first whose mask equals the status word; failing that, the first
+whose bits are all present in it; failing that, the first that shares
+any bit with it. Masks with both top bits set (0xC000) call a separate
+condition test (0x150AE, not traced). Changing set resets the current
+program.
+
+**Goal building (0x25EF0).** Each list entry that passes its probability
+roll (the entry for the program already running always passes) becomes
+a goal: the goal kind and argument come from bytes 5 and 6 of that
+program's current row. The builder 0x26873 dispatches on the goal kind
+through a 32-entry table at 0x75248; those routines aren't traced yet,
+so the goal data's layout (distance limit and so on) is still open. If
+the planner finds nothing, think falls back to program 0x11.
 
 ### Programs and the interpreter
 
@@ -274,6 +303,39 @@ Other checks in the same function:
 - The four positions within a square are tracked (offset tables at
   0x752AC and 0x752AE, chosen by the creature's size, info+0x23).
 
+## Frame events (0x2B75E, code)
+
+The frame's gameplay event depends on the current action:
+
+| Action | Handler | Effect |
+|--------|---------|--------|
+| 1, 2, 9 | 0x29DE7 | Move to the target square: re-run the movement test, then move the group through the shared move routine 0x4B108 (sensors, pits, teleporters). With info +1 bit 0 it attacks instead (action 0x26). |
+| 3, 4 | 0x29F39 | Turn-step |
+| 5 | 0x29F6B | TODO |
+| 6, 7 | 0x2A357 | Turn: facing becomes +0x1D (when that is a full turn-around, a random side is picked) |
+| 8, 0x26 | 0x2A3B9 | Melee attack on the target square (below) |
+| 0x0A-0x0F, 0x15-0x18 | various | Item, actuator and possession handling (TODO) |
+| 0x13 | 0x2ADB8 | Death or disappearance |
+| 0x1A, 0x2B, 0x2C | 0x2ADE1 | TODO |
+| 0x27, 0x28 | 0x2A835 | Look around |
+| 0x19, 0x29, 0x2A, 0x2D, 0x2E | 0x2ACBC | Put possessions down on the target square |
+| 0x2F-0x31 | 0x2B23B | TODO |
+| 0x35-0x3A | 0x2A088 | TODO |
+| 0x3B, 0x3C | 0x2B35D | Transform |
+| 0x3D-0x40 | 0x2B570 | TODO |
+| 0x55 | 0x2B724 | Give up (used by think) |
+
+Actions 0x1B-0x25 have no frame event; the merchant and "emote" actions
+are animation only. After an event, actions with flag bits 0x03 in the
+table at 0x75136 record the tick in slot +4.
+
+**Movement test outcome (0x2D792 tail).** When a step is legal the test
+itself chooses the action: 1 to walk straight on (2 when the goal is
+within one square), 3 or 4 to turn-step left or right, 9 to back off in
+mode 6, or 0 when the action table says so. It records the target square,
+direction, facing and mode in the slot. A step that needs a full
+turn-around queues a turn (0x2C005) instead.
+
 ## Damage and death
 
 - **Creature vs creature (0x31113):**
@@ -284,6 +346,33 @@ Other checks in the same function:
   4. Then `d += rand(d) + rand(4)`, then `d += rand(d)`, then `d = d/4 + rand(4) + 1`.
   5. Finally, 50% of the time subtract `rand(d/4 + 1)`.
   6. The result goes to 0x24E62 with type 2.
+- **Creature attacking the party (0x2A3B9, code):** if the target is the
+  party's square, the living champions are collected. The number struck
+  is 1 (2 with info +9 bit 0x20); with info flag 0x08 every champion, or a
+  random count when flag 0x10 is also set. Victims are picked at random
+  (flag 0x10) or by the champion cell facing the attacker. Against a door
+  square the creature bashes it with random(1.5 × attack); against another
+  creature it uses the creature-vs-creature roll.
+- **Blow against a champion (0x18758, code):**
+  1. **Dodge:** unless the party sleeps, compare the champion's
+     dexterity against the creature's dexterity plus (rnd & 31) minus
+     16, combined with a random bit, or pass a luck test (60). Attack
+     type 9 doubles the creature's dexterity; type 8 can't be dodged.
+  2. **Body part:** chosen from the four nibbles of info +0x1A.
+  3. **Strength:** s = attack + min(attack, rnd & 15), minus twice the
+     champion's parry level (not for type 8). Below 2, it's a miss half
+     the time, otherwise 2 + rand4().
+  4. **Damage:** from s through random(s/2) and rand4() terms, roughly
+     a quarter of the total plus 1, randomly trimmed by up to half. It
+     goes to the champion damage routine 0x4722A with the attack type
+     from info +0x1C.
+  5. **Poison:** on a hit with info +7 non-zero, a random bit decides
+     whether poison (scaled by vitality) is added.
+- **Owed damage and death (0x31348, code):** unless the class has flag
+  0x04, being hit also signals the creature's home square (actuator call
+  0x4BBE4). When owed damage reaches HP, HP is set to 1 and the death
+  action 0x13 is queued (0x24DB5); inanimate creatures are removed
+  directly (0x30FE3). Class flag 0x800 runs an extra check first.
 - **Taking a hit (0x24E62):** adds the damage to slot +0x14.
   - Unless the creature is already afraid, it becomes afraid (status
     bit 2) on a hit over 30, on a hit over 4 with a 1-in-4 chance, or
@@ -318,6 +407,28 @@ Other checks in the same function:
     base duration in ticks.
 - **Drawing descriptors (15, type, 7, 253):** 8 bytes per frame, chosen by
   the same index.
+- **Stepping (code):** a sequence is addressed by its start frame (from
+  the action map; an action missing from the map uses the value paired
+  with the −1 terminator) plus an offset, 0xFFFF meaning "before the
+  first frame".
+  - *Advance* (0x14F1B) moves by the current frame's byte-1 high nibble
+    (stopping if it is 0), then skips frames whose branch roll fails:
+    (rnd & 15) ≤ low nibble, or always for 0xF. It reports "playable"
+    only if the reached frame's total duration (byte 3 bits 2-3 plus
+    bits 4-7) is non-zero.
+  - *Next* (0x1501A) follows byte 2's 6-bit jump; a jump of 0 means
+    stop. While the slot is armed (+0x21) and frames have byte 2 bit 6
+    set, the driver chains through them in zero time, firing their
+    events.
+- **Timing (0x3023F, code):** the delay is base + random(extra). Status
+  bit 0x40 makes it at most 1. Status bit 0x08 cuts it to 75% (at least
+  1). While the party sleeps (0x7F234) it doubles, or quadruples off the
+  party's map. Creatures off the party's map in some states (bit 15 set,
+  bit 1 clear, class second-word flag 0x01 clear) are slowed further;
+  that roll isn't fully traced. The counter at 0x7FFEF (champions code:
+  raised by action 0x0B) freezes creatures without info flag +1 0x10:
+  their step is pushed back 4 ticks, and a death action (0x13) runs at
+  triple delay.
 - **Inanimate creatures:** their sequence length counts frames up to the
   end marker, and they encode a looping animation state in the creature's
   +0x0C word (0x8000 | arg << 6 | count).
@@ -432,6 +543,24 @@ opcode `T` and by two other AI helpers.
   planner also draws random numbers (0x1C6A1, 0x1C6B7), probably to vary
   that order; not confirmed. The flags at 0x7F572 (0x100 / 0x110 /
   0x108) change which passes run.
+
+## Implementation status (crates/dm2-engine/src/creatures)
+
+- **Data:** read from the user's SKULL.EXE and GRAPHICS.DAT at runtime
+  (`data.rs`), never embedded.
+- **Done:** the slot pool and activation (on arriving on a map, on
+  spawn and when hit); the step event; animation stepping and timing;
+  think with behaviour-set selection, behaviour picking, the planner
+  (BFS on one map) and the program interpreter; movement legality; moves
+  through the shared move routine; turns; melee attacks on the party,
+  doors and other creatures; death; transforms; merchant pricing and the
+  `I`/`J`/`K` rules (`merchant.rs`, with the money classifier still a
+  stand-in).
+- **Partial:** goal kinds beyond 0-3, 8, 9, 0x0F, 0x11 and 0x12; the
+  opcodes `F`, `J`, `K` (on real counters), `M`, `N`, `W`, `Y`, `[`,
+  `\`, `]` fail so that programs fall through; groups occupy whole
+  squares (no in-square positions or group merging); the planner doesn't
+  cross maps.
 
 ## Open questions
 
