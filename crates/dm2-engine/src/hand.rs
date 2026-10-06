@@ -439,8 +439,14 @@ pub fn open_menu(g: &mut GameState, champion: usize, hand: usize) -> bool {
     // a command (CM), suit this hand (WH is 0 or hand + 1), and whose skill
     // level (SK) reaches the required level (LV). A bare hand's command
     // 0x11 also needs something to use (0x3FC6D).
-    // TODO(0x3F927, code 8): the extra checks for items held in the hand.
-    let bare = g.champions[champion].inventory(hand) == EMPTY;
+    // A held item also needs enough charges (code 8, 0x1F606): 0x12 means
+    // "only when empty"; 0x10 and 0x11 count as 1; any other non-zero
+    // value is the number of charges the action needs.
+    // TODO(0x3F927): containers whose word 2 has (bits 1-2) == 2 limit
+    // commands 0x2C-0x30 by their subtype and contents.
+    let held = g.champions[champion].inventory(hand);
+    let bare = held == EMPTY;
+    let charges = if bare { 0 } else { data.item_db(&g.dungeon).charges(ThingRef(held)) as i16 };
     let code = |a: &ActionSpec, slot: usize| a.codes.get(slot).copied().unwrap_or(0);
     let mut actions: Vec<ActionSpec> = Vec::new();
     for n in 0..4u8 {
@@ -455,6 +461,18 @@ pub fn open_menu(g: &mut GameState, champion: usize, hand: usize) -> bool {
         }
         if bare && cm == 0x11 && !has_something_to_use(g, champion, hand) {
             continue;
+        }
+        if !bare {
+            match code(&a, 8) {
+                0x12 if charges != 0 => continue,
+                0x12 | 0 => {}
+                n => {
+                    let need = if n == 0x10 || n == 0x11 { 1 } else { n };
+                    if charges < need {
+                        continue;
+                    }
+                }
+            }
         }
         let level = champions::level(&g.champions[champion], &g.party_status, code(&a, 0).max(0) as usize, true);
         if (code(&a, 1) as i32) <= level as i32 {
