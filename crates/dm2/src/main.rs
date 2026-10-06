@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use dm2_engine::assets::{self, Assets};
 use dm2_engine::creatures::{self, data::CreatureData};
 use dm2_engine::data::GameData;
+use dm2_engine::save;
 use dm2_formats::gdat::Gdat;
 use dm2_engine::exe::Exe;
 use dm2_engine::font::Font;
@@ -66,6 +67,18 @@ struct Data {
     game_data: Option<std::rc::Rc<GameData>>,
     /// Creature tables; creatures stay inert without them.
     creature_data: Option<std::rc::Rc<CreatureData>>,
+}
+
+/// Where save games go: $DM2_SAVE_DIR, else ./saves (kept out of the
+/// user's original install).
+fn save_dir() -> PathBuf {
+    std::env::var_os("DM2_SAVE_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("saves"))
+}
+
+/// Title-screen Resume: load save slot 0 (SKSAVE0.DAT, then .BAK).
+fn resume(d: &Data) -> Result<GameState, String> {
+    let gd = d.game_data.clone().ok_or("SKULL.EXE is needed to load saves")?;
+    save::load_slot(&save_dir(), 0, gd, d.creature_data.clone()).map_err(|e| e.to_string())
 }
 
 /// Start a new game the way the original does (recruits the starting
@@ -390,6 +403,21 @@ async fn play(args: Vec<String>) {
                 (Screen::Title, 0xD7) => {
                     game = new_game(&d);
                     screen = Screen::Game;
+                }
+                (Screen::Title, 0xD9) => match resume(&d) {
+                    Ok(g) => {
+                        game = g;
+                        screen = Screen::Game;
+                    }
+                    Err(e) => eprintln!("resume: {e}"),
+                },
+                (Screen::Game, 0x8C) => {
+                    let dir = save_dir();
+                    let _ = std::fs::create_dir_all(&dir);
+                    match save::save(&mut game, &save::slot_path(&dir, 0), "DM2 REMAKE") {
+                        Ok(()) => eprintln!("saved to {}", save::slot_path(&dir, 0).display()),
+                        Err(e) => eprintln!("save failed: {e}"),
+                    }
                 }
                 (Screen::Game, 0x90) => screen = Screen::Paused,
                 (Screen::Paused, 0x91) => screen = Screen::Game,
