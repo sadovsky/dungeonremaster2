@@ -48,6 +48,8 @@ const MID_STEP_FLOOR_DY: i32 = 3;
 const MID_STEP_CLIP: (i32, i32, i32, i32) = (21, 8, 182, 110);
 /// Depth darkening (64ths) in mid-step frames (0x75C07).
 const MID_STEP_DARKEN: [i32; 5] = [0, 0, 5, 19, 36];
+/// Mid-step walls (negated depth), 0x75C01 + depth as signed bytes.
+const MID_STEP_WALL_BRIGHTEN: [i32; 5] = [0, 0, -7, -9, -10];
 /// Attack lunge from the square ahead, by attack step: sub-square and
 /// scale (0x75BB4 / 0x75BBB).
 const LUNGE_SLOT: [u8; 7] = [2, 14, 22, 22, 22, 10, 12];
@@ -148,6 +150,13 @@ pub struct ViewExtras {
     /// The party is between squares (the step counter 0x7F258 is running):
     /// draw the mid-step frame (docs/04 "Mid-step frames").
     pub mid_step: bool,
+    /// The party's darkness step, 0-5 (global 0x7F282); bounds how much a
+    /// mid-step wall may be brightened (0x802CE = step × 10).
+    pub darkness_step: i32,
+    /// Floor-item stacking table (0x75B94): 16 pairs of 3-bit selectors
+    /// into the nudge offsets, read from the user's SKULL.EXE by the
+    /// frontend. None: piled items are not fanned out.
+    pub stack_nudges: Option<[u8; 32]>,
 }
 
 /// Drawing state of one creature group, filled by the frontend from
@@ -182,6 +191,8 @@ impl Default for ViewExtras {
             missile_dirs: HashMap::new(),
             creatures: HashMap::new(),
             mid_step: false,
+            darkness_step: 0,
+            stack_nudges: None,
         }
     }
 }
@@ -262,11 +273,19 @@ struct Req {
     /// Light depth (None: no lighting).
     depth: Option<usize>,
     key: Option<u8>,
+    /// A wall in a mid-step frame: the original passes its depth negated,
+    /// which selects the brightening row and remap table 1 (0x4E3D5).
+    wall_mid: bool,
+    /// Darken by the ambient level only, with no depth row or set remap:
+    /// the ceiling and floor (0x4E32A darkens them by 0x802CE directly).
+    ambient_only: bool,
+    /// Screen-pixel offset added after scaling (0x4E502's position adds).
+    post: (i32, i32),
 }
 
 impl Req {
     fn new(cat: u8, idx: u8, sub: u8, rid: u16) -> Req {
-        Req { cat, idx, sub, rid, flip: 0, xs: 64, ys: 64, xoff: 0, yoff: 0, depth: None, key: None }
+        Req { cat, idx, sub, rid, flip: 0, xs: 64, ys: 64, xoff: 0, yoff: 0, depth: None, key: None, wall_mid: false, ambient_only: false, post: (0, 0) }
     }
 }
 
@@ -292,10 +311,22 @@ fn scale_v(v: i32, s: i32) -> i32 {
 }
 
 /// Light colour map for a depth, or None.
-fn light_map(a: &mut Assets, cx: &Ctx, depth: Option<usize>, key: Option<u8>) -> Option<[u8; 256]> {
+fn light_map(a: &mut Assets, cx: &Ctx, depth: Option<usize>, key: Option<u8>, wall_mid: bool, ambient_only: bool) -> Option<[u8; 256]> {
+    if ambient_only {
+        return if cx.ex.lighting { a.light.as_mut()?.for_depth_with(0, cx.ex.ambient, key, None) } else { None };
+    }
     let depth = depth?;
     if !cx.ex.lighting {
         return None;
+    }
+    if wall_mid && depth >= 1 {
+        // Negative-depth branch of 0x4E3D5: brightening row at 0x75C02
+        // (0, -7, -9, -10 for depths 1-4), bounded below by -(step × 10),
+        // with the set's remap table 1. Brightening past full light is
+        // clamped (only reachable when the set has no remap table).
+        let darken = MID_STEP_WALL_BRIGHTEN[depth.min(4)].max(-cx.ex.darkness_step * 10).max(0);
+        let remap = a.gdat.get(Key::new(8, cx.set, 7, 1)).map(|t| t.to_vec());
+        return a.light.as_mut()?.for_depth_with(darken, cx.ex.ambient, key, remap.as_deref());
     }
     // Mid-step frames use the in-between darkening row and the set's
     // remap tables 10-13 instead of 1-4 (0x4E3D5).
@@ -315,6 +346,7 @@ fn draw_sprite(a: &mut Assets, buf: &mut Bitmap, cx: &Ctx, s: &Sprite, base_off:
     if r.flip & 1 != 0 {
         ox = -ox;
     }
+    let (ox, oy) = (ox + r.post.0, oy + r.post.1);
     let img = (s.w as i32, s.h as i32);
     let p = if (ox, oy) != (0, 0) {
         a.layout.resolve(r.rid | 0x8000, ox, oy, img)
@@ -325,7 +357,7 @@ fn draw_sprite(a: &mut Assets, buf: &mut Bitmap, cx: &Ctx, s: &Sprite, base_off:
     if cx.ex.mid_step {
         p = clip(p, MID_STEP_CLIP)?;
     }
-    let lm = light_map(a, cx, r.depth, r.key);
+    let lm = light_map(a, cx, r.depth, r.key, r.wall_mid, r.ambient_only);
     s.blit_mapped(buf, &p, r.flip, r.key, lm.as_ref());
     Some(p)
 }
@@ -514,14 +546,12 @@ pub fn render_full(a: &mut Assets, dg: &Dungeon, map: usize, px: i32, py: i32, d
     let ceil_flip = if set_flags & 2 != 0 && set_flags & 4 == 0 { 1 - par } else { 0 };
     let floor_flip = if set_flags & 8 != 0 && set_flags & 0x10 == 0 { par } else { 0 };
     for (sub, rid, fl, dy) in [(1u8, LAYOUT_CEILING, ceil_flip, MID_STEP_CEILING_DY), (0, LAYOUT_FLOOR, floor_flip, MID_STEP_FLOOR_DY)] {
-        if ex.mid_step {
-            // Shifted by a few pixels for the in-between position (0x4E32A).
-            let r = Req { flip: fl, yoff: dy, ..Req::new(8, set, sub, rid) };
-            if let Some(s) = a.sprite(8, set, sub) {
-                draw_sprite(a, &mut buf, &cx, &s, s.off, &r, 64, 64);
-            }
-        } else {
-            a.draw(&mut buf, 8, set, sub, rid, fl, None);
+        // Darkened by the ambient level (0x802CE); shifted by a few pixels
+        // for the in-between position (0x4E32A).
+        let yoff = if ex.mid_step { dy } else { 0 };
+        let r = Req { flip: fl, yoff, ambient_only: true, ..Req::new(8, set, sub, rid) };
+        if let Some(s) = a.sprite(8, set, sub) {
+            draw_sprite(a, &mut buf, &cx, &s, s.off, &r, 64, 64);
         }
     }
     let floor_orn_default = a.gdat.lookup(Key::new(8, set, 11, 0x6B)).unwrap_or(0);
@@ -614,7 +644,12 @@ fn draw_wall(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c: usi
             flip = 1;
         }
     }
-    a.draw(buf, 8, cx.set, sub, LAYOUT_WALL0 + c as u16, flip, Some(key));
+    // Walls go through the lit drawer with depth 0, or their depth negated
+    // in mid-step frames (0x53D47 area -> 0x4E502 -> 0x4E3D5).
+    let depth = CELLS[c].1 as usize;
+    let wall_mid = cx.ex.mid_step && depth >= 1;
+    let r = Req { flip, key: Some(key), depth: Some(if wall_mid { depth } else { 0 }), wall_mid, ..Req::new(8, cx.set, sub, LAYOUT_WALL0 + c as u16) };
+    draw(a, buf, cx, r);
     if !cx.on(layers::ORNAMENTS) || c >= 16 {
         return;
     }
@@ -1083,9 +1118,13 @@ fn draw_contents(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c:
             continue;
         }
         if !creatures_only && c < 16 && cx.on(layers::ITEMS) {
+            // Items piled in one quadrant fan out by a per-quadrant
+            // counter, 0-15 (0x522A7 -> 0x51EB7).
+            let mut stack = 0usize;
             for &t in &cell.things {
                 if (5..=10).contains(&(t.kind() as u16)) && QUAD_SLOT[(t.cell().wrapping_sub(cx.dir) & 3) as usize] == s {
-                    draw_item(a, buf, cx, t, c, s, depth);
+                    draw_item(a, buf, cx, t, c, s, depth, stack);
+                    stack = (stack + 1) & 15;
                 }
             }
         }
@@ -1121,7 +1160,7 @@ fn draw_missiles_at(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell,
     }
 }
 
-fn draw_item(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usize, slot: u8, depth: usize) {
+fn draw_item(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usize, slot: u8, depth: usize, stack: usize) {
     let row = slot as usize / 5;
     if c == 0 && 4 - row < 2 {
         return; // behind the camera
@@ -1129,7 +1168,8 @@ fn draw_item(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usi
     let (cat, idx) = item_key(cx.dg, t);
     let sc = ITEM_SCALE[depth * 4 + 4 - row];
     let key = key_attr(a, cat, idx, Some(10), false);
-    let r = Req { xs: sc, ys: sc, depth: Some(depth), key, ..Req::new(cat, idx, 0, 5000 + 25 * c as u16 + slot as u16) };
+    let post = cx.ex.stack_nudges.map_or((0, 0), |t| (NUDGE[(t[2 * stack] & 7) as usize], NUDGE[(t[2 * stack + 1] & 7) as usize]));
+    let r = Req { xs: sc, ys: sc, depth: Some(depth), key, post, ..Req::new(cat, idx, 0, 5000 + 25 * c as u16 + slot as u16) };
     let placed = draw(a, buf, cx, r);
     // Items within reach (the party's square and the one ahead) are
     // clickable; a pile in one quadrant shares a record (0x522A7, 0x51CC6).

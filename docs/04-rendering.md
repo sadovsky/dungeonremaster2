@@ -298,9 +298,12 @@ Cells 9 and 10 (the far side cells at depth 2) have no contents pass
 - **Image**: (category, index, 1, sub). Sub is 0 normally, or 1 for an
   item in the centre column's middle slot when that image exists. Open
   chests use subs 4 and 5 instead of 0 and 1 (table 0x75D6A).
-- **Stacking**: a counter 0-15 per cell indexes a table of (x, y) nudge
-  pairs (0x75B94) into the offsets 0, 1, 2, 3, 0, −3, −2, −1 (0x75BC2), so
-  piled items fan out slightly.
+- **Stacking**: a counter per quadrant, starting at 0 and wrapping at 16
+  (0x522A7), indexes a table of (x, y) nudge pairs (0x75B94) into the
+  offsets 0, 1, 2, 3, 0, −3, −2, −1 (0x75BC2), so piled items fan out
+  slightly. The first item takes the first pair too. The offsets are added
+  to the request's screen position after scaling (0x4E502); the y nudge
+  is skipped for alcove items (0x51EB7's fifth argument).
 - The per-category offset attribute (cat, 0xFE, 12, sub) is added.
 - Colour key: attribute (cat, index, 11, 4) when present, else 10. The
   attribute can be 0x8000; the request's key field is 16 bits, so that
@@ -371,10 +374,19 @@ quadrants (0 and 1) are drawn.
     (minus normally, plus when a fallback mirrored the image); for side
     views, y moves by `(k/2 ∓ 7·k) >> 6` (−7 for view 1, +7 for view 3).
 - **Colour key**: attribute (15, type, 11, 4), default 4 (0x1F9DF).
-- **Attack lunge**: while a creature attacks from the square ahead (cell
-  3, flag 0x802CA), the attack step (word 0x72246) picks a fixed
-  sub-square and scale from tables 0x75BB4 / 0x75BBB: (2, 52), (14, 64),
-  (22, 78), (22, 78), (22, 78), (10, 64), (12, 64), drawn with view 0.
+- **Pointer lean** (formerly read as an "attack lunge"): when flag
+  0x802CA is set, a creature group in cell 3 is drawn with a fixed
+  sub-square and scale picked by word 0x72246 from tables 0x75BB4 /
+  0x75BBB: (2, 52), (14, 64), (22, 78), (22, 78), (22, 78), (10, 64),
+  (12, 64), with view 0. Neither value comes from the creature's attack.
+  The frame setup (around 0x54034) sets 0x802CA when 0x7F3A4 is non-zero
+  or 0x72FFC is not −1, then 0x50BF4 derives 0x72246 from the mouse
+  pointer's position inside the viewport: six regions by the pointer's
+  offset from the centre (|dx| < 20, |dy| < 15 thresholds), each mapped to
+  a neighbouring square; the region is kept only if that square holds a
+  creature group the push/swap test (0x24171) accepts, otherwise 6 (none).
+  So it is interface hover state, and the remake leaves it to the frontend
+  (`CreatureDraw::lunge`, currently unset).
 - Cells 16-22 have no contents pass, so creatures four squares away are
   not drawn.
 
@@ -513,7 +525,9 @@ in-between position:
 - lighting uses the mid-step darkening row 0, 0, 5, 19, 36 (0x75C07) and
   the map set's remap tables depth + 9 (10-13) instead of 1-4 (0x4E3D5);
   walls are drawn with their depth negated, which takes a separate branch
-  of the same routine;
+  of the same routine: darkening from the signed bytes at 0x75C01 + depth
+  (0, −7, −9, −10 for depths 1-4, i.e. brightening), raised to at least
+  −0x802CE, with the set's remap table 1;
 - creatures in the party's own cell are not drawn (0x51203);
 - placements through the viewport rectangle are clipped to (21, 8, 182 ×
   110) (0x7170E, in 0x1936F).
@@ -630,7 +644,13 @@ Nearest-neighbour. The output size is `(v·s + s/2) >> 6` for scale s in
   nearest neighbour that isn't; keys map to themselves. Results are cached.
 - **Per-depth light** (0x4E3D5): darkening for a depth is
   `64 − (64 − d)·(64 − ambient)/64`, with d from the depth table and the
-  ambient light level from 0x802CC's high word. If the map set provides a
+  ambient light level from 0x802CC's high word, i.e. word 0x802CE, which
+  the frame setup sets to the party's darkness step (0x7F282, 0-5) × 10.
+  Walls are drawn through this routine with depth 0 (and the negated
+  depth in mid-step frames, see above); the ceiling and floor are darkened
+  by 0x802CE alone (0x4E32A, no depth row or remap). At a new game's start
+  the step is 1, so everything is darkened by 10/64: leaving this out made
+  the remake's start view about 19% brighter than the original in DOSBox. If the map set provides a
   256-byte remap (8, set, 7, depth) — or (8, set, 7, depth + 9) in mid-step
   frames — that table is applied first and the ambient darkening on top of
   it (0x1B2BE). The set's remap tables are therefore authored depth fog.
@@ -698,14 +718,21 @@ alcove items, door buttons and wall ornaments.
 Simplifications, still TODO:
 - Door buttons drawn from a door-button ornament (the branch selected by
   the cell summary rather than the door's flag bit 6) are not drawn.
-- Floor items do not fan out by the stacking table (0x75B94), and alcove
-  items are drawn at the ornament's slot without 0x51EB7's stacking.
+- Floor items fan out by the stacking table (read from the user's
+  SKULL.EXE by the frontend into `ViewExtras::stack_nudges`); alcove items
+  are still drawn at the ornament's slot without stacking.
 - Kind-1 (drop on floor) records are not recorded; `hand` keeps its
   layout-region rule for drops.
-- The frontend does not yet supply missile directions, the lunge step, the
-  alternate descriptor, in-square creature positions or the mid-step flag;
-  the viewport uses defaults until the simulation exposes them.
-- Walls in mid-step frames use the positive-depth lighting branch.
+- The frontend supplies missile directions (`missiles::view_dir`), the
+  alternate descriptor (`CreatureView::alt_frame`), the darkness step and
+  ambient level, and the mid-step flag. The pointer lean is interface
+  state and is not supplied yet; in-square creature positions don't exist
+  (groups occupy whole squares, docs/08).
+- Mid-step frames: the original defers the party's move until the step
+  counter runs out and draws the in-between frame from the old square.
+  The remake moves at once and plays the frame afterwards from the square
+  just left (`GameState::walk`, presentation only, not saved), so the
+  timing of sensors relative to the frame differs.
 - The 'p'/'q' fill colours and ambient light sources are not modelled.
 
 ## 9. Open questions

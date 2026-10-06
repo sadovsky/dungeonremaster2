@@ -68,6 +68,10 @@ pub struct GameState {
     pub magic_counter: u16,
     /// Set when the last champion dies (0x7F24C).
     pub game_over: bool,
+    /// Presentation only: the square the party just left and the ticks
+    /// left of its in-between walking frame (the original's step counter
+    /// 0x7F258, set to half the move time when it exceeds 1). Not saved.
+    pub walk: Option<(PartyPos, u16)>,
     /// Active creature slots (docs/08); None = free.
     pub creature_slots: Vec<Option<crate::creatures::slot::Slot>>,
     /// Creature tables from the user's files; creatures stay inert without them.
@@ -107,6 +111,7 @@ impl GameState {
             light: 0,
             magic_counter: 0,
             game_over: false,
+            walk: None,
             creature_slots: Vec::new(),
             creature_data: None,
             creature_map_seen: None,
@@ -146,6 +151,7 @@ impl GameState {
 
     /// Run one game tick (0x24691), minus rendering.
     pub fn advance(&mut self) {
+        self.walk = self.walk.and_then(|(p, n)| (n > 1).then_some((p, n - 1)));
         if let Some(p) = self.pending_map.take() {
             movement::arrive(self, p);
         }
@@ -176,8 +182,10 @@ impl GameState {
                 if self.tick < self.move_ready {
                     return;
                 }
+                let from = self.party;
                 if movement::party_command(self, m) {
                     let t = champions::party_move_time(&self.champions, &self.party_status, &mut self.rng);
+                    self.walk = (t > 1).then_some((from, (t >> 1) as u16));
                     self.move_ready = self.tick + t as u32;
                     self.party_status.last_moved = self.tick;
                 }

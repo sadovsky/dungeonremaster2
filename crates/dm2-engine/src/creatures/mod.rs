@@ -547,13 +547,19 @@ pub struct CreatureView {
     pub frame: u16,
     pub jitter: u8,
     pub facing: u8,
+    /// Alternate drawing descriptor: while the slot's action (+0x1A) is
+    /// 0x13, words +0xE / +0x10 (start + offset) pick a second descriptor
+    /// that supplies placement and scale (0x14CF2 caller in the creature
+    /// drawer).
+    pub alt_frame: Option<u16>,
 }
 
 /// Current animation state of a creature group, or None when inactive.
 pub fn view(g: &GameState, c: ThingRef) -> Option<CreatureView> {
     let s = g.creature_slots.get(slot_of(g, c)?)?.as_ref()?;
     let off = if s.seq_off == NO_FRAME { 0 } else { s.seq_off };
-    Some(CreatureView { action: s.action, frame: s.seq_start + off, jitter: s.jitter, facing: facing(g, c) })
+    let alt_frame = (s.action == 0x13).then(|| s.vars[0].wrapping_add(s.vars[1]));
+    Some(CreatureView { action: s.action, frame: s.seq_start + off, jitter: s.jitter, facing: facing(g, c), alt_frame })
 }
 
 /// Load the creature tables from the user's files into a game state.
