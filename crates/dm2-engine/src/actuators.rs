@@ -637,10 +637,10 @@ pub(crate) fn wall_actuator(g: &mut GameState, ev: Event, t: ThingRef) {
     let data = a.data();
     match a.kind() {
         // Shooters: missiles belong to the combat code.
+        // Word 3 holds the shot energies here, not a target: the shot comes
+        // from the event's square and direction (0x57A63).
         0x07 | 0x08 | 0x09 | 0x0A | 0x0E | 0x0F => {
-            let (tx, ty, cell) = a.target();
-            let _ = (tx, ty);
-            g.effects.push(Effect::Shoot { map, x, y, cell, dir: ev.b8, actuator: t });
+            g.effects.push(Effect::Shoot { map, x, y, cell: ev.b8 & 3, dir: ev.b8 & 3, actuator: t });
         }
         0x12 => g.effects.push(Effect::EndGame),
         0x16 => {

@@ -170,10 +170,11 @@ Called with the portrait number when a champion is accepted:
   Class experience is then the sum of its four sub-skills.
 - Food and water each start at 1500 + (rnd() & 0xFF).
 
-## Per-tick regeneration (0x47CC3)
+## Periodic regeneration (0x47CC3)
 
-Runs once per game tick for each living champion who is not being
-recruited. A shared counter G (0x7FFF4) steps by +56 and wraps past 128,
+The main loop (0x24691) calls this only when the game tick is a multiple
+of 64, or of 16 while the party sleeps (0x7F234). Each call handles every
+living champion who is not being recruited. A shared counter G (0x7FFF4) steps by +56 and wraps past 128,
 which acts as a cheap varying threshold: G becomes G + 56, or G − 72
 if that would exceed 128.
 

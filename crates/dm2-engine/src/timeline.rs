@@ -258,6 +258,40 @@ impl Timeline {
     pub fn iter(&self) -> impl Iterator<Item = (u16, &Event)> {
         self.heap.iter().map(|&s| (s, &self.slots[s as usize]))
     }
+
+    /// Structural self-check (tests and soak runs): heap order holds, every
+    /// queued record is live, and each slot is either queued or free, never
+    /// both and never neither.
+    pub fn check(&self) -> Result<(), String> {
+        let mut state = vec![0u8; self.slots.len()];
+        for (pos, &s) in self.heap.iter().enumerate() {
+            let i = s as usize;
+            if i >= self.slots.len() {
+                return Err(format!("heap entry {s} out of range"));
+            }
+            if state[i] != 0 {
+                return Err(format!("slot {s} queued twice"));
+            }
+            state[i] = 1;
+            if self.slots[i].kind == 0 {
+                return Err(format!("queued slot {s} has type 0"));
+            }
+            if pos > 0 && self.before(s, self.heap[(pos - 1) / 2]) {
+                return Err(format!("heap order broken at position {pos}"));
+            }
+        }
+        for &s in &self.free {
+            let i = s as usize;
+            if i >= self.slots.len() || state[i] != 0 {
+                return Err(format!("free slot {s} also queued or listed twice"));
+            }
+            state[i] = 2;
+        }
+        if let Some(i) = state.iter().position(|&v| v == 0) {
+            return Err(format!("slot {i} is neither queued nor free (leaked)"));
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

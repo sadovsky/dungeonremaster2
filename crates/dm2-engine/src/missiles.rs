@@ -91,6 +91,12 @@ pub fn launch(
     step: u8,
     by_dungeon: bool,
 ) -> Option<ThingRef> {
+    // A missile can only exist on a square of its map; its packed position
+    // has 5 bits per axis, so an off-map start would wrap into a bogus one.
+    let md = &g.dungeon.maps[map];
+    if x < 0 || y < 0 || x >= md.width as i32 || y >= md.height as i32 {
+        return None;
+    }
     let Some(m) = g.dungeon.alloc_thing(ThingType::Missile) else {
         if !is_explosion(what) {
             g.dungeon.add_thing(map, x, y, ThingRef((what & 0x3FFF) | (cell as u16 & 3) << 14));

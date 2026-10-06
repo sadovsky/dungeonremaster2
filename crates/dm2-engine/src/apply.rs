@@ -182,6 +182,7 @@ fn make_potion(g: &mut GameState, idx: usize, kind: u8, power: u8) {
         g.dungeon.set_record_word(p, 1, 0x8000 | (kind as u16 & 0x7F) << 8 | power as u16);
         g.dungeon.free_thing(item);
         g.champions[idx].set_inventory(hand, p.0);
+        crate::party::refresh_load(g, idx);
         return;
     }
 }
@@ -194,6 +195,7 @@ fn create_item_from_spell(g: &mut GameState, idx: usize) {
     if let Some(c) = g.champions.get_mut(idx) {
         if let Some(hand) = (0..2).find(|&h| c.inventory(h) == EMPTY) {
             c.set_inventory(hand, t.0);
+            crate::party::refresh_load(g, idx);
             return;
         }
     }
@@ -202,40 +204,65 @@ fn create_item_from_spell(g: &mut GameState, idx: usize) {
     g.dungeon.add_thing(p.map, p.x, p.y, ThingRef(t.0 | (cell as u16) << 14));
 }
 
-/// Shooter actuators (0x57A63): launch items or spells from the target cell.
-fn shoot(g: &mut GameState, map: usize, x: i32, y: i32, cell: u8, dir: u8, actuator: ThingRef) {
+/// Shooter actuators (0x57A63). The event's square (x, y) and direction
+/// `dir` place the shot: missiles start one square ahead in `dir`, in cell
+/// (dir + 2) & 3 (and the next cell for double shooters), with kinetic
+/// energy from word 3 bits 4-11, step energy from bits 12-15 and a fixed
+/// attack byte of 100. Kinds 0x0E/0x0F launch items lying on the event
+/// square in cells `dir` and `dir + 1`.
+fn shoot(g: &mut GameState, map: usize, x: i32, y: i32, dir: u8, actuator: ThingRef) {
+    const ATTACK: u8 = 100;
     let a = crate::actuators::Actuator::load(g, actuator);
     let energy = (a.w3 >> 4 & 0xFF) as u8;
     let step = (a.w3 >> 12) as u8;
-    let double = matches!(a.kind(), 0x09 | 0x0A | 0x0F);
-    let shots: Vec<u8> = if double {
-        vec![cell & 3, (cell + 1) & 3]
-    } else {
-        // A single shot drifts one cell sideways at random.
-        vec![(cell + g.rng.bit() as u8) & 3]
-    };
-    for c in shots {
-        let what = match a.kind() {
-            0x07 | 0x09 => match crate::actuators::create_item(g, a.data()) {
-                Some(t) => t.0,
-                None => continue,
-            },
-            0x08 | 0x0A => 0xFF80u16.wrapping_add(a.data()),
-            _ => {
-                // 0x0E/0x0F: the item lying in that cell, if any.
-                let Some(t) = g
-                    .dungeon
-                    .things_at(map, x, y)
-                    .into_iter()
-                    .find(|t| (5..=10).contains(&(t.kind() as u8)) && t.cell() == c)
-                else {
-                    continue;
-                };
-                g.dungeon.remove_thing(map, x, y, t);
-                t.0 & 0x3FFF
+    let single = matches!(a.kind(), 0x07 | 0x08 | 0x0E);
+    let dir = dir & 3;
+    let (sx, sy) = (x + crate::viewport::DX[dir as usize], y + crate::viewport::DY[dir as usize]);
+    let md = &g.dungeon.maps[map];
+    if sx < 0 || sy < 0 || sx >= md.width as i32 || sy >= md.height as i32 {
+        return; // nowhere for the shot to start; create and take nothing
+    }
+    // What to fire: one or two things, gathered before the cell roll.
+    let mut what: Vec<u16> = Vec::new();
+    match a.kind() {
+        0x07 | 0x09 => {
+            for _ in 0..if single { 1 } else { 2 } {
+                match crate::actuators::create_item(g, a.data()) {
+                    Some(t) => what.push(t.0 & 0x3FFF),
+                    None => return,
+                }
             }
-        };
-        missiles::launch(g, what, map, x, y, c, dir, energy, energy, step, true);
+        }
+        0x08 | 0x0A => {
+            let spell = 0xFF80u16.wrapping_add(a.data());
+            what.push(spell);
+            if !single {
+                what.push(spell);
+            }
+        }
+        _ => {
+            let lying = |g: &GameState| {
+                g.dungeon.things_at(map, x, y).into_iter().find(|t| {
+                    (5..=10).contains(&(t.kind() as u8)) && (t.cell() == dir || t.cell() == (dir + 1) & 3)
+                })
+            };
+            for _ in 0..if single { 1 } else { 2 } {
+                let Some(t) = lying(g) else { break };
+                g.dungeon.remove_thing(map, x, y, t);
+                what.push(t.0 & 0x3FFF);
+            }
+            if what.is_empty() {
+                return;
+            }
+        }
+    }
+    let mut cell = (dir + 2) & 3;
+    if single {
+        // A single shot drifts one cell sideways at random.
+        cell = (cell + g.rng.bit() as u8) & 3;
+    }
+    for (i, w) in what.into_iter().enumerate() {
+        missiles::launch(g, w, map, sx, sy, (cell + i as u8) & 3, dir, energy, ATTACK, step, true);
     }
 }
 
@@ -246,11 +273,7 @@ pub fn apply_effects(g: &mut GameState) {
     let mut keep = Vec::new();
     for e in queued {
         match e {
-            Effect::Shoot { map, x, y, cell, dir, actuator } => {
-                let (tx, ty, _) = crate::actuators::Actuator::load(g, actuator).target();
-                let _ = (x, y);
-                shoot(g, map, tx, ty, cell, dir, actuator);
-            }
+            Effect::Shoot { map, x, y, dir, actuator, .. } => shoot(g, map, x, y, dir, actuator),
             other => keep.push(other),
         }
     }
