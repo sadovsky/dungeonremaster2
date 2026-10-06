@@ -58,3 +58,29 @@ pub fn floor_signal(_g: &mut GameState, _map: usize, _x: i32, _y: i32, _set: boo
 
 /// Event 0x5E (0x30BA6 path from text kinds 0x13/0x16).
 pub fn text_spawn_event(_g: &mut GameState, _map: usize, _x: i32, _y: i32, _param: u8) {}
+
+/// Defence values a missile or melee hit needs (type info record, docs/08).
+/// None until creature types are loaded; callers then apply raw damage.
+pub fn defence(_g: &GameState, _c: ThingRef) -> Option<crate::combat::CreatureDefence> {
+    None
+}
+
+/// Creature type flag 0x02: deflects spell missiles (0x17A7B).
+pub fn reflects_spells(_g: &GameState, _c: ThingRef) -> bool {
+    false
+}
+
+/// Facing of the group, used for the reflection table (parity only).
+pub fn facing(_g: &GameState, _c: ThingRef) -> u8 {
+    0
+}
+
+/// Fire/explosion resistance nibble (type info word +0x18 bits 4-7); 15
+/// means immune.
+pub fn resistance(_g: &GameState, _c: ThingRef) -> u8 {
+    0
+}
+
+/// Tell a group something is coming (0x24E62 with code 0x2006); how
+/// creatures notice incoming missiles.
+pub fn alert(_g: &mut GameState, _c: ThingRef, _map: usize, _x: i32, _y: i32) {}

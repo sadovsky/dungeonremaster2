@@ -543,6 +543,68 @@ impl Dungeon {
     }
 }
 
+/// Thing record allocation (new-game spares and runtime creation).
+impl Dungeon {
+    /// Word 0 of an unused record (the original marks free records this way).
+    pub const FREE: u16 = 0xFFFF;
+
+    /// Append the spare records and object-list slots a new game adds
+    /// (`THING_SPARES` per type, 300 list slots; docs/03).
+    pub fn add_spares(&mut self) {
+        for (t, &n) in THING_SPARES.iter().enumerate() {
+            let size = THING_SIZES[t];
+            if size == 0 {
+                continue;
+            }
+            for _ in 0..n {
+                let start = self.things[t].len();
+                self.things[t].resize(start + size, 0);
+                self.things[t][start..start + 2].copy_from_slice(&Self::FREE.to_le_bytes());
+            }
+        }
+        self.object_list.extend(std::iter::repeat(ThingRef::NONE).take(300));
+    }
+
+    /// Claim a free record of `kind`, zero it and set its link to END.
+    /// Returns None when every record of that type is in use.
+    pub fn alloc_thing(&mut self, kind: ThingType) -> Option<ThingRef> {
+        let size = kind.record_size();
+        if size == 0 {
+            return None;
+        }
+        let t = kind as usize;
+        let n = self.things[t].len() / size;
+        let i = (0..n).find(|&i| {
+            let o = i * size;
+            u16::from_le_bytes([self.things[t][o], self.things[t][o + 1]]) == Self::FREE
+        })?;
+        if i > 0x3FF {
+            return None;
+        }
+        let rec = &mut self.things[t][i * size..(i + 1) * size];
+        rec.fill(0);
+        rec[0..2].copy_from_slice(&ThingRef::END.0.to_le_bytes());
+        Some(ThingRef(((t as u16) << 10) | i as u16))
+    }
+
+    /// Return a record to the free pool. It must already be unlinked.
+    pub fn free_thing(&mut self, r: ThingRef) {
+        self.set_record_word(r, 0, Self::FREE);
+    }
+
+    /// Number of free records of a type.
+    pub fn free_count(&self, kind: ThingType) -> usize {
+        let size = kind.record_size();
+        if size == 0 {
+            return 0;
+        }
+        self.things[kind as usize]
+            .chunks_exact(size)
+            .filter(|r| u16::from_le_bytes([r[0], r[1]]) == Self::FREE)
+            .count()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,5 +735,20 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn spares_allocate_and_free() {
+        let Some(b) = original() else { return };
+        let mut d = Dungeon::parse(&b).unwrap();
+        let before = d.thing_count(ThingType::Missile);
+        d.add_spares();
+        assert_eq!(d.free_count(ThingType::Missile), THING_SPARES[14]);
+        let m = d.alloc_thing(ThingType::Missile).unwrap();
+        assert_eq!(m.kind(), ThingType::Missile);
+        assert_eq!(m.index(), before);
+        assert_eq!(d.free_count(ThingType::Missile), THING_SPARES[14] - 1);
+        d.free_thing(m);
+        assert_eq!(d.alloc_thing(ThingType::Missile), Some(m));
     }
 }

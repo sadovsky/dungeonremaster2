@@ -17,6 +17,7 @@ mod png;
 use std::path::{Path, PathBuf};
 
 use dm2_engine::assets::{self, Assets};
+use dm2_engine::data::GameData;
 use dm2_engine::exe::Exe;
 use dm2_engine::font::Font;
 use dm2_engine::gfx::{Bitmap, SCREEN_H, SCREEN_W};
@@ -52,6 +53,18 @@ struct Data {
     font: Font,
     input: Option<Input>,
     tables: UiTables,
+    /// Archive and executable tables the simulation needs; None if
+    /// SKULL.EXE is missing (the game then runs without champions).
+    game_data: Option<std::rc::Rc<GameData>>,
+}
+
+/// Start a new game the way the original does (recruits the starting
+/// champion when the game data is available).
+fn new_game(d: &Data) -> GameState {
+    match &d.game_data {
+        Some(gd) => GameState::new_game_with(&d.assets.dungeon, gd.clone()),
+        None => GameState::new_game(&d.assets.dungeon),
+    }
 }
 
 fn load(dir: &Path) -> Data {
@@ -73,7 +86,8 @@ fn load(dir: &Path) -> Data {
     if input.is_none() {
         eprintln!("warning: SKULL.EXE not found next to {}; mouse zones disabled", dir.display());
     }
-    Data { assets, font, input, tables }
+    let game_data = GameData::load(dir, &dir.join("../SKULL.EXE")).map(std::rc::Rc::new);
+    Data { assets, font, input, tables, game_data }
 }
 
 /// First walkable square of a map, for debug map cycling.
@@ -89,11 +103,26 @@ fn first_open(dg: &dm2_formats::dungeon::Dungeon, map: usize) -> Option<(i32, i3
     None
 }
 
-/// The interface view of the current game. Champions are not simulated
-/// yet, so the view is empty unless a demo champion is requested.
-fn ui_view(demo: bool) -> UiView {
+/// The interface view of the current game: the real party, or a demo
+/// champion (DM2_DEMO_CHAMPION) when no champion has been recruited.
+fn ui_view(g: &GameState, demo: bool) -> UiView {
     let mut v = UiView::default();
-    if demo {
+    for (i, c) in g.champions.iter().take(4).enumerate() {
+        v.champions[i] = Some(ChampionView {
+            name: c.name().into_bytes(),
+            portrait: c.portrait(),
+            rune_set: c.raw[0x1E],
+            dead: !c.is_alive(),
+            bars: [
+                (c.health().max(0) as u16, c.max_health().max(0) as u16),
+                (c.stamina().max(0) as u16, c.max_stamina().max(0) as u16),
+                (c.mana().max(0) as u16, c.max_mana().max(0) as u16),
+            ],
+            ..Default::default()
+        });
+    }
+    v.leader = g.leader;
+    if demo && g.champions.is_empty() {
         v.champions[0] = Some(ChampionView {
             name: b"TESTER".to_vec(),
             portrait: 0,
@@ -130,13 +159,13 @@ fn screenshot(args: &[String], title: bool) {
         let f = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(TITLE_FRAME);
         ui::title(&mut d.assets, f)
     } else {
-        let mut g = GameState::new_game(&d.assets.dungeon);
+        let mut g = new_game(&d);
         if args.len() >= 5 {
             let n: Vec<i32> = args[1..5].iter().map(|s| s.parse().expect("MAP X Y DIR must be numbers")).collect();
             g.party = PartyPos { map: n[0] as usize, x: n[1], y: n[2], dir: n[3] as u8 };
         }
         let demo = std::env::var_os("DM2_DEMO_CHAMPION").is_some();
-        game_frame(&mut d, &g, &ui_view(demo))
+        game_frame(&mut d, &g, &ui_view(&g, demo))
     };
     let png = png::encode_rgb(SCREEN_W as u32, SCREEN_H as u32, &to_rgb(&d.assets.palette, &frame));
     std::fs::write(out, png).expect("write screenshot");
@@ -205,9 +234,8 @@ fn main() {
 
 async fn play(args: Vec<String>) {
     let mut d = load(&data_dir(args.first().cloned()));
-    let mut game = GameState::new_game(&d.assets.dungeon);
+    let mut game = new_game(&d);
     let demo = std::env::var_os("DM2_DEMO_CHAMPION").is_some();
-    let view = ui_view(demo);
     // Real-time tick length is not yet known (docs/05); configurable.
     let tick_secs = std::env::var("DM2_TICK_MS").ok().and_then(|v| v.parse::<f64>().ok()).unwrap_or(133.3) / 1000.0;
     let mut acc = 0.0f64;
@@ -218,6 +246,7 @@ async fn play(args: Vec<String>) {
     tex.set_filter(FilterMode::Nearest);
 
     loop {
+        let view = ui_view(&game, demo);
         // Commands from the original key and zone tables.
         let mut cmds: Vec<u16> = Vec::new();
         if let Some(inp) = &d.input {
@@ -244,7 +273,7 @@ async fn play(args: Vec<String>) {
             match (screen, c) {
                 (Screen::Title, 0xE0) => std::process::exit(0),
                 (Screen::Title, 0xD7) => {
-                    game = GameState::new_game(&d.assets.dungeon);
+                    game = new_game(&d);
                     screen = Screen::Game;
                 }
                 (Screen::Game, 0x90) => screen = Screen::Paused,

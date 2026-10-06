@@ -227,16 +227,16 @@ Who schedules each type was recovered by scanning every call to 0x56390
 | 0x02 | 0x56AF9 | 0x18D9E (door bashing) | Door destroyed: set the door square's state to 5 |
 | 0x04 | per square, below | actuators (0x4BBE4), cross-map relay | Square action: deliver set/clear/toggle (+9) to square (x, y), cell (+8) |
 | 0x0C | 0x59026 | champion update 0x47113 (+5 = champion) | Resets a per-champion word to 0xFFFF and flags the champion for redraw. Tentative: end of the "damage received" display. |
-| 0x0D | 0x59050 | floor sensors 0x4CDCC | Three-stage effect driven by +9: stage 2 spawns explosion 0xFFE4 at (x, y) and waits 5 ticks; stage 1 moves a thing from the matching cell and waits 1 tick; stage 0 runs 0x49CBB(+5). Tentative. |
+| 0x0D | 0x59050 | floor sensors 0x4CDCC | Resurrection at an altar, in three stages driven by +9: stage 2 spawns the rebirth effect 0xFFE4 at (x, y) and waits 5 ticks; stage 1 removes and deletes the champion's bones from cell +8 and waits 1 tick; stage 0 revives champion +5 (0x49CBB). See 06-champions. |
 | 0x0E | 0x59207 | 0x45A9D | Unknown (champion-related caller) |
 | 0x15 | 0x160DB | sound queue 0x15CA9 | Play a delayed or positional sound; +6 = sound slot |
 | 0x19 | 0x18395 | explosion creation 0x16746 | Explosion or cloud lifetime step |
 | 0x1D, 0x1E | 0x17A7B | missile launch 0x16457 | Missile movement step. 0x1E while the launch flag 0x7F1A4 is set, which actuator shooters set. Tentative: 0x1E means launched by the dungeon rather than by a champion. +6 = missile thing; +8 packs x (bits 0-4), y (5-9), direction (10-11), cell (12-15). |
 | 0x21, 0x22 | 0x257CC | creature AI 0x3059D, 0x252C3 ... | Creature group behaviour tick; +5 = creature type, +6/+7 = square. 0x22 is used when the creature record's word +8 is in use. Details belong in 08-creatures-ai. |
 | 0x3C, 0x3D | 0x58FC2 | 0x4A096 | Five ticks after a thing arrives on a square: deferred arrival processing. 0x3D variant via a flag argument. Tentative. |
-| 0x46 | 0x5917D then 0x389C2 | 0x412E1 | Runs on the party's map. Unknown; possibly an interface or modal event. |
+| 0x46 | 0x5917D then 0x389C2 | 0x412E1 | End of a light or darkness effect: adds the signed level in +6 back to the light counter 0x7FFEC (see 07-combat-magic, "Light and darkness"). |
 | 0x47 | inline | 0x414A5, 0x422F5 | Decrement counter 0x7FFEE. When it reaches 0, mark the champion whose inventory is open (0x7F972) with flag 0x40. Tentative: light or magic-map duration. |
-| 0x48 | inline | 0x4565A | For each champion in mask +5: subtract the u16 at +6 from champion field +0xE4 (clamped at 0). Tentative: an expiring shield or bonus. |
+| 0x48 | inline | 0x4565A | A party effect expires: for each champion in mask +5, subtract the u16 at +6 from the effect amount at +0x103 (not below 0). See 07-combat-magic, "Party shields and effects". |
 | 0x4B | inline | 0x474FC | Champion +5: decrement champion byte +0x1F and subtract the u16 at +6 from field +0x48, then 0x474FC. Tentative: an expiring per-champion effect. |
 | 0x54 | 0x5A073(1) | | Champion status update |
 | 0x55 | 0x59293 | actuator 0x32 (0x570B1) | Actuator 0x32 follow-up |

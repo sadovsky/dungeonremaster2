@@ -20,8 +20,7 @@ pub fn damage_party(g: &mut GameState, amount: u16) -> u16 {
     if amount == 0 || champion_count(g) == 0 {
         return 0;
     }
-    // TODO(docs/06): per-champion defence and wounds.
-    let mask = (1u16 << champion_count(g)) - 1;
+    let mask = crate::apply::damage_party(g, amount as i16, 0x3F, crate::combat::attack::BLUNT);
     g.effects.push(Effect::PartyDamaged { amount, mask });
     mask
 }
@@ -35,6 +34,8 @@ pub fn fall_damage(g: &mut GameState, falls: u16) {
         }
         let base = (g.champions[i].max_health().max(0) as u16 / 4).min(17);
         let amount = (base + g.rng.rand4()) * falls;
+        // Attack kind 0x30 on legs and feet (docs/05 "Falling through pits").
+        crate::apply::damage_champion(g, i, amount as i16, 0x30, crate::combat::attack::UNBLOCKABLE);
         g.effects.push(Effect::PartyDamaged { amount, mask: 1 << i });
     }
 }

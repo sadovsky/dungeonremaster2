@@ -263,6 +263,31 @@ is capped at its maximum. Losses over 9 flag the stats bar for redraw.
   170 − current stat, the value becomes value / 8 when d < 16, else
   value × d / 128. Used with vitality, anti-magic and anti-fire.
 
+## Starting party (0x49D46, new-game branch)
+
+A new game does not open on an empty party. The new-game path of the
+loader (0x370D2) sets the flag at 0x7F280, and with that flag set 0x49D46
+looks at the things on square (0, 0) of the party's map for a wall
+actuator of type 0x7E. That actuator is the same "portrait" actuator the
+recruiting mirrors use: its *data* (word 1 above bit 7) is the champion's
+portrait number in category 22. The routine then:
+
+1. recruits that champion through the normal path (0x494FB, which calls
+   0x49242) with interface updates suppressed (0x75A29 = 1), as if the
+   party stood on (0, 1) facing north;
+2. hands the champion every item lying on (0, 0) in cell 2 (the cell
+   opposite the recruiting direction), placing each in the first empty
+   slot that fits, trying five slot ranges from the table at 0x75A2D (6
+   bytes each: first slot, last slot, required thing type or 0xFFFF;
+   placement 0x4916B, fit test 0x152C4);
+3. confirms the recruitment (0x49A17 with action 0x92), sets the
+   champion's facing and cell bytes (+0x1C, +0x1D) to the party's facing,
+   and makes them the leader.
+
+In the shipped dungeon the start map has exactly one such actuator at
+(0, 0), so every new game begins with that one champion. Loading a save
+clears 0x7F280 and skips all of this.
+
 ## Food and drink (0x39C3F, command 0x10)
 
 Eating adds the item's food value to food, capped at 2048. Drinking water
@@ -306,7 +331,12 @@ When health reaches 0:
 
 1. **Trigger** (floor sensor code, 0x4CDCC). The bones item (category 21,
    index 0; its charge value is the champion's index) is dropped on a
-   square whose thing list holds an altar marker (tested by 0x1FDF0). If
+   square whose thing list holds an altar marker (tested by 0x1FDF0): an
+   actuator whose wall ornament (word 2 bits 12-15, a 1-based slot in the
+   map's wall-ornament list; 0x1FC2C) has attribute (9, ornament, 11,
+   0x0C) set. No wall ornament in the shipped GRAPHICS.DAT carries that
+   attribute, so the shipped dungeon has no working altar: the mechanism
+   exists in the code but the data never enables it. If
    the champion index is valid (below the party size at 0x7F276), event
    0x0D is scheduled for the next tick. The event carries the champion
    index (+5), x and y (+6, +7), cell (+8) and stage (+9, starting at 2).
@@ -327,4 +357,4 @@ When health reaches 0:
 ## Open questions
 
 - Remaining record bytes (0x29-0x2C, 0xCF, 0xD9, 0xDB, 0xFF, 0x105).
-- What 0x46E4D resets on revival, and the altar marker test 0x1FDF0.
+- What 0x46E4D resets on revival.

@@ -206,17 +206,27 @@ energy = 10 − min(6, max_mana / 32); if the energy is below 4 × that, add
 for champions, slayer bonus for creatures), then returns damage. E is the
 kinetic energy and A the attack byte.
 
-- 0xFF80 fireball: type 1 (fire), base 10 + (rnd & 15) + (rnd & 31)-style roll.
-- 0xFF82 lightning: type 7, base × 16 + E.
-- 0xFF81: carries poison 10 + (rnd & 15), with a blunt base roll.
-- 0xFF86 poison bolt: type 5, poison = E, damage E/8 + 1.
-- Other explosion types: type 5, no direct damage.
-- **Items:** with throwing attribute 9 non-zero, type 4 (sharp); base =
-  (attr9 + E/2) × k² / 128 where k = (A >> 4) + 3. The side value is
-  the item's attribute 13; if (rnd & 127) ≥ E it is reduced by
-  random(value/2 + 1). Add weight + rand4(); doubled when (rnd & 0x1FF) < A.
-- **Final roll** for all: d = base + random(((base + E)/16 + 1)/2 + 1) +
-  rand4(); then d = max(d, 2 × (d − (32 − A/8))); then d = min(d, 2E).
+Read from the assembly (the decompiler output is unreliable here). Random
+calls are listed in the order the code makes them; `rnd` is the raw
+generator output, `random(n)` and `rand4()` are 0x1C6B7 and 0x1C6F6.
+
+- **0xFF81:** side value = 10 + (r₁ & 15); base = (r₁ & 15) + (rnd & 31),
+  attack type blunt.
+- **0xFF80 fireball and 0xFF82 lightning:** type 1 (fire); base =
+  (rnd & 15) + (rnd & 15) + 10. Lightning switches to type 7 and uses
+  base × 16 + E.
+- **0xFF86 poison bolt:** type 5, side value = E, and the function returns
+  E/8 + 1 straight away (no final roll).
+- **Other explosion kinds from 0xFF83 up:** type 5 and no damage.
+- **Items:** with throwing attribute 9 non-zero: type 4 (sharp), base =
+  ((attr9 + E/2) × k²) >> 7 with k = (A >> 4) + 3, and side value = the
+  item's attribute 13; if that is non-zero and (rnd & 127) > E it is
+  reduced by random(side/2 + 1). Without attribute 9 the base is 0 and
+  the type stays blunt. Either way, then base += rand4(), base += the
+  item's weight, and base doubles when (rnd & 0x1FF) < A.
+- **Final roll** for everything except the early returns: d = base +
+  random((((base + E) >> 4) + 1) / 2 + 1) + rand4(); then
+  d = max(d, 2 × (d − (32 − A/8))); then d = min(d, 2E).
 
 **Hitting the party:** the champion in the struck cell takes
 `damage_champion(d, head|torso, type)`. The parry flag is set when that
@@ -335,12 +345,39 @@ bytes only, so any power works. Result codes passed to the message routine (0x43
 are 0x10 failure, 0x20 meaningless runes and 0x30 need flask, each ORed
 with the class. The rune buffer is cleared except after "need flask".
 
+### Light and darkness (0x412E1)
+
+`light(kind, strength)`: s = clamp(strength + 1, 32, 256), l = max(8, s/8).
+
+| Kind | Duration (ticks) | Level |
+|------|------------------|-------|
+| 6 (darkness) | (l − 8) × 16 + 16 | l/2 − 1, applied with sign −2 |
+| 0x26 (light) | (l − 3) × 128 + 2000 | l/4 + 1 |
+| 0x27 (light) | (l − 8) × 512 + 10000 | l/2 − 1 |
+
+The light counter at 0x7FFEC changes at once by a value taken from the
+byte table at 0x756FE (index not yet confirmed), times the sign. Event
+0x46 is scheduled for the end of the duration with the level in +6
+(negated for the light kinds), and its handler (0x5917D) adds that back,
+so the effect wears off on its own.
+
 ### Party shields and effects (0x45815, 0x4565A)
 
-`party_effect(kind 0-6 or 0xF, strength)` adds a timed party effect of
-magnitude strength / 32 (spell shield, fire shield, and others). Called
-from items, it costs 4 mana; with less than 4 mana the effect is halved
-and the mana drops to 0.
+`party_effect(mask, kind, strength, duration)` (0x4565A) gives each living
+champion in `mask` effect `kind` (stored at +0x102) and adds `strength` to
+the amount at +0x103. If a champion's current kind differs (or the
+champion is dead), the amount is reset first and any pending expiry
+events (type 0x48) for that champion are deleted, or trimmed to the
+other champions in their mask. If any champion already holds more than
+50, the new strength is quartered. Event 0x48 is scheduled `duration`
+ticks ahead with the mask in +5 and the strength in +6; it subtracts the
+strength again (not below 0).
+
+The item and spell entry point 0x45815(champion, kind, s, from_item)
+calls it for all four champions with strength s/32 and duration s.
+Called from an item it costs the champion 4 mana; with less than 4 the
+strength halves, mana drops to 0 and it reports failure; with no mana it
+does nothing.
 
 ## Open questions
 
