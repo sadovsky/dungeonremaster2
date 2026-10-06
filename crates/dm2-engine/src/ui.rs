@@ -41,6 +41,9 @@ pub struct InventoryView {
     pub slots: Vec<Option<Icon>>,
     /// The champion's wound bits (see `ChampionView::wounds`).
     pub wounds: u16,
+    /// The champion is the leader: the name is drawn in colour 9, as in
+    /// the champion box (0x48DD3), else colour 0xF.
+    pub leader: bool,
     /// The 8 cells of an open container, if one is shown.
     pub container: Option<Vec<Option<Icon>>>,
     /// Name (+0x00) and title (+0x08); the panel shows them joined
@@ -254,20 +257,8 @@ const ICON_KEY: u8 = 12;
 fn draw_slot(a: &mut Assets, dst: &mut Bitmap, tables: &UiTables, k: usize, icon: Option<Icon>, selected: bool, wounded: bool) {
     let (rid, empty) = tables.slots[k];
     if k < 14 {
-        // The 18×18 frame is centred on the 16×16 slot box and not clipped
-        // to it (one pixel up and left of the slot).
         let frame = if selected { 6 } else if wounded { 5 } else { 4 };
-        if let (Some(f), Some(p)) = (a.sprite(1, 2, frame), a.layout.resolve(rid, 16, 16, (16, 16))) {
-            let at = crate::layout::Placement {
-                x: p.x + (16 - f.w as i32) / 2,
-                y: p.y + (16 - f.h as i32) / 2,
-                w: f.w as i32,
-                h: f.h as i32,
-                skip_x: 0,
-                skip_y: 0,
-            };
-            f.blit(dst, &at, 0, Some(ICON_KEY));
-        }
+        slot_frame(a, dst, rid, frame);
     }
     match icon {
         Some((c, i, sub)) => {
@@ -277,6 +268,22 @@ fn draw_slot(a: &mut Assets, dst: &mut Bitmap, tables: &UiTables, k: usize, icon
             a.draw(dst, 7, 0, empty + u8::from(wounded), rid, 0, Some(ICON_KEY));
         }
         None => {}
+    }
+}
+
+/// A slot frame (1, 2, sub): the 18×18 frame is centred on the 16×16 slot
+/// box at `rid` and not clipped to it (one pixel up and left of the slot).
+fn slot_frame(a: &mut Assets, dst: &mut Bitmap, rid: u16, sub: u8) {
+    if let (Some(f), Some(p)) = (a.sprite(1, 2, sub), a.layout.resolve(rid, 16, 16, (16, 16))) {
+        let at = crate::layout::Placement {
+            x: p.x + (16 - f.w as i32) / 2,
+            y: p.y + (16 - f.h as i32) / 2,
+            w: f.w as i32,
+            h: f.h as i32,
+            skip_x: 0,
+            skip_y: 0,
+        };
+        f.blit(dst, &at, 0, Some(ICON_KEY));
     }
 }
 
@@ -299,10 +306,16 @@ pub fn inventory_panel(a: &mut Assets, font: &Font, tables: &UiTables, inv: &Inv
         draw_slot(a, &mut b, tables, 8 + s, *icon, false, s < 6 && inv.wounds & (1 << s) != 0);
     }
     // Mouth and eye, each in a slot frame.
-    a.draw(&mut b, 1, 2, 4, id::MOUTH, 0, Some(ICON_KEY));
+    slot_frame(a, &mut b, id::MOUTH, 4);
     a.draw(&mut b, 7, 0, 0x25, id::MOUTH, 0, Some(ICON_KEY));
-    a.draw(&mut b, 1, 2, 4, id::EYE, 0, Some(ICON_KEY));
+    slot_frame(a, &mut b, id::EYE, 4);
     a.draw(&mut b, 7, 0, 0x20 + u8::from(inv.container.is_some()), id::EYE, 0, Some(ICON_KEY));
+    // Name-bar buttons (0x48863): image (7, 0, sub) at each id; a set state
+    // bit selects the next sub. Drawn before the name: the first image is
+    // the whole bar.
+    for (sub, rid) in [(0x11u8, 0x238u16), (0x13, 0x267), (0x0F, 0x232), (0x0D, 0x234), (0x0B, 0x236)] {
+        a.draw(&mut b, 7, 0, sub, rid, 0, None);
+    }
     // Name and title (0x48890): joined by the separator unless the title
     // starts with ',', ';' or '-', drawn shadowed at 0x229.
     let mut full = inv.name.clone();
@@ -312,12 +325,8 @@ pub fn inventory_panel(a: &mut Assets, font: &Font, tables: &UiTables, inv: &Inv
         }
         full.extend_from_slice(&inv.title);
     }
-    font.draw_at_shadowed(&mut b, &a.layout, id::INV_NAME, &full, col[0xF], 0);
-    // Name-bar buttons (0x48863): image (7, 0, sub) at each id; a set state
-    // bit selects the next sub.
-    for (sub, rid) in [(0x11u8, 0x238u16), (0x13, 0x267), (0x0F, 0x232), (0x0D, 0x234), (0x0B, 0x236)] {
-        a.draw(&mut b, 7, 0, sub, rid, 0, None);
-    }
+    let fg = if inv.leader { col[9] } else { col[0xF] };
+    font.draw_at_shadowed(&mut b, &a.layout, id::INV_NAME, &full, fg, 0);
     // Health, stamina (in tenths) and mana as "cur/max".
     for (k, &(cur, max)) in inv.stats.iter().enumerate() {
         let (cur, max) = if k == 1 { (cur / 10, max / 10) } else { (cur, max) };
@@ -530,6 +539,16 @@ pub fn compose(a: &mut Assets, font: &Font, tables: &UiTables, view: &UiView, vp
     let base = if view.alt_arrows { 14 } else { 2 };
     for k in 0..6u8 {
         a.draw(&mut s, 1, 3, base + 2 * k, id::ARROWS + k as u16, 0, None);
+    }
+    // Opening an inventory (0x3A464) shades the arrows panel, layout id 9
+    // sized as its rectangle 8, with colour 0 (0x13B7C).
+    if view.inventory.is_some() {
+        if let Some(r) = a.layout.get(8) {
+            let (w, h) = (r.x as i32, r.y as i32);
+            if let Some(p) = a.layout.resolve(9, w, h, (w, h)) {
+                shade(&mut s, p.x, p.y, p.w, p.h, col[0]);
+            }
+        }
     }
 
     // Champion boxes along the top (0x48140, 0x487F9, 0x48733).

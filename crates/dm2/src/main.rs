@@ -206,6 +206,7 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
         v.inventory = Some(InventoryView {
             champion: ci,
             wounds: c.wounds(),
+            leader: g.leader == Some(ci),
             slots: (0..30).map(|s| icon(c.inventory(s), Some(s))).collect(),
             container,
             name: c.name().into_bytes(),
