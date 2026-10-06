@@ -1,14 +1,10 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Dungeon Master II engine: game state and rendering, independent of the
+//! windowing frontend. See docs/ for the reverse-engineering notes each
+//! module follows.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub mod assets;
+pub mod gfx;
+pub mod layout;
+pub mod rng;
+pub mod viewport;
+pub mod world;
