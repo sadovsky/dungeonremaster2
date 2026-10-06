@@ -621,7 +621,8 @@ pub fn recruit(g: &Gdat, portrait: u8, party_facing: u8, taken_cells: &[bool; 4]
     Some(c)
 }
 
-/// Per-tick regeneration for every champion (0x47CC3).
+/// Periodic regeneration for every champion (0x47CC3); see `regen_due`
+/// for how often the main loop runs it.
 pub fn regenerate(champions: &mut [Champion], party: &mut PartyStatus, tick: u32, rng: &mut Rng) {
     if champions.is_empty() {
         return;
@@ -827,10 +828,18 @@ pub fn drink_water(c: &mut Champion) {
     c.set_water((c.water() as i32 + 800).min(2048) as i16);
 }
 
+/// The main loop (0x24691) runs regeneration only when the game tick is a
+/// multiple of 64, or of 16 while the party sleeps (flag 0x7F234).
+pub fn regen_due(tick: u32, asleep: bool) -> bool {
+    tick & if asleep { 0x0F } else { 0x3F } == 0
+}
+
 /// Per-tick champion work called from `GameState::advance`.
 pub fn tick(g: &mut GameState) {
     let tick = g.tick;
-    regenerate(&mut g.champions, &mut g.party_status, tick, &mut g.rng);
+    if regen_due(tick, g.party_status.asleep) {
+        regenerate(&mut g.champions, &mut g.party_status, tick, &mut g.rng);
+    }
     let seen = g.party_status.notices.len();
     apply_pending(&mut g.champions, &mut g.party_status);
     let died: Vec<usize> = g.party_status.notices[seen..]
@@ -848,6 +857,33 @@ pub fn tick(g: &mut GameState) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn regeneration_runs_every_64_ticks_or_16_asleep() {
+        let awake: Vec<u32> = (0..200).filter(|&t| regen_due(t, false)).collect();
+        assert_eq!(awake, vec![0, 64, 128, 192]);
+        assert_eq!((0..64).filter(|&t| regen_due(t, true)).count(), 4);
+    }
+
+    /// Regression: regeneration used to run every tick, so a fed champion
+    /// starved within ~750 ticks (about 100 seconds of play).
+    #[test]
+    fn idle_party_does_not_starve_quickly() {
+        let Some(data) = crate::data::GameData::load_default() else { return };
+        let Ok(bytes) = std::fs::read(crate::assets::default_data_dir().join("DUNGEON.DAT")) else { return };
+        let dg = dm2_formats::dungeon::Dungeon::parse(&bytes).unwrap();
+        let mut g = GameState::new_game_with(&dg, std::rc::Rc::new(data));
+        let Some(c) = g.champions.first() else { return };
+        let (food, water) = (c.food(), c.water());
+        for _ in 0..640 {
+            g.advance();
+        }
+        let c = &g.champions[0];
+        // 10 or 11 upkeep calls at a few points each, not 640.
+        assert!(food - c.food() < 100, "food {food} -> {}", c.food());
+        assert!(water - c.water() < 100, "water {water} -> {}", c.water());
+        assert!(c.is_alive());
+    }
 
     fn sample() -> Champion {
         let mut c = Champion::default();
