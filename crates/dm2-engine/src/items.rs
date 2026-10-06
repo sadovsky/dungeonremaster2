@@ -107,26 +107,68 @@ impl ItemDb<'_> {
 
     /// Weight in tenths of a kilogram, including charges and container
     /// contents (0x1F6E4 with n = 1).
-    // TODO(docs/09): money containers count coins at 1/5 weight; not yet modelled.
     pub fn weight(&self, t: ThingRef) -> u16 {
+        self.total(t, ATTR_WEIGHT, 0)
+    }
+
+    /// Value, including charges, potion power and container contents
+    /// (0x1F6E4 with n = 2).
+    pub fn value(&self, t: ThingRef) -> u16 {
+        self.total(t, ATTR_VALUE, 0)
+    }
+
+    /// A money container (0x1F2AB): a closed container whose type has a
+    /// contents rule, text (20, index, 5, 0x40).
+    pub fn is_money_container(&self, t: ThingRef) -> bool {
+        if t.kind() as usize != 9 || !self.dungeon.record(t).is_some_and(|r| r[4] & 6 == 0) {
+            return false;
+        }
+        self.key(t).is_some_and(|(_, i)| self.gdat.record(Key::new(20, i, 5, 0x40)).is_some())
+    }
+
+    /// Attribute `n` plus its adjustments (0x1F6E4): per-charge extras for
+    /// weight and value, potion power for value, and container contents.
+    /// In a money container misc items count as stacks, attribute × (stack
+    /// count + 1), and for weight the stacked total is divided by 5,
+    /// rounding up.
+    fn total(&self, t: ThingRef, n: u8, depth: u32) -> u16 {
         if !t.is_thing() {
             return 0;
         }
-        let mut w = self.attr(t, ATTR_WEIGHT);
-        let per = self.attr(t, ATTR_WEIGHT_PER_CHARGE);
+        let mut v = self.attr(t, n) as u32;
+        let per = match n {
+            ATTR_WEIGHT => self.attr(t, ATTR_WEIGHT_PER_CHARGE),
+            ATTR_VALUE => self.attr(t, ATTR_VALUE_PER_CHARGE),
+            _ => 0,
+        };
         if per != 0 {
-            w = w.wrapping_add(self.charges(t).wrapping_mul(per));
+            v += self.charges(t) as u32 * per as u32;
         }
-        if t.kind() as usize == 9 && self.dungeon.record(t).is_some_and(|r| r[4] & 6 == 0) {
+        if n == ATTR_VALUE && t.kind() as usize == 8 && v > 1 {
+            let power = (self.dungeon.record_word(t, 1).unwrap_or(0) & 0xFF) as u32;
+            let half = v >> 1;
+            v = half + power * half / 255;
+        }
+        if t.kind() as usize == 9 && depth < 8 && self.dungeon.record(t).is_some_and(|r| r[4] & 6 == 0) {
+            let money = self.is_money_container(t);
+            let mut stacked = 0u32;
             let mut c = ThingRef(self.dungeon.record_word(t, 1).unwrap_or(0xFFFE));
             let mut guard = 0;
             while c.is_thing() && guard < 256 {
-                w = w.wrapping_add(self.weight(c));
+                if money && c.kind() as usize == 10 {
+                    let w1 = self.dungeon.record_word(c, 1).unwrap_or(0);
+                    stacked += self.attr(c, n) as u32 * (((w1 & 0x3FFF) >> 8) as u32 + 1);
+                } else {
+                    v += self.total(c, n, depth + 1) as u32;
+                }
                 c = ThingRef(self.dungeon.record_word(c, 0).unwrap_or(0xFFFE));
                 guard += 1;
             }
+            if money {
+                v += if n == ATTR_WEIGHT { (stacked + 4) / 5 } else { stacked };
+            }
         }
-        w
+        v.min(u16::MAX as u32) as u16
     }
 }
 

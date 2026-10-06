@@ -261,3 +261,47 @@ fn thrown_ordinary_potion_drops_intact() {
     assert!(things(&g, ThingType::Missile).is_empty());
     assert!(on_any_square(&g, potion), "other potions survive the impact");
 }
+
+/// Put `items` into a fresh container of type `ctype` and return its weight.
+fn container_weight(g: &mut GameState, ctype: u16, items: &[ThingRef]) -> u16 {
+    let c = crate::actuators::create_item(g, 480 + ctype).unwrap();
+    let mut prev = ThingRef::END;
+    for &t in items.iter().rev() {
+        g.dungeon.set_record_word(t, 0, prev.0);
+        prev = t;
+    }
+    g.dungeon.set_record_word(c, 1, prev.0);
+    let data = g.data.clone().unwrap();
+    data.item_db(&g.dungeon).weight(c)
+}
+
+#[test]
+fn coins_weigh_a_fifth_in_money_containers() {
+    let Some(mut g) = game() else { return };
+    let data = g.data.clone().unwrap();
+    // Find a money container type and an ordinary one among types 0-7.
+    let probe = |g: &mut GameState, ty: u16| {
+        let c = crate::actuators::create_item(g, 480 + ty).unwrap();
+        data.item_db(&g.dungeon).is_money_container(c)
+    };
+    let Some(money) = (0..8).find(|&t| probe(&mut g, t)) else { return };
+    let Some(plain) = (0..8).find(|&t| !probe(&mut g, t)) else { return };
+    // A heavy misc item (so 1/5 is clearly visible).
+    let Some(heavy) = (256..384u16).find(|&n| {
+        let Some(t) = crate::actuators::create_item(&mut g, n) else { return false };
+        data.item_db(&g.dungeon).weight(t) >= 20
+    }) else {
+        return;
+    };
+    let a = crate::actuators::create_item(&mut g, heavy).unwrap();
+    let b = crate::actuators::create_item(&mut g, heavy).unwrap();
+    let item_w = data.item_db(&g.dungeon).weight(a) as u32;
+    let empty_money = container_weight(&mut g, money, &[]) as u32;
+    let full_money = container_weight(&mut g, money, &[a, b]) as u32;
+    let empty_plain = container_weight(&mut g, plain, &[]) as u32;
+    let a2 = crate::actuators::create_item(&mut g, heavy).unwrap();
+    let b2 = crate::actuators::create_item(&mut g, heavy).unwrap();
+    let full_plain = container_weight(&mut g, plain, &[a2, b2]) as u32;
+    assert_eq!(full_plain - empty_plain, 2 * item_w, "ordinary containers add full weight");
+    assert_eq!(full_money - empty_money, (2 * item_w + 4) / 5, "money containers add a fifth, rounded up");
+}

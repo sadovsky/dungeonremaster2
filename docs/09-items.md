@@ -97,12 +97,18 @@ Meanings so far, from the code that reads them and the values in the data:
 with *n* = 1 and 0x1F8A7 with *n* = 2.
 
 - **Charged items:** add the charges times attribute 0x34 (when *n* = 1) or 0x35 (when *n* = 2).
-- **Potions, when *n* = 2:** scale the value with the potion's power (word 1 low byte).
+- **Potions, when *n* = 2:** if the value v is above 1 it becomes
+  v/2 + power × (v/2) / 255 (power is word 1's low byte), so a full-power
+  potion is worth about its listed value and a weak one about half.
 - **Containers, unless their state bits (byte 4 bits 1-2) say otherwise:**
   add the totals of everything inside, recursively.
-- **Money containers** (see "Containers"): each misc item inside counts as
-  its attribute times its stack count. When *n* = 1 (weight), the total
-  coin weight is then divided by 5, rounded up.
+- **Money containers** (0x1F2AB): a container with clear state bits whose
+  type has a contents rule, text (20, index, 5, 0x40); in this archive
+  only container type 2. Each misc item inside counts as its attribute
+  times (stack count + 1), where the stack count is word 1 bits 8-13;
+  other things inside add their own totals. When *n* = 1 (weight), the
+  stacked total is divided by 5, rounding up (`(total + 4) / 5`); for
+  value it is added in full.
 
 ## Charges and stack counts
 

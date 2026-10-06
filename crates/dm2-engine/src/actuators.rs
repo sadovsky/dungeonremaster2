@@ -712,9 +712,18 @@ pub fn create_item(g: &mut GameState, n: u16) -> Option<ThingRef> {
         128..=255 => (ThingType::Clothing, n - 128),
         256..=383 => (ThingType::Misc, n - 256),
         384..=431 => (ThingType::Potion, n - 384),
-        // TODO: creatures (432-479), containers (480-507) and scrolls (508).
+        480..=507 => (ThingType::Container, n - 480),
+        // TODO: creatures (432-479) and scrolls (508).
         _ => return None,
     };
+    if ty == ThingType::Container {
+        // Empty content list in word 1; the type index is split over word
+        // 2 bits 13-15 (low three bits) and bits 1-2 (next two).
+        let t = alloc_thing(g, ty)?;
+        g.dungeon.set_record_word(t, 1, ThingRef::END.0);
+        g.dungeon.set_record_word(t, 2, (idx & 7) << 13 | ((idx >> 3) & 3) << 1);
+        return Some(t);
+    }
     let t = alloc_thing(g, ty)?;
     // Bit 7 (weapons, clothing, misc) and bit 15 (potions) are set on every
     // item in the original file. TODO(0x1F07C): initial charges.
