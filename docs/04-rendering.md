@@ -286,7 +286,10 @@ Cells 9 and 10 (the far side cells at depth 2) have no contents pass
   pairs (0x75B94) into the offsets 0, 1, 2, 3, 0, −3, −2, −1 (0x75BC2), so
   piled items fan out slightly.
 - The per-category offset attribute (cat, 0xFE, 12, sub) is added.
-- Colour key 10.
+- Colour key: attribute (cat, index, 11, 4) when present, else 10. The
+  attribute can be 0x8000; the request's key field is 16 bits, so that
+  value never matches a pixel and the item is drawn fully opaque
+  (verified: treating it as key 0 punches holes in container images).
 
 ### Missiles and spell effects (0x518B0)
 
@@ -480,9 +483,12 @@ Steps:
    colour map into +0x3A.
 2. **Light** (0x4E3D5): build the colour map for the cell depth (section 6).
 3. **Prepare** (0x1B54A): if scaled, compute the new size with
-   `scaled = (v·s + s/2) >> 6` (0x1ACC5) for size and offset; mirror the
-   x offset when flipping horizontally; produce a scaled copy (0x1424B for
-   8-bit, 0x1410D for 4-bit sources) in a cache keyed by image and scale.
+   `scaled = (v·s + s/2) >> 6` (0x1ACC5) for size and offset (the extra
+   offsets a caller adds are scaled together with the image's own); negate
+   the x offset when flipping horizontally (verified: right-hand pit images
+   with a non-zero x offset only line up with this rule); produce a scaled
+   copy (0x1424B for 8-bit, 0x1410D for 4-bit sources) in a cache keyed by
+   image and scale.
 4. **Draw** (0x1B8E5): resolve the layout id (with bit 15 and the offset
    when the offset is non-zero), adjust the source skip for flips, then blit.
 
@@ -557,7 +563,55 @@ Nearest-neighbour. The output size is `(v·s + s/2) >> 6` for scale s in
   else → 26 (blank). Lines are centred on the wall face; the text colour map
   comes from (8, set, 3) colour data and the cell's light.
 
-## 8. Open questions
+## 8. Rust implementation (`crates/dm2-engine/src/viewport/`)
+
+`render_ex(assets, dungeon, map, x, y, facing, &ViewExtras)` draws the
+view; `render` uses default extras. `ViewExtras` carries the game tick,
+a lighting switch and ambient level, a seed for visual-only randomness
+(the teleporter shimmer never touches the game RNG), per-layer switches,
+creature descriptor indices and missile directions. All draws go through
+one helper modelled on 0x4E502: image + drawing offset, caller offsets,
+x-scale override (attributes 0x14/0x15 at depths 2-3), scaling, flip,
+layout placement, depth light map, colour key.
+
+What is drawn: ceiling, floor, walls; wall ornaments from text and
+actuator things (front and side faces, side x-scales 114/76, per-ornament
+slot from attribute 5); floor ornaments (set default 0x6B, overridden by
+text/actuator things; per-cell subs 0x75C1A with the scaled fallback
+0x75C31); ceiling holes; pits; stairs front-on, side-on and underfoot;
+doors (panel per depth or scaled, ornament and damage overlays composed
+onto the panel, vertical and split opening); the edge-on lintel; floor
+items per sub-square order; creatures from the drawing descriptors with
+the view/fallback/mirror rules and per-frame scale; missiles and spell
+effects (sub by direction, power scaling for category 13, −92 height);
+teleporter fields; depth lighting via set remap tables or ramp darkening
+(0x1AFC2, including the step away from key colours).
+
+Verification: with lighting off and only the layers the Python test
+renderer draws, 25 views (walls, doors, pits, stairs, items) match
+`tools/viewport.py` pixel for pixel, except where the Python tool lacks
+the flip-offset rule above (two pit views, which also match once that
+rule is patched into it). A sweep over every walkable square and facing
+(16,944 views) runs without errors; regression tests pin eight view
+hashes.
+
+Simplifications, still TODO:
+- Wall writing: only the writing panel is drawn, not the 8×8 glyphs.
+- Alcove ornaments (attribute 99) that show items on a wall are drawn as
+  plain ornaments; items on wall squares are not drawn.
+- Animated ornament frames (0x1E3DA) are not applied; frame 0 is used.
+- Creatures: the 17×21 occlusion grid, the side-view shift (descriptor
+  bytes 6-7), drawing jitter, colour variants (0x14CF2), the attack lunge
+  tables and the "always faces the party" flag (it lives in SKULL.EXE's
+  creature info table) are not modelled. Each creature is drawn once, at
+  its descriptor slot rotated by the view.
+- Missile flip bits and the sub-9 parity variant are approximate.
+- Teleporter shimmer: the mask/noise composition (key, offsets) is a
+  plausible reading of 0x509E6, not a transcription.
+- Mid-step frames, the 'p'/'q' fill colours and ambient light sources are
+  not modelled.
+
+## 9. Open questions
 
 - The colour-variant remap builder (0x14CF2) in detail.
 - The exact flip rules for missiles (which direction maps to which bit).
