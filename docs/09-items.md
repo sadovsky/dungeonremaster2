@@ -179,6 +179,27 @@ Attribute 4 bits seen in the data:
 - **Container panel:** opening a container shows it in the inventory
   panel with 8 cells (slots 30-37, commands 0x3A-0x41).
 
+## Item kind lists (0x1538D)
+
+Several systems need "which items count": item relay actuator 0x40,
+merchants, and creatures that collect or steal. They read a kind list,
+text (15, creature or list index, 5, sub) from GRAPHICS.DAT, and turn it
+into a 512-bit set with one bit per item number (see "Item numbers"
+above). The list is a compact string:
+
+- A letter sets the item-number base for the numbers after it: `W`
+  weapons (0), `A` clothing (0x80), `J` misc (0x100), `P` potions (0x180),
+  `C` containers (0x1E0, or 0 when the caller asks to leave containers
+  out) and `S` the scroll (0x1FC). Other letters leave the base unset.
+- Digits form a number; `-` makes the number before it the start of a
+  range.
+- When the next letter (or the end) arrives, the pending number or range
+  is marked at base + number, and the base is cleared again.
+
+So a list like `W2-4J7` (an invented example) selects weapons 2 to 4 and
+misc item 7. Item relay 0x40 reads sub (word 2 bits 7-10) × 3 + 0x20 of
+creature type *data* & 0xFF. The engine's parser is `items::KindSet`.
+
 ## Eating and drinking (command 0x46, 0x39C3F)
 
 Clicking the mouth area with an item in the leader's hand feeds it to the

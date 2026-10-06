@@ -895,9 +895,14 @@ fn item_relay(g: &mut GameState, ev: Event, a: &Actuator) {
     let map = ev.map as usize;
     let reverse = matches!(a.kind(), 0x47 | 0x49);
     let first_only = matches!(a.kind(), 0x48 | 0x49);
-    if a.kind() == 0x40 {
-        return; // TODO: match against the kind list loaded from GRAPHICS.DAT.
-    }
+    // 0x40 matches a kind list instead of the single kind in *data*: text
+    // (15, data & 0xFF, 5, (word 2 bits 7-10) × 3 + 0x20) (0x1538D).
+    let kinds = (a.kind() == 0x40).then(|| {
+        let sub = ((a.w2 >> 7 & 0xF) * 3 + 0x10) as u8;
+        g.data.as_ref().map_or(crate::items::KindSet([0; 64]), |d| {
+            crate::items::KindSet::load(&d.gdat, (a.data() & 0xFF) as u8, sub, false)
+        })
+    });
     let (tx, ty, tcell) = a.target();
     let ((sx, sy, scell), (dx, dy, dcell)) = if reverse {
         ((tx, ty, tcell), (ev.x as i32, ev.y as i32, ev.b8))
@@ -914,7 +919,11 @@ fn item_relay(g: &mut GameState, ev: Event, a: &Actuator) {
     // TODO: also search the possessions of creatures on the square.
     for t in candidates {
         let n = item_number(g, t);
-        if n != a.data() && a.data() != 0x1FF {
+        let matches = match &kinds {
+            Some(k) => k.contains(n),
+            None => n == a.data() || a.data() == 0x1FF,
+        };
+        if !matches {
             continue;
         }
         let moved = ThingRef(t.0 & 0x3FFF | (dcell as u16) << 14);

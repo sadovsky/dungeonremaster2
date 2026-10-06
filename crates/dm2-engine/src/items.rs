@@ -262,3 +262,95 @@ mod icon_tests {
         assert_eq!(icon_sub(a, 0, 15, 15, false, 1, 0, 0), ICON_BASE + 1 + ((15 * 2) / 16) as u8 * 2 + 1);
     }
 }
+
+/// A set of item numbers (0-511), one bit each, as built by 0x1538D.
+#[derive(Clone, PartialEq, Eq)]
+pub struct KindSet(pub [u8; 64]);
+
+impl KindSet {
+    pub fn contains(&self, n: u16) -> bool {
+        n < 512 && self.0[(n >> 3) as usize] & 1 << (n & 7) != 0
+    }
+
+    /// Parse a kind list (0x1538D). A letter selects the item-number base
+    /// for the numbers after it: W weapons 0, A clothing 0x80, J misc
+    /// 0x100, P potions 0x180, C containers 0x1E0 (0 when `no_containers`),
+    /// S the scroll 0x1FC; other letters keep the base unset. Digits form a
+    /// number and '-' makes it the start of a range. When the next non-digit
+    /// arrives, the pending number or range is marked at base + number.
+    pub fn parse(text: &[u8], no_containers: bool) -> KindSet {
+        let mut bits = [0u8; 64];
+        let (mut num, mut from, mut base, mut pending) = (0i32, -1i32, -1i32, false);
+        for &c in text.iter().chain(std::iter::once(&0u8)) {
+            if c.is_ascii_digit() {
+                pending = true;
+                num = num * 10 + (c - b'0') as i32;
+                continue;
+            }
+            if c == b'-' {
+                from = num;
+                num = 0;
+                continue;
+            }
+            if pending {
+                let start = if from < 0 { num } else { from };
+                for k in start..=num {
+                    let n = k + base;
+                    if (0..512).contains(&n) {
+                        bits[(n >> 3) as usize] |= 1 << (n & 7);
+                    }
+                }
+                num = 0;
+                from = -1;
+                base = -1;
+                pending = false;
+            }
+            match c {
+                b'A' => base = 0x80,
+                b'C' => base = if no_containers { 0 } else { 0x1E0 },
+                b'J' => base = 0x100,
+                b'P' => base = 0x180,
+                b'S' => base = 0x1FC,
+                b'W' => base = 0,
+                _ => {}
+            }
+            if c == 0 {
+                break;
+            }
+        }
+        KindSet(bits)
+    }
+
+    /// Kind list (15, `idx`, 5, `sub` + 0x10) from GRAPHICS.DAT text; empty
+    /// when the text is missing.
+    pub fn load(g: &Gdat, idx: u8, sub: u8, no_containers: bool) -> KindSet {
+        let text = crate::font::text(g, 15, idx, sub.wrapping_add(0x10), &Default::default()).unwrap_or_default();
+        KindSet::parse(&text, no_containers)
+    }
+}
+
+#[cfg(test)]
+mod kind_tests {
+    use super::KindSet;
+
+    #[test]
+    fn kind_list_grammar() {
+        let k = KindSet::parse(b"W2-4J7P0S", false);
+        assert!(k.contains(2) && k.contains(3) && k.contains(4) && !k.contains(5));
+        assert!(k.contains(0x100 + 7));
+        assert!(k.contains(0x180));
+        assert!(!k.contains(0x1FC), "a letter with no number marks nothing");
+        let c = KindSet::parse(b"C3", false);
+        assert!(c.contains(0x1E3));
+        let c = KindSet::parse(b"C3", true);
+        assert!(c.contains(3), "containers fall back to base 0");
+    }
+
+    #[test]
+    fn real_kind_lists_load() {
+        let Ok(g) = dm2_formats::gdat::Gdat::open(dm2_formats::gdat::default_path()) else { return };
+        // Some creature type carries at least one non-empty kind list.
+        let any = (0..=255u8).any(|i| (0..16u8).any(|s| KindSet::load(&g, i, 0x10 + s, false).0.iter().any(|&b| b != 0)));
+        assert!(any);
+    }
+}
