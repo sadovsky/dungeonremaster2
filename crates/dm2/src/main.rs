@@ -23,7 +23,9 @@ use std::path::{Path, PathBuf};
 use dm2_engine::assets::{self, Assets};
 use dm2_engine::creatures::{self, data::CreatureData};
 use dm2_engine::data::GameData;
+use dm2_engine::missiles;
 use dm2_engine::save;
+use dm2_formats::dungeon::ThingType;
 use dm2_formats::gdat::Gdat;
 use dm2_engine::exe::Exe;
 use dm2_engine::font::Font;
@@ -252,15 +254,34 @@ fn view_extras(g: &GameState) -> viewport::ViewExtras {
             let faces_party = g.creature_data.as_ref().is_some_and(|d| {
                 creatures::type_info(g, d, creatures::creature_type(g, slot.thing)).is_some_and(|(i, _)| i.raw[0] & 4 != 0)
             });
-            ex.creatures.insert(key, viewport::CreatureDraw { position: cv.jitter, faces_party, ..Default::default() });
+            ex.creatures.insert(
+                key,
+                viewport::CreatureDraw { position: cv.jitter, faces_party, alt_frame: cv.alt_frame, ..Default::default() },
+            );
         }
     }
+    // Missiles in flight: direction from each one's flight event.
+    let n = g.dungeon.thing_count(ThingType::Missile);
+    for i in 0..n {
+        let m = ThingRef((ThingType::Missile as u16) << 10 | i as u16);
+        if let Some(dir) = missiles::view_dir(g, m) {
+            ex.missile_dirs.insert(m.0 & 0x3FFF, dir);
+        }
+    }
+    ex.mid_step = g.walk.is_some();
     ex
+}
+
+/// Where the view is drawn from: the square just left while the in-between
+/// walking frame plays, otherwise the party's square.
+fn view_pos(g: &GameState) -> PartyPos {
+    g.walk.map_or(g.party, |(from, _)| from)
 }
 
 fn game_frame(d: &mut Data, g: &GameState, view: &UiView) -> Bitmap {
     let ex = view_extras(g);
-    let vp = viewport::render_ex(&mut d.assets, &g.dungeon, g.party.map, g.party.x, g.party.y, g.party.dir, &ex);
+    let p = view_pos(g);
+    let vp = viewport::render_ex(&mut d.assets, &g.dungeon, p.map, p.x, p.y, p.dir, &ex);
     ui::compose(&mut d.assets, &d.font, &d.tables, view, &vp)
 }
 

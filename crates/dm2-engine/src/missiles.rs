@@ -574,3 +574,15 @@ pub fn cloud_event(g: &mut GameState, ev: Event) {
     g.dungeon.remove_thing(map, x, y, c);
     g.dungeon.free_thing(c);
 }
+
+/// Flight direction of a missile for drawing: read from its own flight
+/// event (record word 3 holds the event slot). None if it isn't flying.
+pub fn view_dir(g: &GameState, m: ThingRef) -> Option<u8> {
+    read(g, m)?;
+    let slot = g.dungeon.record_word(m, 3)?;
+    let ev = g.timeline.get(slot)?;
+    if ev.kind != 0x1D && ev.kind != 0x1E {
+        return None;
+    }
+    Some(unpack(ev.w8()).2)
+}
