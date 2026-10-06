@@ -366,6 +366,39 @@ Anchor flag 0x8000 makes the box relative to the viewport frame (rect 7,
 screen (0, 40)); 0x4000 relative to rect 18. This rule resolves every id
 used by the zone lists.
 
+## Interface states (checked against the original in DOSBox)
+
+Comparing captures of the original with the remake's screenshots gave
+these rules:
+
+- **Champion box (0x48890).** The portrait (0x487F9) is drawn only while
+  that champion's inventory is open. Otherwise the box shows the name at
+  0xA5 + n and the two hand slots (0x484B0 for slots 2n and 2n + 1).
+  The leader's name uses colour-table entry 9, others entry 0xF
+  (chosen at 0x48DD3). The dark name tab is part of the box image itself.
+  The hand slots get no extra frame; the box image has the recesses.
+- **Shadowed text.** Text passed with the 0x4000 colour flag (0x1C0BC)
+  appears one row lower than plain text, over a black drop shadow at
+  (+1, +1). The exact role of the low colour byte is still open, because
+  Ghidra mis-decodes the drawing routine.
+- **Right panel (0x3FE68).** With no champion selected (0x7FB6E = 0) it
+  shows only the idle action area: hand icons and the party formation.
+  Selecting a champion shows the name bar (0x43332) with that champion's
+  action menu. Clicking a party cell (commands 0x5F-0x62, 0x458F4 then
+  0x3FE03) or a hand icon (0x74-0x7B, 0x3FD77) selects; 0x3FD17
+  deselects. The spell panel (0x43686) belongs to the selection state
+  too; it is not shown by default.
+- **Inventory name line (0x229).** The name and title are joined by a
+  separator string (pointer at 0x760E0, a single space in this release)
+  unless the title begins with ',', ';' or '-'. The name bar carries five
+  buttons drawn by 0x48863: image (7, 0, sub) at 0x238 (0x11), 0x267
+  (0x13), 0x232 (0x0F), 0x234 (0x0D) and 0x236 (0x0B), each taking the
+  next sub when its state bit in 0x80008 is set.
+
+Still to match: the hand-slot rims in the champion box, the idle action
+area's layout, the menu's lower icon strip, and the inventory panel's
+remaining details.
+
 ## Open questions
 
 - Meaning of the zone flag bits 0x80, 0x40, 0x20 and 0x10, and of button
