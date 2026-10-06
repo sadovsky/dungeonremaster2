@@ -207,6 +207,7 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
             champion: ci,
             wounds: c.wounds(),
             leader: g.leader == Some(ci),
+            poison: c.poison_pool(),
             slots: (0..30).map(|s| icon(c.inventory(s), Some(s))).collect(),
             container,
             name: c.name().into_bytes(),
@@ -314,8 +315,17 @@ fn screenshot(args: &[String], title: bool) {
         let f = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(TITLE_FRAME);
         ui::title(&mut d.assets, f)
     } else {
-        let mut g = new_game(&d);
-        // Positional MAP X Y DIR, then --ticks N and --cmd C options.
+        // --load SAVE starts from a save game (e.g. one written by the
+        // original in DOSBox) instead of a new game.
+        let load_path = args.iter().position(|a| a == "--load").and_then(|i| args.get(i + 1));
+        let mut g = match load_path {
+            Some(p) => {
+                let gd = d.game_data.clone().expect("SKULL.EXE is needed to load saves");
+                save::read(std::path::Path::new(p), gd, d.creature_data.clone()).expect("load save")
+            }
+            None => new_game(&d),
+        };
+        // Positional MAP X Y DIR, then --ticks N, --cmd C and --load SAVE options.
         let pos: Vec<&String> = args[1..].iter().take_while(|a| !a.starts_with("--")).collect();
         if pos.len() >= 4 {
             let n: Vec<i32> = pos[..4].iter().map(|s| s.parse().expect("MAP X Y DIR must be numbers")).collect();
@@ -330,6 +340,7 @@ fn screenshot(args: &[String], title: bool) {
             match a.as_str() {
                 "--ticks" => ticks = num(v).expect("--ticks N"),
                 "--cmd" => cmds.push(num(v).expect("--cmd C") as u16),
+                "--load" => {}
                 _ => panic!("unknown option {a}"),
             }
         }

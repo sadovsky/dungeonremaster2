@@ -56,6 +56,8 @@ pub struct InventoryView {
     pub food: i16,
     pub water: i16,
     pub poisoned: bool,
+    /// Poison pool (champion +0x48), drawn on 0..0xC00 when poisoned.
+    pub poison: i16,
     /// Load and maximum load in tenths of a kilogram.
     pub load: (u16, u16),
     /// Name of the held item while the eye is pressed.
@@ -288,13 +290,26 @@ fn slot_frame(a: &mut Assets, dst: &mut Bitmap, rid: u16, sub: u8) {
 }
 
 /// Horizontal bar filling a layout box by value/max (0x398FF).
-fn hbar(a: &Assets, dst: &mut Bitmap, rid: u16, value: i16, lo: i32, hi: i32, colour: u8) {
+fn hbar(a: &Assets, dst: &mut Bitmap, rid: u16, value: i16, lo: i32, hi: i32, colour: u8, col: &[u8; 16]) {
+    // 0x398FF: low values switch colour (below -512: 8, below 0: 0xB).
+    let colour = if value < -0x200 { col[8] } else if value < 0 { col[0xB] } else { colour };
     let Some(rec) = a.layout.get(rid) else { return };
     let Some(par) = a.layout.get(rec.parent as u16) else { return };
     let (w, h) = if par.kind == 9 { (par.x as i32, par.y as i32) } else { return };
-    let Some(p) = a.layout.resolve(rid, w, h, (w, h)) else { return };
-    let fill_w = ((value as i32 - lo).clamp(0, hi - lo) * w) / (hi - lo).max(1);
-    fill(dst, p.x, p.y, fill_w, p.h, colour);
+    // The fraction is taken in 1/10000 steps first (as a 16-bit value),
+    // then scaled to the box width by 0x19BF2, at least one pixel.
+    let ratio = (((value as i32 - lo) as i16 as i32 * 10000) / (hi - lo).max(1)) & 0xFFFF;
+    let mut fw = if ratio == 10000 { w } else { ratio * w / 10000 };
+    if fw == 0 && ratio != 0 {
+        fw = 1;
+    }
+    if fw <= 0 {
+        return;
+    }
+    let Some(p) = a.layout.resolve(rid, fw, h, (fw, h)) else { return };
+    // A colour-0 shadow two pixels right and down, then the bar.
+    fill(dst, p.x + 2, p.y + 2, p.w, p.h, col[0]);
+    fill(dst, p.x, p.y, p.w, p.h, colour);
 }
 
 /// The inventory panel, drawn over the viewport area (0x48890, 0x39A4D).
@@ -331,7 +346,7 @@ pub fn inventory_panel(a: &mut Assets, font: &Font, tables: &UiTables, inv: &Inv
     for (k, &(cur, max)) in inv.stats.iter().enumerate() {
         let (cur, max) = if k == 1 { (cur / 10, max / 10) } else { (cur, max) };
         let t = format!("{cur:>3}/{max:>3}").into_bytes();
-        font.draw_at(&mut b, &a.layout, id::STATS + k as u16, &t, col[0xD], None);
+        font.draw_at_shadowed(&mut b, &a.layout, id::STATS + k as u16, &t, col[0xD], col[0]);
     }
     let (load, max) = inv.load;
     let lc = if load > max { 8 } else if load as u32 * 8 > max as u32 * 5 { 0xB } else { 0xD };
@@ -343,19 +358,19 @@ pub fn inventory_panel(a: &mut Assets, font: &Font, tables: &UiTables, inv: &Inv
     };
     let t = crate::font::text(&a.gdat, 7, 0, 0x2A, &ctx)
         .unwrap_or_else(|| format!("{}.{}/{}", load / 10, load % 10, max / 10).into_bytes());
-    font.draw_at(&mut b, &a.layout, id::LOAD, &t, col[lc], None);
+    font.draw_at_shadowed(&mut b, &a.layout, id::LOAD, &t, col[lc], col[0]);
     if let Some(info) = &inv.info {
         a.draw(&mut b, 7, 0, 1, id::FOOD_PANEL, 0, None);
         font.draw_at(&mut b, &a.layout, id::FOOD_LABEL, info, col[0xF], None);
     } else {
         // Food, water and poison bars (0x39A4D).
         a.draw(&mut b, 7, 0, 1, id::FOOD_PANEL, 0, None);
-        hbar(a, &mut b, id::FOOD_BAR, inv.food, -1024, 2048, col[5]);
-        hbar(a, &mut b, id::WATER_BAR, inv.water, -1024, 2048, col[0xE]);
+        hbar(a, &mut b, id::FOOD_BAR, inv.food, -1024, 2048, col[5], &col);
+        hbar(a, &mut b, id::WATER_BAR, inv.water, -1024, 2048, col[0xE], &col);
         a.draw(&mut b, 7, 0, 6, id::FOOD_LABEL, 0, Some(ICON_KEY));
         a.draw(&mut b, 7, 0, 7, id::WATER_LABEL, 0, Some(ICON_KEY));
         if inv.poisoned {
-            hbar(a, &mut b, id::POISON_BAR, 1, 0, 1, col[8]);
+            hbar(a, &mut b, id::POISON_BAR, inv.poison as i16, 0, 0xC00, col[8], &col);
             a.draw(&mut b, 7, 0, 8, id::POISON_LABEL, 0, Some(ICON_KEY));
         }
     }
