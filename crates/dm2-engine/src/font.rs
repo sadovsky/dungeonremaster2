@@ -79,6 +79,22 @@ impl Font {
         }
     }
 
+    /// Shadowed text like `draw_at_shadowed` but at the plain `draw_at`
+    /// position (no one-row shift). The action menu's name bar and rows
+    /// (0x43332, 0x43759) are drawn this way in the original.
+    pub fn draw_at_shadowed_flat(&self, dst: &mut Bitmap, layout: &Layout, rid: u16, text: &[u8], fg: u8, shadow: u8) {
+        let (w, h) = Self::measure(text);
+        if w == 0 {
+            return;
+        }
+        if let Some(p) = layout.resolve(rid, w, h, (w, h)) {
+            let (x, y) = (p.x - p.skip_x, p.y - p.skip_y);
+            self.draw(dst, x, y + 1, text, shadow, None);
+            self.draw(dst, x + 1, y + 1, text, shadow, None);
+            self.draw(dst, x, y, text, fg, None);
+        }
+    }
+
     /// Draw text placed at layout id `rid` (0x1C021: measure, then place).
     pub fn draw_at(&self, dst: &mut Bitmap, layout: &Layout, rid: u16, text: &[u8], fg: u8, bg: Option<u8>) {
         let (w, h) = Self::measure(text);

@@ -145,6 +145,10 @@ mod id {
     pub const FIGURE: u16 = 0x35; // + party cell
     pub const MENU_ROW: u16 = 0x3F; // + row
     pub const MENU_TEXT: u16 = 0x42; // + row
+    pub const MENU_FLOOR: u16 = 0x5D;
+    pub const MENU_FIGURE: u16 = 0x5E;
+    pub const MENU_LEFT: u16 = 0x60;
+    pub const MENU_RIGHT: u16 = 0x61;
 }
 
 /// Number of entries in the slot table (0x75538): 8 portrait hand cells,
@@ -392,10 +396,23 @@ fn action_area(a: &mut Assets, font: &Font, view: &UiView, col: &[u8; 16], s: &m
         return;
     }
     if let Some(m) = &view.menu {
+        // 0x43759: one bar per action with its name, shadowed (0x4000).
         for (row, name) in m.names.iter().enumerate().take(3) {
             a.draw(s, 1, 4, 0x15, id::MENU_ROW + row as u16, 0, None);
-            font.draw_at(s, &a.layout, id::MENU_TEXT + row as u16, name, col[0xF], None);
+            font.draw_at_shadowed_flat(s, &a.layout, id::MENU_TEXT + row as u16, name, col[0xF], col[0]);
         }
+        // 0x433D6: the strip under the menu: a floor tile, the champion's
+        // party figure, and the two images either side of it.
+        a.draw(s, 8, view.map_set, 0xF6, id::MENU_FLOOR, 0, None);
+        let rel = (view.cells[m.champion] & 3) as i32;
+        if let Some(sheet) = a.sprite(1, 6, m.champion as u8) {
+            let x0 = FIGURE * (rel + if view.alt_figures { 4 } else { 0 });
+            if let (Some(fig), Some(p)) = (crop(&sheet, x0, 0, FIGURE, FIGURE), a.layout.resolve(id::MENU_FIGURE, FIGURE, FIGURE, (FIGURE, FIGURE))) {
+                fig.blit(s, &p, 0, Some(ICON_KEY));
+            }
+        }
+        a.draw(s, 1, 4, 0x10, id::MENU_LEFT, 0, None);
+        a.draw(s, 1, 4, 0x12, id::MENU_RIGHT, 0, None);
         return;
     }
     // Idle action area, in the original's order (0x3FE68): for each
@@ -616,7 +633,9 @@ pub fn compose(a: &mut Assets, font: &Font, tables: &UiTables, view: &UiView, vp
             a.draw(&mut s, 1, 4, 0x14, id::LEADER_BAR, 0, None);
             a.draw(&mut s, 1, 4, 0x0E, id::LEADER_BAR_END, 0, None);
             let fg = if view.leader == Some(sel) { col[9] } else { col[0xF] };
-            font.draw_at(&mut s, &a.layout, id::LEADER_NAME, &c.name, fg, None);
+            // 0x43332: shadowed (0x4000). The shadow is colour 0; the colour
+            // 0xC the call also passes does not show (checked in DOSBox).
+            font.draw_at_shadowed_flat(&mut s, &a.layout, id::LEADER_NAME, &c.name, fg, col[0]);
             if view.menu.is_none() {
                 a.draw(&mut s, 1, 5, c.rune_set + 1, id::SPELL_PANEL, 0, None);
                 if c.rune_set < 4 {
