@@ -208,11 +208,51 @@ has the higher index.
 1. Read the 42-byte header and keep its first word (0x7F928).
 2. Parse the dungeon snapshot with 0x36909(0).
 3. Read the bit-packed blocks into the globals, champions and timers.
-4. 0x35B97: rebuild the inventories and leader hand, clear every square's
-   thing list, read each square's bits and things back in, and link
-   things through their `next` words. Fix-ups follow (0x35B0E).
-5. Post-processing (0x36EF6, 0x55F4F, 0x594A1), then 0x4AE20 places the
-   party on (x, y, map). The .BAK rename happens if the .BAK was used.
+4. 0x35B97 rebuilds every dynamic object from the stream (below).
+5. Post-processing: 0x36EF6 recomputes state derived from pending timers
+   (party light from 0x46 timers, the magic counter from 0x47, shield
+   values from 0x48, poison counts from 0x4B); 0x55F4F re-links champions
+   to their 0x0C action timers and points each missile's word 3 at its
+   0x1D/0x1E flight timer; 0x594A1 refreshes clock actuators. Then
+   0x4AE20 places the party on (x, y, map). The .BAK rename happens if
+   the .BAK was used.
+6. The game-start initialisation 0x551D4 calls 0x342A3, which frees every
+   creature slot and sets byte +5 of every creature record to 0xFF
+   (inactive).
+
+### Rebuilding the dynamic objects (0x35B97)
+
+The snapshot's records for things of type 4 and up are not trusted:
+
+1. Every inventory slot and the leader's hand are set to the end marker.
+2. Each square's list is cut at its first thing of type 4 or more, so only
+   the leading static things (doors, teleporters, text, actuators) stay.
+   This relies on static things always preceding dynamic ones in a list.
+3. Every record of types 4-15 is marked free (word 0 = 0xFFFF).
+4. The chains are read back in stream order: 30 slots per champion, the
+   hand, then (when the header's first word is non-zero, 0x35B0E) the
+   thing held by each 0x3C/0x3D timer, then every square in storage order:
+   its saved bits, the masked record of each remaining static thing (with
+   the actuator 9-bit extra), and finally its dynamic chain with cells.
+5. The cross-reference block (0x3484F) sets word 1 of each registered
+   container to `index | 0x1000` (a creature) and of each registered
+   missile to `index | 0x2400` (a container).
+
+The chain reader (0x3573A) mirrors the writer. Each item starts with a 1
+bit (a 0 bit ends the chain), then the type (4 bits) and, when cells are
+wanted and the type isn't a creature, the cell (2 bits). Inside a missile's
+payload, type 15 is followed by 7 bits that become the spell code
+`0xFF80 | value`, not a cloud thing. Otherwise a record is allocated by
+0x1DDD7: the lowest free index of the type (misc items keep their last
+three records in reserve), zero-filled, with `next` set to the end marker
+(and a container's contents too). It's appended to its destination, and
+its fields are read through the mask. Missiles write their new reference
+into their flight timer (timer number in word 3, bytes 6-7). A cloud whose
+timer bit is set writes its reference into that timer's word at +8.
+
+So loading renumbers every dynamic thing into stream order. A game saved
+again straight after a load writes the same stream, but its snapshot can
+differ from the file it was loaded from.
 
 ## The remake's files
 
@@ -225,22 +265,40 @@ loader uses the original fields only. Like the original, saving prepares
 the live game first (creature slots freed, timers compacted), so
 continuing after a save matches loading it; this is covered by a test.
 
-The loader takes the dungeon from the snapshot as is and does not parse
-the dynamic object part, since the snapshot already holds the current
-records and lists. This assumes the DOS snapshot is a plain memory copy,
-which is what the writer suggests.
+The loader rebuilds the dynamic objects exactly as above (`save/rebuild.rs`),
+so after loading, the remake's thing numbering matches the original's. A
+trailer's champion records and timers carry the numbers from before the
+rebuild, so the rebuilt inventory slots, hand and timer references are
+kept over them. `save()` then adopts the reloaded state, so continuing
+after a save matches loading the file.
+
+### Verified against the DOS game
+
+Saves written by the original in DOSBox (a new game moved a few squares;
+the same game loaded and saved again 92 ticks later) load in the remake,
+and writing them back reproduces their bit stream exactly
+(`examples/savediff.rs` names the first diverging field; the test
+`original_saves_rewrite_with_identical_streams` checks any trailer-less
+`SKSAVEn.DAT` in the data directory). The original also loads a save
+written by the remake and plays on from the same view.
+
+For the snapshot, the remake writes its post-load state. Compared with
+the original's save made 92 ticks after loading the same file, every
+remaining difference is gameplay: creatures that moved (list order and
+the has-things bit) or were active (slot byte), and one pit/teleporter
+bit toggled by a timer. These saves contain no missiles, clouds, held
+items or registered containers, so those rules are still checked only
+against the code.
 
 ## Open questions
 
-- Confirm all offsets against a real save written by the game (DOSBox):
-  in particular the chain terminators, the third argument of the square
-  chains (assumed "whole list"), the cloud and cross-reference rules,
-  and that the DOS game loads a remake save.
-- The edge-link rule compares the partner map with the
-  current one; which side counts as "lower" should be checked in a save
-  from a dungeon with edge links.
-- The leader's hand item (0x7FBB4) is not modelled by the engine yet; it
-  is carried through `Legacy` unchanged.
+- Check against DOS saves with missiles in flight, clouds, an item in the
+  leader's hand, creatures carrying items, and money containers. The
+  saves verified so far exercise inventories, square lists, edge links,
+  creatures and timers, but none of these.
+- Whether the original's post-load steps (0x36EF6 and friends) need
+  modelling for DOS saves without a trailer: the remake's trailer carries
+  the derived values for its own saves.
 - The meaning of the globals at 0x716A0, 0x7F19C, 0x7F270 and the
   environment bytes.
 - The exact champion mask fields (to be aligned with `06-champions.md`).
