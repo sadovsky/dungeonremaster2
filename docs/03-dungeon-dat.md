@@ -197,10 +197,11 @@ Word 0 of every record is `next`.
   (code, door handlers 0x568F7 and 0x564C6; see 05-timeline).
 - The door's open/closed state is not here but in the door square's bits
   0-2 (0 open, 1-3 part-closed, 4 closed, 5 destroyed).
-- bits 5-8 vary in the data. In DM1, bit 0 was the door type (selecting
-  descriptor door type 0 or 1), bits 1-4 the ornament, and bits 5-8 flags
-  (button, destructible, ...). 33 of 53 doors have only bit 5 set. TODO:
-  confirm the low bits against the door renderer.
+- bit 0 selects descriptor door type 0 or 1 (code, 0x1FE1C); bit 5 makes
+  closing check the creature's size class (0x564C6); bit 7 allows magical
+  destruction and bit 8 bashing (0x18D9E); bit 13 is driven by actuator
+  0x46 (meaning unknown). 33 of 53 doors have only bit 5 set. Bits 1-4
+  (ornament in DM1) still to be confirmed against the door renderer.
 
 **Teleporter (6)**, words 1-2:
 - word 1 bits 0-4 = destination x, bits 5-9 = destination y; word 2 bits
@@ -208,8 +209,11 @@ Word 0 of every record is `next`.
 - word 2 bits 1-2: when both are set, square actions don't toggle the
   teleporter's active bit (code: 0x58EDB). The active bit itself is bit 3
   of the teleporter square.
-- Still DM1-assumed: rotation bits 10-11, absolute rotation bit 12, scope
-  bits 13-14 and audible bit 15 of word 1.
+- Word 1 bits 10-11 rotation, bit 12 absolute rotation, bits 13-14 scope
+  mask (party 2, creatures 1/2, other things always pass; scope 1 =
+  creatures only), bit 15 audible (code: 0x4A34A, see 05-timeline).
+- Word 2 bit 0: the square counts as rock for the adjacent-layer lookup
+  (0x1CC7E).
 - A teleporter square also serves as a map-edge link. An actuator of type
   0x27 on it disables the link (see 05-timeline).
 

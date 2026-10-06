@@ -17,6 +17,11 @@ impl Rng {
         self.state >> 8
     }
 
+    /// Raw output (`rnd()`, 0x1C6A1); callers mask the bits they need.
+    pub fn rnd(&mut self) -> u32 {
+        self.step()
+    }
+
     /// `random(n)`: uniform-ish value in 0..n. Like the original, n == 0
     /// returns 0 without advancing the state.
     pub fn random(&mut self, n: u16) -> u16 {
