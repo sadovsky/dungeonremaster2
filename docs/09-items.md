@@ -184,18 +184,33 @@ open champion:
 - **Water containers (0x39BBB):** add 800 to water (offset +0x46), capped at 2048. The container is kept.
 - **Potions (type 8):**
   - Word 1 bits 8-14 are the kind and bits 0-7 the power.
-  - The effect depends on the kind:
+  - Three amounts come from the power p: s = p/25 + 8, the divisor
+    d = ((511 − p) / ((p + 1)/8 + 32)) / 2, and p itself. The effect
+    depends on the kind (implemented in `crates/dm2-engine/src/potions.rs`):
 
     | Kind | Effect |
     |------|--------|
-    | 6-9 | Raise one stat (0x459C8) |
-    | 10 | Calls 0x475D3 with an amount growing with the square of the power (heal or cure?) |
-    | 11 | Restore stamina towards its maximum |
-    | 12 | A party-wide effect through 0x4565A (shield?) |
-    | 13 | Mana, capped at 900 |
-    | 14 | Restore hit points and clear status bits |
-    | 15 | Water +1600 |
+    | 6 | Dexterity +s through the stat raise 0x459C8 |
+    | 7 | Strength +(p/35 + 5) |
+    | 8 | Wisdom +s |
+    | 9 | Vitality +s |
+    | 10 | Cure poison (0x475D3) by s + p + (p/7)² |
+    | 11 | Stamina + min(max − current, max/d) |
+    | 12 | Armour bonus for the drinker: party effect 0x4565A with type 2, strength a = s + s/2, lasting a² ticks |
+    | 13 | Mana = min(900, mana + 2s − 8); above the maximum, half the excess over max(mana, maximum) is taken off again |
+    | 14 | Health + max/d, then wounds are cleared at random: AND the wound bits with a random value max(1, p/42) times, then once per try, up to 10 tries, stopping as soon as they change |
+    | 15 | Water + 1600, capped at 2048 |
 
+    Other kinds have no drink effect and the potion is not consumed.
+    Afterwards stamina and health are clamped to their maxima.
+  - **Stat raise (0x459C8):** when a gain pushes the current value past
+    its maximum, the gain loses a quarter of itself for every full 20
+    points of overshoot beyond 20; the result is clamped to 10-220.
+  - **Cure poison (0x475D3):** walks the champion's pending poison events
+    (type 0x4B), taking the cure amount off each event's remaining dose
+    and the poison pool, deleting events that are used up and decrementing
+    the poison-event count at +0x1F. The engine stores the dose in the pool
+    only, so it cancels the pending events once the pool reaches 0.
   - Afterwards the potion becomes an empty flask: misc item kind 0x14 is
     created through 0x1F07C and placed where the potion was.
 

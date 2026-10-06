@@ -221,18 +221,8 @@ pub fn eat_held(g: &mut GameState) -> bool {
     if t.kind() == ThingType::Potion {
         let w1 = g.dungeon.record_word(t, 1).unwrap_or(0);
         let (kind, power) = ((w1 >> 8) & 0x7F, (w1 & 0xFF) as i16);
-        let c = &mut g.champions[idx];
-        match kind {
-            11 => c.set_stamina((c.stamina() as i32 + c.max_stamina() as i32 / 4 + power as i32).min(c.max_stamina() as i32) as i16),
-            13 => c.set_mana((c.mana() as i32 + power as i32 * 2).min(900) as i16),
-            14 => c.set_health((c.health() as i32 + power as i32).min(c.max_health() as i32) as i16),
-            15 => {
-                champions::drink_water(c);
-                champions::drink_water(c);
-            }
-            // TODO(docs/09): stat potions (6-9), kind 10 and the party
-            // shield (12) are not modelled yet.
-            _ => {}
+        if !crate::potions::drink(g, idx, kind, power as u16) {
+            return false;
         }
         // The potion becomes an empty flask (misc kind 0x14; item numbers
         // 256-383 are misc items).
