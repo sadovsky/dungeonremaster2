@@ -25,6 +25,9 @@ pub struct ChampionView {
     pub bars: [(u16, u16); 3],
     /// Damage to show in the starburst (champion +0x2C), if any.
     pub damage: Option<u16>,
+    /// Wound bits (champion +0x34): bit n wounds body slot n, which picks
+    /// the wounded slot frame and empty picture.
+    pub wounds: u16,
 }
 
 /// An image in the archive: (category, index, sub-index of type 1).
@@ -36,6 +39,8 @@ pub struct InventoryView {
     pub champion: usize,
     /// Icons of the 30 inventory slots.
     pub slots: Vec<Option<Icon>>,
+    /// The champion's wound bits (see `ChampionView::wounds`).
+    pub wounds: u16,
     /// The 8 cells of an open container, if one is shown.
     pub container: Option<Vec<Option<Icon>>>,
     /// Name (+0x00) and title (+0x08); the panel shows them joined
@@ -58,6 +63,8 @@ pub struct InventoryView {
 #[derive(Clone, Debug, Default)]
 pub struct MenuView {
     pub champion: usize,
+    /// Hand whose action menu is open (its slot gets the selected frame).
+    pub hand: usize,
     pub names: Vec<Vec<u8>>,
 }
 
@@ -239,21 +246,35 @@ fn colours(a: &Assets) -> [u8; 16] {
 /// Item icons and slot frames use colour key 12 (0x3815D).
 const ICON_KEY: u8 = 12;
 
-/// A slot (0x3815D): frame (1, 2, 4) for the first six inventory slots
-/// (the champion box image already holds the hand recesses), then the item
-/// icon or the slot's empty picture (7, 0, n).
-fn draw_slot(a: &mut Assets, dst: &mut Bitmap, tables: &UiTables, k: usize, icon: Option<Icon>, selected: bool) {
+/// A slot (0x3815D): the slot frame (1, 2, 4), or 5 when its body part is
+/// wounded, or 6 when it is the selected hand, for the champion box's hand
+/// slots and the first six inventory slots (the original always redraws
+/// the hand frames); then the item icon, or the slot's empty picture
+/// (7, 0, n), offset by one when wounded.
+fn draw_slot(a: &mut Assets, dst: &mut Bitmap, tables: &UiTables, k: usize, icon: Option<Icon>, selected: bool, wounded: bool) {
     let (rid, empty) = tables.slots[k];
-    if (8..14).contains(&k) {
-        a.draw(dst, 1, 2, if selected { 6 } else { 4 }, rid, 0, Some(ICON_KEY));
+    if k < 14 {
+        // The 18×18 frame is centred on the 16×16 slot box and not clipped
+        // to it (one pixel up and left of the slot).
+        let frame = if selected { 6 } else if wounded { 5 } else { 4 };
+        if let (Some(f), Some(p)) = (a.sprite(1, 2, frame), a.layout.resolve(rid, 16, 16, (16, 16))) {
+            let at = crate::layout::Placement {
+                x: p.x + (16 - f.w as i32) / 2,
+                y: p.y + (16 - f.h as i32) / 2,
+                w: f.w as i32,
+                h: f.h as i32,
+                skip_x: 0,
+                skip_y: 0,
+            };
+            f.blit(dst, &at, 0, Some(ICON_KEY));
+        }
     }
-
     match icon {
         Some((c, i, sub)) => {
             a.draw(dst, c, i, sub, rid, 0, Some(ICON_KEY));
         }
         None if empty != 0xFF => {
-            a.draw(dst, 7, 0, empty, rid, 0, Some(ICON_KEY));
+            a.draw(dst, 7, 0, empty + u8::from(wounded), rid, 0, Some(ICON_KEY));
         }
         None => {}
     }
@@ -275,7 +296,7 @@ pub fn inventory_panel(a: &mut Assets, font: &Font, tables: &UiTables, inv: &Inv
     let col = colours(a);
     a.draw(&mut b, 7, 0, 0, id::INVENTORY, 0, None);
     for (s, icon) in inv.slots.iter().enumerate().take(30) {
-        draw_slot(a, &mut b, tables, 8 + s, *icon, false);
+        draw_slot(a, &mut b, tables, 8 + s, *icon, false, s < 6 && inv.wounds & (1 << s) != 0);
     }
     // Mouth and eye, each in a slot frame.
     a.draw(&mut b, 1, 2, 4, id::MOUTH, 0, Some(ICON_KEY));
@@ -537,7 +558,8 @@ pub fn compose(a: &mut Assets, font: &Font, tables: &UiTables, view: &UiView, vp
             let fg = if view.leader == Some(i) { col[9] } else { col[0xF] };
             font.draw_at_shadowed(&mut s, &a.layout, id::NAME + n, &c.name, fg, 0);
             for h in 0..2 {
-                draw_slot(a, &mut s, tables, i * 2 + h, view.hands[i][h], false);
+                let sel = view.menu.as_ref().is_some_and(|m| m.champion == i && m.hand == h);
+                draw_slot(a, &mut s, tables, i * 2 + h, view.hands[i][h], sel, c.wounds & (1 << h) != 0);
             }
         }
         let colour = col[(tables.champion_colour[i] & 15) as usize];

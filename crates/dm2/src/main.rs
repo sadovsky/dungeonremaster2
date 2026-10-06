@@ -144,6 +144,7 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
     for (i, c) in g.champions.iter().take(4).enumerate() {
         v.champions[i] = Some(ChampionView {
             name: c.name().into_bytes(),
+            wounds: c.wounds(),
             portrait: c.portrait(),
             rune_set: c.raw[0x1E],
             dead: !c.is_alive(),
@@ -204,6 +205,7 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
             });
         v.inventory = Some(InventoryView {
             champion: ci,
+            wounds: c.wounds(),
             slots: (0..30).map(|s| icon(c.inventory(s), Some(s))).collect(),
             container,
             name: c.name().into_bytes(),
@@ -221,7 +223,7 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
         });
     }
     if let Some(m) = &g.hand.menu {
-        v.menu = Some(MenuView { champion: m.champion, names: m.actions.iter().map(|a| a.name.clone().into_bytes()).collect() });
+        v.menu = Some(MenuView { champion: m.champion, hand: m.hand, names: m.actions.iter().map(|a| a.name.clone().into_bytes()).collect() });
     }
     if demo && g.champions.is_empty() {
         v.champions[0] = Some(ChampionView {
