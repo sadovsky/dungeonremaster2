@@ -1,0 +1,147 @@
+# Audio
+
+Tool: `tools/audio.py` (outputs to `re/audio/`, gitignored). Sound effects
+and music both live in GRAPHICS.DAT; nothing on the CD image is needed for
+in-game audio.
+
+## Sound effects (GRAPHICS.DAT type 2)
+
+- 292 index keys point at 107 distinct entries (about 124 s of audio in total).
+- Entry layout: a 6-byte header, then raw samples.
+  - u16 sample rate: 11127 Hz in every entry. That is roughly the
+    Sound Blaster time-constant rate near 11 kHz.
+  - 4 more bytes, always `08 01 00 00` (probably 8 bits per sample and
+    mono; the game never reads them).
+  - Samples are **unsigned 8-bit mono PCM**.
+- The header is only honoured when bit 0x20 of the archive flags word
+  (key 0,0,11,0) is set. It is set in this release (flags = 0x7B). With the
+  bit clear, the game would skip only 2 bytes and play at a fixed 5500 Hz.
+  The reimplementation can assume the 6-byte header.
+- On first use the game flips the top bit of every sample in place,
+  converting it to signed for the HMI SOS mixer. A tag word just before
+  the buffer records that the conversion has been done. This doesn't
+  affect a reimplementation; just play the samples as unsigned 8-bit.
+
+### Keys
+
+Sounds use the same (category, index, sub) addressing as images, so a
+sound belongs to the thing that makes it:
+
+| Category | Subs used | Likely meaning |
+|----------|-----------|----------------|
+| 3 (global / wall writing) | 0, 1, 129, 136, 137, 139 | Global interface and world sounds (doors, buttons, etc.) |
+| 15 (creatures) | 0–18 per creature, plus 132 and 141 | Per-creature sounds (attack, movement, death ...); the creature index selects the set |
+| 16–21 (item classes) | 133, 134 (weapons also 0, 1) | Shared item actions, probably hit/impact and drop/use |
+| 22 (champions) | 0, 1, 130, 131, 135, 138 | Champion sounds (pain, hunger ...) |
+| 8, 9, 10, 13, 14, 23, 24 | Various, mostly ≥128 | Map set, wall and floor ornaments, doors, missiles, environment |
+
+Subs at or above 128 look like action codes shared across categories.
+Their exact meanings still need to be traced from the call sites.
+
+### Engine side (SKULL.EXE)
+
+| Address | Role |
+|---------|------|
+| 0x15A91 | Allocate the sound tables: a slot table (16 bytes per loaded sample), a 7-byte key table, a 20-entry pending queue and a 6-entry interface queue |
+| 0x161D9 | Register a sound key (category, index, sub) as wanted for the current map; duplicates are ignored |
+| 0x1623B | Load every registered sound that is not yet loaded: look up (cat, idx, 2, sub), take the rate from the header, store the data pointer and length, convert to signed |
+| 0x163C2 | Release all registered sounds (map change) |
+| 0x15C10 | Find a registered key and return its 1-based slot |
+| 0x15CA9 | **Play sound**: `(cat, idx, sub, ?, volume, x, y, mode)` |
+
+Behaviour of the play function:
+- The source map position (x, y) is made relative to the party and
+  rotated into the party's facing (four cases, one per direction). The
+  result gives left/right and front/back offsets used for panning.
+- Volume falls off with distance (sum of the absolute offsets). Beyond a
+  per-source audible range the sound is dropped. When an option flag is
+  set, all volumes are halved.
+- If the same sample is already queued from the same relative position
+  this tick, the request is dropped.
+- Mode: 0 means the sound plays at the party's position; 1 means it plays
+  at the given (x, y), and for a different map level the level offset is
+  added in; a negative mode routes it through the separate 6-entry
+  interface queue.
+- At most 20 positional sounds can be pending per tick.
+- Volume 200 and 0x80 are common literal volumes; 0x18,0,0x89 is a
+  frequent interface sound.
+
+## Music (GRAPHICS.DAT type 3)
+
+- 29 songs, key (category 4, index *n*, type 3, sub 0), n = 0..28; each
+  is an HMI HMP file (`HMIMIDIP013195` signature).
+- **Song selection**: `DATA/SONGLIST.DAT` is a byte table indexed by the
+  party's **current map number**, holding song numbers. It has 46 valid
+  entries (the dungeon has 44 maps), padded with 0xFF to 63 bytes, and
+  the game reads at most 63. Song 0 means silence (the loader returns
+  early when the song is 0). When the party changes map and the song
+  differs from the one playing, the old song fades out and the new one
+  starts (functions at 0x10AF6 and 0x1095D).
+- The game loads a song with a plain copy of the entry into a
+  preallocated buffer, then hands it to the HMI SOS MIDI driver.
+- `TEST.HMP` in the game directory is the setup program's test tune, not
+  used in game.
+
+### HMP format (variant `HMIMIDIP013195`)
+
+| Offset | Field |
+|--------|-------|
+| 0x00 | `HMIMIDIP` plus a 6-character version date (`013195`), padded |
+| 0x20 | u32 file size |
+| 0x30 | u32 track count (including track 0) |
+| 0x34 | u32: 192 in every file. **Not** the timing base. |
+| 0x38 | u32 **tick rate in Hz**: 120 in every file. Verified: the last event tick divided by the song-length field gives about 120 for all 29 songs. |
+| 0x3C | u32 song length in seconds |
+| 0x40 | Per-channel tables (priority, device mapping); not needed for playback |
+| 0x388 | First track chunk (0x308 in the older, undated `HMIMIDIP` variant) |
+
+Each track chunk has a 12-byte header (u32 track index, u32 chunk length
+including the header, u32 MIDI channel), followed by event data.
+
+How events differ from Standard MIDI:
+- **Delta times** are variable-length but reversed: 7-bit groups,
+  least-significant first, and the byte with bit 7 **set** is the *last*
+  one. MIDI uses the opposite convention.
+- Everything else (running status, channel messages, `FF` meta with a
+  1-byte length, `FF 2F 00` end of track) follows MIDI. Track 0 carries
+  no tempo event; timing comes only from the header tick rate.
+
+`tools/audio.py music` converts each song to a Type 1 MIDI file with
+division = 120 and tempo = 1,000,000 µs per quarter, so one tick is one
+120 Hz HMP tick. The output is structurally verified (every track ends
+exactly on its end-of-track event, and the lengths match the headers).
+
+### FM instruments (MELODIC.BNK, DRUM.BNK)
+
+DM2 supports FM (OPL2/OPL3) music only, not General MIDI (README). The
+two banks are AdLib `.BNK` files whose 6-byte signature is altered
+(`AMLIB-` and `ANLIB-` instead of `ADLIB-`). Otherwise they follow the
+standard layout:
+
+| Offset | Field |
+|--------|-------|
+| 0 | u8 major, u8 minor version (0.0) |
+| 2 | Signature (6 bytes) |
+| 8 | u16 number of instruments used (128), u16 total (128) |
+| 12 | u32 offset of the name table (0x1C), u32 offset of the instrument data (0x61C) |
+| name table | 128 × 12 bytes: u16 data index, u8 used flag, 9-byte name |
+| data | 128 × 30 bytes: u8 percussive, u8 voice, two 13-byte operator blocks, two wave-select bytes |
+
+128 × 30 + 0x61C = 5404, which is exactly the file size. MELODIC.BNK
+maps General MIDI programs 0–127 to OPL patches. DRUM.BNK holds the
+percussion patches, presumably selected by note number on MIDI channel 9.
+The game loads both at startup (0x10225) before reading SONGLIST.DAT.
+
+### Plan for the reimplementation
+
+Faithful music needs an OPL emulator, such as an `opl3`/Nuked-OPL3 port
+in Rust, driven by an HMI-style MIDI-to-OPL voice allocator that uses
+these two banks. A simpler first step is to render the converted MIDI
+with any soft synth. The voice-allocation rules in HMI's driver aren't
+reversed here, because they live in `HMIMDRV.386`, not in SKULL.EXE.
+
+## Other distribution sound files
+
+- `TEST.RAW` (40,320 bytes): the setup program's digital test sample.
+- `HMI*.386`: HMI SOS driver modules (detect, digital, MIDI). Not needed.
+- `SKULL.CFG`: the chosen digital and MIDI devices (Sound Blaster settings).

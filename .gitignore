@@ -1,0 +1,7 @@
+# Original game files (copyrighted, never commit)
+original/
+*.zip
+*:Zone.Identifier
+re/
+target/
+__pycache__/

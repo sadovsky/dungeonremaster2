@@ -1,0 +1,3 @@
+[workspace]
+resolver = "2"
+members = ["crates/dm2-formats", "crates/dm2-engine", "crates/dm2"]
