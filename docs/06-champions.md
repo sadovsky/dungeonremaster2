@@ -70,12 +70,15 @@ Helpers used everywhere: 0x1C67E = min (signed 16-bit), 0x1C687 = max,
 | 0x46 | 2 | Water (same ranges) |
 | 0x48 | 2 | Poison pool still to be applied (cap 3072) |
 | 0x4A | 14 | Seven stats, each a byte pair (current, maximum): luck, strength, dexterity, wisdom, vitality, anti-magic, anti-fire |
+| 0x58 | 7 | Signed temporary modifier per stat, added when a stat is read (0x466AB) |
 | 0x5F | 80 | Experience, 20 × u32: classes 0-3 then sub-skills 4-19 |
 | 0xAF | 20 | Signed temporary level modifiers per skill (from items/spells) |
 | 0xC3 | 60 | Inventory: 30 thing references (0xFFFF empty); slot 0 ready hand, slot 1 action hand |
+| 0xFF | 2 | Cached load (total inventory weight, tenths of a kg); 0 when dead. The leader's cursor item is added on read (0x47BC5) |
 | 0x101 | 1 | Champion (portrait) number in GRAPHICS.DAT category 22 |
-| 0x102 | 1 | Which kind of personal shield 0x103 holds (0 fire, 1 spell) |
-| 0x103 | 2 | Personal shield strength |
+| 0x102 | 1 | What 0x103 holds: 0 fire shield, 1 spell shield, 2 armour bonus, 3-6 a boost to strength, dexterity, wisdom or vitality |
+| 0x103 | 2 | Strength of that shield or boost |
+| 0x105 | 1 | Signed movement-speed modifier, subtracted from the move time |
 
 Unlisted bytes are touched by only one or two functions and still need
 labels.
@@ -106,6 +109,12 @@ So level 2 needs 512 experience, and each further level doubles that.
 Rank titles for display are interface text (category 7, index 0, sub
 4 + level − 1); there are 15.
 
+**Reading a stat** (0x466AB, `(champion, stat, which)`): `which` 0 reads
+the current value, 1 the maximum. For the current value, when the boost
+in +0x102/+0x103 targets this stat (kind = stat + 2, stats 1-4), add
+random((min(100, boost) × value >> 7) + 1) + 4. Then add the stat's
+signed modifier at +0x58 and clamp to 10..220.
+
 **Total party level** (0x461E8): the same halving rule applied to the sum
 of all champions' class experience. Used to scale some encounters.
 
@@ -124,7 +133,8 @@ of all champions' class experience. Used to scale some encounters.
 
 ```
 b  = randbit();  r = randbit() + 1
-if class != priest: vitality.max += A & randbit()
+v  = randbit();  if class != priest: v &= A      (priests keep the raw bit)
+vitality.max += v
 anti_fire.max += randbit() & ~A
 fighter: strength.max += r;  dexterity.max += b;  hp_gain = 3A; st_base = max_stamina / 16
 ninja:   strength.max += b;  dexterity.max += r;  hp_gain = 2A; st_base = max_stamina / 21
@@ -164,7 +174,8 @@ Called with the portrait number when a champion is accepted:
 
 Runs once per game tick for each living champion who is not being
 recruited. A shared counter G (0x7FFF4) steps by +56 and wraps past 128,
-which acts as a cheap varying threshold.
+which acts as a cheap varying threshold: G becomes G + 56, or G − 72
+if that would exceed 128.
 
 **Mana**, when below maximum:
 
@@ -215,23 +226,36 @@ is capped at its maximum. Losses over 9 flag the stats bar for redraw.
   luck); success if that is above the threshold. Current luck then moves
   by −2 on success or +2 on failure, clamped to 10..min(220, maximum
   luck).
-- **Dexterity** (0x46968): (rnd & 7 + current dexterity) / 2, reduced in
-  proportion to load over maximum load, at least 2, halved asleep, then
-  clamped between 1 + rand(8) and 100 − rand(8).
+- **Dexterity** (0x46968): d = ((rnd & 7) + current dexterity) / 2; then
+  d = max(2, d − d × load / maximum load); halved asleep. Two more random
+  numbers give the bounds: the first sets the upper bound 100 − (rnd & 7),
+  the second the lower bound (rnd & 7) + 1; d is clamped between them.
 - **Strength for an action** (0x46A19, `(champion, hand, skill)`):
-  current strength + (rnd & 15) + weapon weight − 12, with extra
-  penalties when the weapon weighs more than maximum load / 16. For
-  skill ≥ 0, add 2 × that skill's level plus the weapon's attribute 8
-  (melee skills 0, 4-7, 9) or attribute 9 (throw and shoot skills 1, 10,
-  11; for skill 11 only if attribute 5 bit 15 marks the item as a
-  launcher). Then a stamina adjustment (0x4667A), halved if that hand is
-  wounded, and the result is clamp(0, value / 2, 100).
-- **Maximum load** (0x46824) and **current load** (0x47BC5) drive the load
-  display: load above maximum shows in one colour, above 5/8 of maximum
-  in another.
-- **Stat-adjusted value** (0x46745, `(champion, stat, value)`): scales a
-  value down by a resistance stat (used for vitality, anti-magic and
-  anti-fire). Exact curve TODO.
+  s = (rnd & 15) + current strength + w − 12, where w is the hand item's
+  weight. With limit L = maximum load / 16: if w > L, s −= (w − L) / 2,
+  and if w also exceeds L2 = L + (L − 12) / 2, s −= 2 (w − L2). For skill
+  ≥ 0, add 2 × that skill's level plus a weapon bonus: attribute 8 for
+  skills 0, 4-7 and 9; attribute 9 for skills 1, 10 and 11, but only when
+  the item's launcher bit (attribute 5 bit 15) is set exactly when the
+  skill is 11 (shoot). Then the stamina adjustment, halved if that hand is
+  wounded (wound bit 0 for the ready hand, 1 for the action hand), and the
+  result is clamp(0, s / 2, 100).
+- **Stamina adjustment** (0x4667A): below half stamina, a value v becomes
+  v/2 + stamina × (v/2) / (maximum stamina / 2); otherwise unchanged.
+- **Maximum load** (0x46824): v = stamina-adjusted(8 × current strength
+  + 100); if any wound bit is set, v −= v / 4 with wounded legs or v / 8
+  otherwise; then round up to a multiple of 10 (tenths of a kg, so whole
+  kilograms). **Current load** (0x47BC5) is the cached word at +0xFF.
+  The load display uses one colour above maximum and another above 5/8.
+- **Move time** (0x46892), ticks per step: 1 while the party counter at
+  0x7FFF0 is non-zero. Otherwise, below maximum load: 2, or 3 above 5/8
+  of it, and a wounded-feet penalty of 1; at or over maximum:
+  4 + 4 × (load − max) / max, and a feet penalty of 2. Subtract the speed
+  modifier at +0x105, keep at least 1, and round values above 2 up to an
+  even number.
+- **Stat-adjusted value** (0x46745, `(champion, stat, value)`): with d =
+  170 − current stat, the value becomes value / 8 when d < 16, else
+  value × d / 128. Used with vitality, anti-magic and anti-fire.
 
 ## Food and drink (0x39C3F, command 0x10)
 
@@ -280,6 +304,4 @@ also resets water to 2048) is TODO.
 ## Open questions
 
 - Remaining record bytes (0x29-0x2C, 0xCF, 0xD9, 0xDB, 0xFF, 0x105).
-- Curves inside 0x46745 (stat adjustment) and 0x4667A (stamina
-  adjustment), and the exact maximum-load formula.
 - The resurrection flow end to end.

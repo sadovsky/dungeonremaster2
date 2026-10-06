@@ -4,11 +4,13 @@
 
 pub mod assets;
 pub mod champions;
+pub mod combat;
 pub mod events;
 pub mod exe;
 pub mod gfx;
 pub mod items;
 pub mod layout;
+pub mod magic;
 pub mod rng;
 pub mod state;
 pub mod timeline;

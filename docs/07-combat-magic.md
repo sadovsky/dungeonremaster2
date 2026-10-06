@@ -131,8 +131,8 @@ Used by champion damage, missiles and actions (AT):
 | Type | Kind | Defence |
 |------|------|---------|
 | 0 | Unblockable | Added straight to pending damage |
-| 1 | Fire | Anti-fire stat, then the personal fire shield |
-| 2 | Self (e.g. stamina overflow) | Defence halved, plus a skill-level bonus |
+| 1 | Fire | Anti-fire stat, then the personal fire shield, then armour like the blunt types |
+| 2 | Self (e.g. stamina overflow) | Defence halved, plus the ninja class level (tentative) |
 | 3 | Blunt (default for missiles) | Armour |
 | 4 | Sharp | Armour, using the sharp-resistance variant of each piece |
 | 5 | Magic | Anti-magic stat, then the personal spell shield; skips the armour scaling |
@@ -150,6 +150,21 @@ invulnerable, or amount < 1.
 2. Defence = average over the selected body parts (bits 0-5: ready hand,
    action hand, head, torso, legs, feet) of that slot's armour value
    (0x46BDC, with the sharp flag for type 4).
+
+   **Armour value of one part** (0x46BDC), 0..100:
+   - Each hand item whose attribute 0x0B has bit 15 set (a shield) adds
+     (item armour + strength(champion, hand, parry)) × w[part], shifted
+     right 4 bits for the shield's own hand and 5 for the other. w is a
+     6-byte per-part table at 0x759A6 in SKULL.EXE.
+   - Item armour is the low byte of attribute 0x0B; against sharp attacks
+     it is scaled by ((high byte & 7) + 4) / 8 (0x46BAD).
+   - Base: random(vitality / 8 + 1), halved against sharp attacks; plus
+     the armour bonus when +0x102 is 2; plus both hands' TA bytes.
+   - Parts other than the hands add the armour of the item worn there.
+   - A wounded part loses rand4() + 8; a sleeping party halves the total.
+   - Result: clamp(0, total / 2, 100).
+   - Tentative: the shield term adds the parry strength to the item armour;
+     the decompiler output is garbled at that point.
 3. **Hand defence:** for each hand whose action is active, add its TA
    bonus. If the total is positive and (rnd & 15) < level(7, parry) +
    total/8, the parry works: a blockable hit loses that much, and is
@@ -288,21 +303,35 @@ On success, by kind:
   where L = level (doubled for type 4); missile 0xFF80 + type at no
   further mana cost.
 - **Other** (3), by type:
-  - 0, 1, 5: light or darkness of 36 × (power + 1).
-  - 3: invisibility for 32 × (power + 1).
-  - 0, 2, 4, 6, 7, 8, 9, 10: party shields of kinds 0-6 (0x45815), with
-    strength (4(p+1))² + 100, (4(p+1))², or (4(p+1) + 3)² depending on
-    the type.
-  - 0x0B: adds 32 × (power + 1) to counter 0x7FFF0.
-  - 0x0E: explosion 0x0E on the party with energy clamp(21, (L + 4)(p + 2), 255).
-  - 0x0F: summons the creature named by attribute key (13,15,11,0x42).
+  With q = power + 1 and s = 4q:
+  - 0, 1, 5: light effects 0x27, 6 and 0x26 of strength 36q (0x412E1).
+  - 3: invisibility: schedules event 0x47 32q ticks ahead (and counts
+    active invisibility at 0x7FFEE).
+  - Party effects (0x45815), as type → (kind, strength): 2 → (1, s² + 100),
+    8 → (0, s² + 100), 4 → (2, s²), 6 → (5, (s+3)²), 7 → (4, (s+3)²),
+    9 → (6, (s+3)²), 10 → (3, (s+3)²).
+  - 0x0B: adds 32q to counter 0x7FFF0, capped at 255 (the move-time
+    counter: every champion moves at 1 tick per step while it is set).
+  - 0x0E: explosion 0xFF8E on the party square with energy
+    clamp(21, (2L + 4)(p + 2), 255).
+  - 0x0F: creates the item named by attribute key (13, 15, 11, 0x42): into
+    the leader's hand if it is empty, otherwise dropped on the party square
+    in a random cell.
 - **Summon** (4): creates a minion of creature type `type` in front of the
   party, with power scaled by (2L + roll) × power / 6. Type 0x35 instead
   sets an existing minion of that type to state 0x13, so it is recalled.
   When the minion can't be placed, a fizzle explosion appears.
 
 After success the champion gains xp in the skill and is busy for the
-cooldown (0x40A0A). Result codes passed to the message routine (0x4384B)
+cooldown (0x40A0A); both happen only when the cooldown is non-zero. A
+failed level check grants xp >> (required − level), using the original
+level deficit, not the remaining loop count. Spell kinds outside 1-4
+succeed with no effect.
+
+**Lookup detail** (0x421FD): the key packs the runes into bytes 3, 2, 1, 0
+in entry order (power first) and stops at the first empty rune; at least
+two runes are needed. A spell whose byte 3 is 0 matches the low three
+bytes only, so any power works. Result codes passed to the message routine (0x4384B)
 are 0x10 failure, 0x20 meaningless runes and 0x30 need flask, each ORed
 with the class. The rune buffer is cleared except after "need flask".
 
