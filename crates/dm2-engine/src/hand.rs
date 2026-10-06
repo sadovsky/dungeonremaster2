@@ -35,6 +35,8 @@ pub struct HandState {
     pub inventory_open: Option<usize>,
     /// Open action menu.
     pub menu: Option<ActionMenu>,
+    /// Champion whose spell panel is open (0x7FB6E in the spell state).
+    pub magic: Option<usize>,
     /// Tick until which each champion's hand is busy after an action.
     pub busy_until: [[u32; 2]; 4],
     /// The eye was clicked: show the held item's details (0x3A409).
@@ -43,7 +45,7 @@ pub struct HandState {
 
 impl Default for HandState {
     fn default() -> Self {
-        HandState { held: EMPTY, inventory_open: None, menu: None, busy_until: [[0; 2]; 4], show_info: false }
+        HandState { held: EMPTY, inventory_open: None, menu: None, magic: None, busy_until: [[0; 2]; 4], show_info: false }
     }
 }
 
@@ -428,6 +430,7 @@ pub fn open_menu(g: &mut GameState, champion: usize, hand: usize) -> bool {
         return false;
     }
     g.hand.menu = Some(ActionMenu { champion, hand, actions });
+    g.hand.magic = None;
     true
 }
 
@@ -511,16 +514,20 @@ pub fn dispatch(g: &mut GameState, cmd: u16) -> bool {
         0x46 => return eat_held(g),
         0x47 => g.hand.show_info = held(g).is_some(),
         0x5F..=0x62 => {
-            // Leader by party cell: pick the champion standing there.
+            // Party cell (0x458F4 then 0x3FE03): select the champion standing
+            // there; the original then shows that champion's action menu.
             let cell = ((cmd - 0x5F) as u8 + g.party.dir) & 3;
-            if let Some(i) = g.champions.iter().position(|c| c.is_alive() && c.cell() & 3 == cell) {
-                g.leader = Some(i);
-            }
+            let Some(i) = g.champions.iter().position(|c| c.is_alive() && c.cell() & 3 == cell) else { return false };
+            return open_menu(g, i, 1) || open_menu(g, i, 0);
         }
         0x65..=0x6A => return add_rune(g, (cmd - 0x65) as usize),
         0x6B => delete_rune(g),
         0x6C => return cast(g).is_some(),
-        0x70 => g.hand.menu = None,
+        0x70 => {
+            // 0x3FD17: deselect.
+            g.hand.menu = None;
+            g.hand.magic = None;
+        }
         0x71..=0x73 => return choose_action(g, (cmd - 0x71) as usize),
         0x74..=0x7B => {
             let n = (cmd - 0x74) as usize;

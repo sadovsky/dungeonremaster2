@@ -38,8 +38,10 @@ pub struct InventoryView {
     pub slots: Vec<Option<Icon>>,
     /// The 8 cells of an open container, if one is shown.
     pub container: Option<Vec<Option<Icon>>>,
-    /// Name and title (+0x00 / +0x08).
+    /// Name (+0x00) and title (+0x08); the panel shows them joined
+    /// (0x48890).
     pub name: Vec<u8>,
+    pub title: Vec<u8>,
     /// Health, stamina and mana as (current, maximum).
     pub stats: [(u16, u16); 3],
     /// Food and water (+0x44, +0x46), −1024..2048.
@@ -76,6 +78,9 @@ pub struct UiView {
     pub cells: [u8; 4],
     pub inventory: Option<InventoryView>,
     pub menu: Option<MenuView>,
+    /// Champion whose spell panel is open (0x7FB6E with hand 2 in the
+    /// spell state). The panel is not shown otherwise.
+    pub magic: Option<usize>,
     /// Item in the leader's hand, drawn as the cursor.
     pub held: Option<Icon>,
 }
@@ -132,6 +137,9 @@ pub struct UiTables {
     /// Slot table (0x75538, 8-byte records): layout id of each slot and
     /// the sub-index of its empty-slot picture in (7, 0), 0xFF for none.
     pub slots: [(u16, u8); SLOT_TABLE_LEN],
+    /// Separator between a champion's name and title in the inventory
+    /// (string pointed to by 0x760E0).
+    pub name_sep: [u8; 4],
 }
 
 impl UiTables {
@@ -148,7 +156,18 @@ impl UiTables {
             let a = 0x75538 + 8 * k as u32;
             *s = (exe.u16_at(a)?, exe.u8_at(a + 2)?);
         }
-        Some(UiTables { champion_colour, shadow, slots })
+        let mut name_sep = [0u8; 4];
+        // Unrelocated pointers are offsets from the data object's base.
+        let raw = u32::from_le_bytes(exe.slice(0x760E0, 4)?.try_into().ok()?);
+        let sep_addr = if raw >= exe.data_base() { raw } else { exe.data_base() + raw };
+        for (k, b) in name_sep.iter_mut().enumerate() {
+            let c = exe.u8_at(sep_addr + k as u32)?;
+            if c == 0 {
+                break;
+            }
+            *b = c;
+        }
+        Some(UiTables { champion_colour, shadow, slots, name_sep })
     }
 }
 
@@ -157,7 +176,7 @@ impl Default for UiTables {
     fn default() -> Self {
         // Slot layout ids follow the zone lists; no empty-slot pictures.
         let slots = std::array::from_fn(|k| (if k < 8 { 209 + k as u16 } else { 507 + (k as u16 - 8) }, 0xFF));
-        UiTables { champion_colour: [1, 2, 3, 4], shadow: (1, 1), slots }
+        UiTables { champion_colour: [1, 2, 3, 4], shadow: (1, 1), slots, name_sep: [b' ', 0, 0, 0] }
     }
 }
 
@@ -208,13 +227,15 @@ fn colours(a: &Assets) -> [u8; 16] {
 /// Item icons and slot frames use colour key 12 (0x3815D).
 const ICON_KEY: u8 = 12;
 
-/// A slot (0x3815D): frame (1, 2, 4) for hands and the first six inventory
-/// slots, then the item icon or the slot's empty picture (7, 0, n).
+/// A slot (0x3815D): frame (1, 2, 4) for the first six inventory slots
+/// (the champion box image already holds the hand recesses), then the item
+/// icon or the slot's empty picture (7, 0, n).
 fn draw_slot(a: &mut Assets, dst: &mut Bitmap, tables: &UiTables, k: usize, icon: Option<Icon>, selected: bool) {
     let (rid, empty) = tables.slots[k];
-    if k < 14 {
+    if (8..14).contains(&k) {
         a.draw(dst, 1, 2, if selected { 6 } else { 4 }, rid, 0, Some(ICON_KEY));
     }
+
     match icon {
         Some((c, i, sub)) => {
             a.draw(dst, c, i, sub, rid, 0, Some(ICON_KEY));
@@ -249,7 +270,21 @@ pub fn inventory_panel(a: &mut Assets, font: &Font, tables: &UiTables, inv: &Inv
     a.draw(&mut b, 7, 0, 0x25, id::MOUTH, 0, Some(ICON_KEY));
     a.draw(&mut b, 1, 2, 4, id::EYE, 0, Some(ICON_KEY));
     a.draw(&mut b, 7, 0, 0x20 + u8::from(inv.container.is_some()), id::EYE, 0, Some(ICON_KEY));
-    font.draw_at(&mut b, &a.layout, id::INV_NAME, &inv.name, col[0xF], None);
+    // Name and title (0x48890): joined by the separator unless the title
+    // starts with ',', ';' or '-', drawn shadowed at 0x229.
+    let mut full = inv.name.clone();
+    if !inv.title.is_empty() {
+        if !matches!(inv.title[0], b',' | b';' | b'-') {
+            full.extend(tables.name_sep.iter().copied().take_while(|&c| c != 0));
+        }
+        full.extend_from_slice(&inv.title);
+    }
+    font.draw_at_shadowed(&mut b, &a.layout, id::INV_NAME, &full, col[0xF], 0);
+    // Name-bar buttons (0x48863): image (7, 0, sub) at each id; a set state
+    // bit selects the next sub.
+    for (sub, rid) in [(0x11u8, 0x238u16), (0x13, 0x267), (0x0F, 0x232), (0x0D, 0x234), (0x0B, 0x236)] {
+        a.draw(&mut b, 7, 0, sub, rid, 0, None);
+    }
     // Health, stamina (in tenths) and mana as "cur/max".
     for (k, &(cur, max)) in inv.stats.iter().enumerate() {
         let (cur, max) = if k == 1 { (cur / 10, max / 10) } else { (cur, max) };
@@ -362,9 +397,18 @@ pub fn compose(a: &mut Assets, font: &Font, tables: &UiTables, view: &UiView, vp
             font.draw_at(&mut s, &a.layout, id::NAME + n, &c.name, col[0xF], None);
             continue;
         }
-        a.draw(&mut s, 22, c.portrait, 0, id::PORTRAIT + n, 0, None);
-        for h in 0..2 {
-            draw_slot(a, &mut s, tables, i * 2 + h, view.hands[i][h], false);
+        // 0x48890: the portrait replaces name and hands only while this
+        // champion's inventory is open (0x487F9); otherwise the box shows
+        // the name (0x1C0BC at 0xA5 + n) and the two hand slots (0x484B0).
+        if view.inventory_open == Some(i) {
+            a.draw(&mut s, 22, c.portrait, 0, id::PORTRAIT + n, 0, None);
+        } else {
+            // Leader's name in colour 9, others in 0xF, on colour 1 (0x48DD3).
+            let fg = if view.leader == Some(i) { col[9] } else { col[0xF] };
+            font.draw_at_shadowed(&mut s, &a.layout, id::NAME + n, &c.name, fg, 0);
+            for h in 0..2 {
+                draw_slot(a, &mut s, tables, i * 2 + h, view.hands[i][h], false);
+            }
         }
         let colour = col[(tables.champion_colour[i] & 15) as usize];
         for (k, &(cur, max)) in c.bars.iter().enumerate() {
@@ -377,21 +421,28 @@ pub fn compose(a: &mut Assets, font: &Font, tables: &UiTables, view: &UiView, vp
         }
     }
 
-    // Leader bar and spell panel (0x43332, 0x43686, 0x435D3).
-    if let Some(l) = view.leader {
-        if let Some(c) = &view.champions[l] {
+    // Right panel (0x3FE68): the selected champion's name bar (0x43332)
+    // with either its action menu or its spell panel; the idle action area
+    // when nobody is selected.
+    let selected = view.menu.as_ref().map(|m| m.champion).or(view.magic);
+    if let Some(sel) = selected {
+        if let Some(c) = &view.champions[sel] {
             a.draw(&mut s, 1, 4, 0x14, id::LEADER_BAR, 0, None);
             a.draw(&mut s, 1, 4, 0x0E, id::LEADER_BAR_END, 0, None);
-            font.draw_at(&mut s, &a.layout, id::LEADER_NAME, &c.name, col[9], None);
-            a.draw(&mut s, 1, 5, c.rune_set + 1, id::SPELL_PANEL, 0, None);
-            if c.rune_set < 4 {
-                for k in 0..6u8 {
-                    let glyph = [b'`' + c.rune_set * 6 + k];
-                    font.draw_at(&mut s, &a.layout, id::RUNE_SYMBOLS + k as u16, &glyph, col[0], None);
+            let fg = if view.leader == Some(sel) { col[9] } else { col[0xF] };
+            font.draw_at(&mut s, &a.layout, id::LEADER_NAME, &c.name, fg, None);
+            if view.menu.is_none() {
+                a.draw(&mut s, 1, 5, c.rune_set + 1, id::SPELL_PANEL, 0, None);
+                if c.rune_set < 4 {
+                    for k in 0..6u8 {
+                        let glyph = [b'`' + c.rune_set * 6 + k];
+                        font.draw_at(&mut s, &a.layout, id::RUNE_SYMBOLS + k as u16, &glyph, col[0], None);
+                    }
                 }
-            }
-            for (k, &r) in c.runes.iter().enumerate() {
-                font.draw_at(&mut s, &a.layout, id::ENTERED_RUNES + k as u16, &[r], col[0], None);
+                for (k, &r) in c.runes.iter().enumerate() {
+                    font.draw_at(&mut s, &a.layout, id::ENTERED_RUNES + k as u16, &[r], col[0], None);
+                }
+                return s;
             }
         }
     }

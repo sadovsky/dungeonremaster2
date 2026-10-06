@@ -181,6 +181,7 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
     }
     v.held = icon(g.hand.held, None);
     v.inventory_open = g.hand.inventory_open;
+    v.magic = g.hand.magic;
     if let Some(ci) = g.hand.inventory_open {
         let c = &g.champions[ci];
         let mut rng = g.rng.clone();
@@ -201,6 +202,7 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
             slots: (0..30).map(|s| icon(c.inventory(s), Some(s))).collect(),
             container,
             name: c.name().into_bytes(),
+            title: c.title().into_bytes(),
             stats: [
                 (c.health().max(0) as u16, c.max_health().max(0) as u16),
                 (c.stamina().max(0) as u16, c.max_stamina().max(0) as u16),

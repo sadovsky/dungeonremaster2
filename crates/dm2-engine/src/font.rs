@@ -62,6 +62,21 @@ impl Font {
         }
     }
 
+    /// Draw text placed at layout id `rid` the way the game draws text with
+    /// the 0x4000 colour flag (0x1C0BC): one row lower than `draw_at`, over a
+    /// drop shadow at (+1, +1) in `shadow`. Matches captures of the original.
+    pub fn draw_at_shadowed(&self, dst: &mut Bitmap, layout: &Layout, rid: u16, text: &[u8], fg: u8, shadow: u8) {
+        let (w, h) = Self::measure(text);
+        if w == 0 {
+            return;
+        }
+        if let Some(p) = layout.resolve(rid, w, h, (w, h)) {
+            let (x, y) = (p.x - p.skip_x, p.y - p.skip_y + 1);
+            self.draw(dst, x + 1, y + 1, text, shadow, None);
+            self.draw(dst, x, y, text, fg, None);
+        }
+    }
+
     /// Draw text placed at layout id `rid` (0x1C021: measure, then place).
     pub fn draw_at(&self, dst: &mut Bitmap, layout: &Layout, rid: u16, text: &[u8], fg: u8, bg: Option<u8>) {
         let (w, h) = Self::measure(text);
