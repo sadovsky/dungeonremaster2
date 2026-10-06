@@ -16,7 +16,10 @@ pub struct Assets {
     pub dungeon: Dungeon,
     pub layout: Layout,
     pub palette: [[u8; 3]; 256],
+    /// Colour ramps for depth lighting (None if the table is missing).
+    pub light: Option<crate::viewport::light::Light>,
     sprites: HashMap<(u8, u8, u8), Option<Rc<Sprite>>>,
+    scaled: HashMap<(u8, u8, u8, i32, i32), Option<Rc<Sprite>>>,
 }
 
 #[derive(Debug)]
@@ -47,7 +50,26 @@ impl Assets {
         let dungeon = Dungeon::parse(&read("DUNGEON.DAT")?).map_err(|e| LoadError::Bad(format!("DUNGEON.DAT: {e:?}")))?;
         let layout = Layout::load(&gdat).ok_or_else(|| LoadError::Bad("layout table missing".into()))?;
         let palette = image::master_palette(&gdat).ok_or_else(|| LoadError::Bad("palette missing".into()))?;
-        Ok(Assets { gdat, dungeon, layout, palette, sprites: HashMap::new() })
+        let light = crate::viewport::light::Light::load(&gdat);
+        Ok(Assets { gdat, dungeon, layout, palette, light, sprites: HashMap::new(), scaled: HashMap::new() })
+    }
+
+    /// True if image (cat, idx, 1, sub) exists (0x3C92E).
+    pub fn has_image(&self, cat: u8, idx: u8, sub: u8) -> bool {
+        self.gdat.record(dm2_formats::gdat::Key::new(cat, idx, 1, sub)).is_some()
+    }
+
+    /// Image scaled by (sx, sy) 64ths, cached like the original's scaled-copy cache.
+    pub fn sprite_scaled(&mut self, cat: u8, idx: u8, sub: u8, sx: i32, sy: i32) -> Option<Rc<Sprite>> {
+        if sx == 64 && sy == 64 {
+            return self.sprite(cat, idx, sub);
+        }
+        if let Some(s) = self.scaled.get(&(cat, idx, sub, sx, sy)) {
+            return s.clone();
+        }
+        let s = self.sprite(cat, idx, sub).and_then(|s| s.scaled(sx, sy)).map(Rc::new);
+        self.scaled.insert((cat, idx, sub, sx, sy), s.clone());
+        s
     }
 
     pub fn sprite(&mut self, cat: u8, idx: u8, sub: u8) -> Option<Rc<Sprite>> {

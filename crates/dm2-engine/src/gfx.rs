@@ -99,10 +99,56 @@ impl Sprite {
         Some(Sprite { w, h, px, cmap, off })
     }
 
+    /// Nearest-neighbour scaled copy (SKULL.EXE 0x1424B for 8-bit sources,
+    /// 0x1410D for 4-bit; docs/04 "Scaling"). Scales are in 64ths. The
+    /// drawing offset is scaled with the same rounding. None if the result
+    /// would be empty.
+    pub fn scaled(&self, sx: i32, sy: i32) -> Option<Sprite> {
+        let sc = |v: i32, s: i32| (v * s + s / 2) >> 6;
+        let (w, h) = (self.w as i32, self.h as i32);
+        let (nw, nh) = (sc(w, sx), sc(h, sy));
+        if nw <= 0 || nh <= 0 {
+            return None;
+        }
+        let t = (h << 7) / nh;
+        let s = (w << 7) / nw;
+        let rows: Vec<usize> = (0..nh).map(|j| (((t / 2 + j * t) >> 7).min(h - 1)) as usize).collect();
+        let cols: Vec<usize> = (0..nw)
+            .map(|i| {
+                let c = if self.cmap.is_some() { (s / 2 + i * s) >> 7 } else { (s + 2 * s * i) >> 8 };
+                c.min(w - 1) as usize
+            })
+            .collect();
+        let mut px = Vec::with_capacity((nw * nh) as usize);
+        for &r in &rows {
+            px.extend(cols.iter().map(|&c| self.px[r * self.w + c]));
+        }
+        Some(Sprite {
+            w: nw as usize,
+            h: nh as usize,
+            px,
+            cmap: self.cmap,
+            off: (sc(self.off.0, sx), sc(self.off.1, sy)),
+        })
+    }
+
     /// Copy the visible part described by a placement into `dst`.
     /// `flip` bit 0 mirrors horizontally, bit 1 vertically. Source values
     /// equal to `key` are transparent.
     pub fn blit(&self, dst: &mut Bitmap, p: &crate::layout::Placement, flip: u8, key: Option<u8>) {
+        self.blit_mapped(dst, p, flip, key, None)
+    }
+
+    /// As `blit`, then pass each output palette index through `light`
+    /// (a 256-entry remap built for the cell's depth).
+    pub fn blit_mapped(
+        &self,
+        dst: &mut Bitmap,
+        p: &crate::layout::Placement,
+        flip: u8,
+        key: Option<u8>,
+        light: Option<&[u8; 256]>,
+    ) {
         for row in 0..p.h {
             let dy = p.y + row;
             if dy < 0 || dy >= dst.h as i32 {
@@ -125,10 +171,13 @@ impl Sprite {
                 if Some(v) == key {
                     continue;
                 }
-                let c = match &self.cmap {
+                let mut c = match &self.cmap {
                     Some(m) => m[(v & 15) as usize],
                     None => v,
                 };
+                if let Some(l) = light {
+                    c = l[c as usize];
+                }
                 dst.px[dy as usize * dst.w + dx as usize] = c;
             }
         }
