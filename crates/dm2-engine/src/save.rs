@@ -68,6 +68,8 @@ pub enum SaveError {
     BadHeader,
     Dungeon(dm2_formats::dungeon::Error),
     Truncated,
+    /// Rebuilding the objects ran out of free records of a type.
+    NoFreeRecord,
 }
 
 impl std::fmt::Display for SaveError {
@@ -171,9 +173,19 @@ pub struct BitWriter {
     pub out: Vec<u8>,
     acc: u8,
     n: u8,
+    /// Optional field labels at bit positions, for comparing streams.
+    pub trace: Option<Vec<(usize, String)>>,
 }
 
 impl BitWriter {
+    /// Label the field that starts here (only when tracing).
+    pub fn mark(&mut self, label: impl FnOnce() -> String) {
+        if let Some(t) = self.trace.as_mut() {
+            let p = self.out.len() * 8 + self.n as usize;
+            t.push((p, label()));
+        }
+    }
+
     pub fn bit(&mut self, b: bool) {
         self.acc = self.acc << 1 | b as u8;
         self.n += 1;
@@ -295,6 +307,12 @@ pub fn prepare(g: &mut GameState) {
 /// Serialise a game. Works on a prepared copy, so `g` is left as it is; use
 /// `save` to also prepare the live game the way the original does.
 pub fn to_bytes(g: &GameState, name: &str) -> Result<Vec<u8>, SaveError> {
+    to_bytes_traced(g, name, false).map(|(b, _, _)| b)
+}
+
+/// Like `to_bytes`, also returning where the bit stream starts in the file
+/// and (when `trace`) the field labels by bit position within the stream.
+pub fn to_bytes_traced(g: &GameState, name: &str, trace: bool) -> Result<(Vec<u8>, usize, Vec<(usize, String)>), SaveError> {
     let mut g = g.clone();
     prepare(&mut g);
     let data = g.data.clone().ok_or(SaveError::NoTables)?;
@@ -311,51 +329,65 @@ pub fn to_bytes(g: &GameState, name: &str) -> Result<Vec<u8>, SaveError> {
     // 2. Dungeon snapshot.
     out.extend_from_slice(&g.dungeon.to_snapshot());
     // 3. Bit-packed globals, champions and timers.
-    let mut w = BitWriter::default();
+    let stream_start = out.len();
+    let mut w = BitWriter { trace: trace.then(Vec::new), ..Default::default() };
     let events = g.timeline.slot_events();
+    w.mark(|| "globals".into());
     w.put(&globals_record(&g, events.len()), &t.globals);
+    w.mark(|| "flags".into());
     for b in g.legacy.flags {
         w.put(&[b], &t.all[..1]);
     }
+    w.mark(|| "byte vars".into());
     for b in g.legacy.byte_vars {
         w.put(&[b], &t.all[..1]);
     }
+    w.mark(|| "word vars".into());
     for v in g.legacy.word_vars {
         w.put(&v.to_le_bytes(), &t.all[..2]);
     }
-    for c in &g.champions {
+    for (i, c) in g.champions.iter().enumerate() {
+        w.mark(|| format!("champion {i}"));
         w.put(&c.raw, &t.champion);
     }
+    w.mark(|| "misc".into());
     let mut misc = g.legacy.misc;
     misc[3] = g.party_status.counter_0b;
     misc[4] = g.party_status.haste;
     w.put(&misc, &t.misc);
-    for (_, ev) in &events {
+    for (i, (_, ev)) in events.iter().enumerate() {
+        w.mark(|| format!("timer {i} type {:#x}", ev.kind));
         w.put(&ev.to_bytes(), &t.timer);
     }
     // 4. Dynamic objects.
     let mut d = Dynamic::new(&g, &t, &data);
-    for c in &g.champions {
+    for (i, c) in g.champions.iter().enumerate() {
         for slot in 0..INVENTORY_SLOTS {
+            w.mark(|| format!("champion {i} slot {slot}"));
             d.chain(&mut w, c.inventory(slot), false, false);
         }
     }
+    w.mark(|| "leader hand".into());
     d.chain(&mut w, g.hand.held, false, false);
-    for (_, ev) in &events {
+    for (i, (_, ev)) in events.iter().enumerate() {
         if TIMERS_HOLDING_THINGS.contains(&ev.kind) {
+            w.mark(|| format!("timer {i} held thing"));
             d.chain(&mut w, ev.w8(), false, false);
         }
     }
     d.squares(&mut w);
+    w.mark(|| "cross references".into());
     d.cross_references(&mut w);
+    w.mark(|| "end".into());
     w.flush();
     out.extend_from_slice(&w.out);
+    let labels = w.trace.take().unwrap_or_default();
     // Engine trailer.
     let trailer = engine_trailer(&g, &events);
     out.extend_from_slice(&trailer);
     out.extend_from_slice(&(trailer.len() as u32).to_le_bytes());
     out.extend_from_slice(TRAILER_MAGIC);
-    Ok(out)
+    Ok((out, stream_start, labels))
 }
 
 /// Save to `path` (SKSAVEn.DAT). The live game is prepared first, as the
@@ -367,7 +399,20 @@ pub fn save(g: &mut GameState, path: &Path, name: &str) -> Result<(), SaveError>
     if path.exists() {
         let _ = std::fs::rename(path, path.with_extension("BAK"));
     }
-    std::fs::write(path, bytes)?;
+    std::fs::write(path, &bytes)?;
+    adopt_loaded(g, &bytes)
+}
+
+/// Loading renumbers dynamic things into stream order. So that continuing
+/// after a save matches loading it, take the dungeon, champions, hand and
+/// timers from the bytes just written.
+fn adopt_loaded(g: &mut GameState, bytes: &[u8]) -> Result<(), SaveError> {
+    let data = g.data.clone().ok_or(SaveError::NoTables)?;
+    let l = from_bytes(bytes, data, g.creature_data.clone())?;
+    g.dungeon = l.dungeon;
+    g.champions = l.champions;
+    g.hand.held = l.hand.held;
+    g.timeline = l.timeline;
     Ok(())
 }
 
@@ -394,6 +439,39 @@ fn globals_record(g: &GameState, timers: usize) -> [u8; GLOBALS_LEN] {
     r[0x16..0x1A].copy_from_slice(&g.party_status.last_attacked.to_le_bytes());
     r[0x1A..0x1E].copy_from_slice(&g.party_status.last_moved.to_le_bytes());
     r
+}
+
+/// Creature type flag bit 0 selects the alternative mask (0x1F9A3).
+fn creature_alt(g: &GameState, d: Option<&CreatureData>, t: ThingRef) -> bool {
+    let Some(d) = d else { return false };
+    creatures::type_info(g, d, creatures::creature_type(g, t)).is_some_and(|(i, _)| i.raw[0] & 1 != 0)
+}
+
+/// A money container (0x1F2AB): state bits clear and a (20, idx, 5, 0x40)
+/// text entry for its item index.
+fn is_money_container(g: &GameState, data: &GameData, t: ThingRef) -> bool {
+    if g.dungeon.record_word(t, 2).unwrap_or(0) & 6 != 0 {
+        return false;
+    }
+    let db = data.item_db(&g.dungeon);
+    db.key(t).is_some_and(|(_, idx)| data.gdat.lookup(Key::new(0x14, idx, 5, 0x40)).is_some())
+}
+
+/// A teleporter square that is a map-edge link saves no bits, and its
+/// list is written only from the side whose partner map has the higher
+/// index (0x34E73 / 0x35B97). Returns (mask, skip_list).
+fn square_mask(g: &GameState, map: usize, x: i32, y: i32) -> (u8, bool) {
+    let sq = g.dungeon.square(map, x, y);
+    match sq.element() {
+        Element::Pit => (0x08, false),
+        Element::Door => (0x07, false),
+        Element::TrickWall => (0x04, false),
+        Element::Teleporter => match crate::movement::edge_link(g, map, x, y) {
+            Some(link) => (0, link.map < map),
+            None => (0x08, false),
+        },
+        _ => (0, false),
+    }
 }
 
 /// The thing-chain and square writer (0x3491A, 0x34E73, 0x34797).
@@ -438,20 +516,12 @@ impl<'a> Dynamic<'a> {
         self.g.dungeon.record_word(t, n).unwrap_or(0xFFFE)
     }
 
-    /// Creature type flag bit 0 selects the alternative mask (0x1F9A3).
     fn creature_alt(&self, t: ThingRef) -> bool {
-        let Some(d) = &self.creatures else { return false };
-        creatures::type_info(self.g, d, creatures::creature_type(self.g, t)).is_some_and(|(i, _)| i.raw[0] & 1 != 0)
+        creature_alt(self.g, self.creatures.as_deref(), t)
     }
 
-    /// A money container (0x1F2AB): state bits clear and a (20, idx, 5, 0x40)
-    /// text entry for its item index.
     fn is_money_container(&self, t: ThingRef) -> bool {
-        if self.word(t, 2) & 6 != 0 {
-            return false;
-        }
-        let db = self.data.item_db(&self.g.dungeon);
-        db.key(t).is_some_and(|(_, idx)| self.data.gdat.lookup(Key::new(0x14, idx, 5, 0x40)).is_some())
+        is_money_container(self.g, self.data, t)
     }
 
     /// Write a thing chain (0x3491A). `cells`: write each thing's cell;
@@ -464,6 +534,7 @@ impl<'a> Dynamic<'a> {
             }
             let t = ThingRef(r);
             let kind = t.kind() as usize;
+            w.mark(|| format!("  thing {:?} #{}", t.kind(), t.index()));
             if kind > 3 {
                 w.bit(true);
                 w.put(&[kind as u8], &[0x0F]);
@@ -486,6 +557,7 @@ impl<'a> Dynamic<'a> {
         }
         // Terminator: always for a whole list, and for an empty single slot.
         if whole || r == 0xFFFF {
+            w.mark(|| "  end of chain".into());
             w.bit(false);
         }
     }
@@ -588,22 +660,8 @@ impl<'a> Dynamic<'a> {
             for x in 0..m.width as i32 {
                 for y in 0..m.height as i32 {
                     let sq = g.dungeon.square(mi, x, y);
-                    let mut skip_list = false;
-                    let mask = match sq.element() {
-                        Element::Pit => 0x08,
-                        Element::Door => 0x07,
-                        Element::TrickWall => 0x04,
-                        Element::Teleporter => match crate::movement::edge_link(g, mi, x, y) {
-                            // A linked edge's things are written from the
-                            // lower-numbered map's side only.
-                            Some(link) => {
-                                skip_list = link.map < mi;
-                                0
-                            }
-                            None => 0x08,
-                        },
-                        _ => 0,
-                    };
+                    let (mask, skip_list) = square_mask(g, mi, x, y);
+                    w.mark(|| format!("square map {mi} ({x},{y}) {:?}", sq.element()));
                     if mask != 0 {
                         w.put(&[sq.0], &[mask]);
                     }
@@ -810,6 +868,7 @@ pub fn from_bytes(b: &[u8], data: Rc<GameData>, creatures: Option<Rc<CreatureDat
     }
     g.legacy.name = String::from_utf8_lossy(&name_bytes[..name_end]).into_owned();
 
+    let header_marker = u16::from_le_bytes([b[0], b[1]]);
     let mut r = BitReader::new(&b[stream_start..]);
     let mut globals = [0u8; GLOBALS_LEN];
     r.get(&mut globals, &t.globals)?;
@@ -859,11 +918,35 @@ pub fn from_bytes(b: &[u8], data: Rc<GameData>, creatures: Option<Rc<CreatureDat
     g.leader = (leader != 0xFFFF && (leader as usize) < g.champions.len()).then_some(leader as usize);
     g.party_status.last_attacked = g32(0x16);
     g.party_status.last_moved = g32(0x1A);
-    // The dynamic object part repeats what the snapshot already holds (the
-    // original rebuilds its lists from it); the snapshot is used as is.
+    // Rebuild the dynamic objects from the stream, as the original does.
+    rebuild::run(&mut g, &mut r, &t, header_marker)?;
 
     if let Some(tr) = trailer {
+        // The trailer's exact champion records and timers carry the thing
+        // numbers from before the rebuild; keep the rebuilt references.
+        let inv: Vec<Vec<u16>> = g.champions.iter().map(|c| (0..INVENTORY_SLOTS).map(|s| c.inventory(s)).collect()).collect();
+        let held = g.hand.held;
+        let rebuilt = g.timeline.slot_events();
         apply_trailer(&mut g, tr)?;
+        for (c, slots) in g.champions.iter_mut().zip(&inv) {
+            for (s, &v) in slots.iter().enumerate() {
+                c.set_inventory(s, v);
+            }
+        }
+        g.hand.held = held;
+        let now = g.timeline.slot_events();
+        if now.len() == rebuilt.len() {
+            for ((slot, e), (_, before)) in now.into_iter().zip(rebuilt) {
+                if EV_MISSILES.contains(&e.kind) {
+                    g.timeline.modify(slot, |e| {
+                        e.x = before.x;
+                        e.y = before.y;
+                    });
+                } else if e.kind == EV_CLOUD || TIMERS_HOLDING_THINGS.contains(&e.kind) {
+                    g.timeline.modify(slot, |e| e.set_w8(before.w8()));
+                }
+            }
+        }
     }
     g.creature_map_seen = None;
     Ok(g)
@@ -897,6 +980,8 @@ fn trailer_slice(stream: &[u8]) -> Option<&[u8]> {
     let start = (n - 8).checked_sub(len)?;
     Some(&stream[start..n - 8])
 }
+
+mod rebuild;
 
 #[cfg(test)]
 mod tests;

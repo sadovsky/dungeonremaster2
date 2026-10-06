@@ -76,22 +76,35 @@ fn tables_load_from_skull_exe() {
     assert!(t.types[1].is_none());
 }
 
+/// The bit stream of a save: after the snapshot, before the trailer.
+fn stream(b: &[u8], snap_len: usize) -> &[u8] {
+    let n = b.len();
+    let len = u32::from_le_bytes([b[n - 8], b[n - 7], b[n - 6], b[n - 5]]) as usize;
+    &b[HEADER_LEN + snap_len..n - 8 - len]
+}
+
 #[test]
 fn byte_level_round_trip() {
     let Some((mut g, data, cd)) = new_game() else { return };
     play(&mut g, 0, 300);
     let a = to_bytes(&g, "ROUND TRIP").unwrap();
     eprintln!("save size {} bytes, timers {}", a.len(), g.timeline.len());
-    let g2 = from_bytes(&a, data, cd).unwrap();
-    assert_eq!(g2.legacy.name, "ROUND TRIP");
-    let b = to_bytes(&g2, "ROUND TRIP").unwrap();
-    assert_eq!(a.len(), b.len());
-    assert!(a == b, "re-saving a loaded game changed the file");
     // The snapshot section is the live dungeon (after preparation).
     let mut p = g.clone();
     prepare(&mut p);
     let snap = p.dungeon.to_snapshot();
     assert_eq!(&a[HEADER_LEN..HEADER_LEN + snap.len()], &snap[..]);
+    // Loading renumbers dynamic things into stream order, as the original
+    // does (0x35B97), so the snapshot may change once; the stream may not.
+    let g2 = from_bytes(&a, data.clone(), cd.clone()).unwrap();
+    assert_eq!(g2.legacy.name, "ROUND TRIP");
+    let b = to_bytes(&g2, "ROUND TRIP").unwrap();
+    assert_eq!(a.len(), b.len());
+    assert!(stream(&a, snap.len()) == stream(&b, snap.len()), "re-saving a loaded game changed the stream");
+    // After one load the numbering is stable: load -> write is a fixpoint.
+    let g3 = from_bytes(&b, data, cd).unwrap();
+    let c = to_bytes(&g3, "ROUND TRIP").unwrap();
+    assert!(b == c, "a second load and save changed the file");
 }
 
 #[test]
@@ -130,14 +143,21 @@ fn reads_a_save_without_the_engine_trailer() {
     let n = b.len();
     let len = u32::from_le_bytes([b[n - 8], b[n - 7], b[n - 6], b[n - 5]]) as usize;
     b.truncate(n - 8 - len);
-    let d = from_bytes(&b, data, cd).unwrap();
+    let full = to_bytes(&g, "DOS").unwrap();
+    let d = from_bytes(&b, data.clone(), cd.clone()).unwrap();
+    // The same save with its trailer goes through the same rebuild.
+    let e = from_bytes(&full, data, cd).unwrap();
     assert_eq!(d.party, g.party);
     assert_eq!(d.champions.len(), g.champions.len());
     assert_eq!(d.leader, g.leader);
     assert_eq!(d.tick & 0xFF_FFFF, g.tick & 0xFF_FFFF);
-    assert_eq!(d.dungeon.to_snapshot(), g.dungeon.to_snapshot());
+    assert_eq!(d.dungeon.to_snapshot(), e.dungeon.to_snapshot());
+    assert_eq!(d.hand.held, e.hand.held);
+    for (x, y) in d.champions.iter().zip(&e.champions) {
+        assert_eq!((0..30).map(|s| x.inventory(s)).collect::<Vec<_>>(), (0..30).map(|s| y.inventory(s)).collect::<Vec<_>>());
+    }
     // Timers come back with the fields the original keeps.
-    let (a, b) = (g.timeline.slot_events(), d.timeline.slot_events());
+    let (a, b) = (e.timeline.slot_events(), d.timeline.slot_events());
     assert_eq!(a.len(), b.len());
     for ((_, x), (_, y)) in a.iter().zip(&b) {
         assert_eq!((x.tick, x.kind, x.x, x.y, x.b8, x.b9), (y.tick, y.kind, y.x, y.y, y.b8, y.b9));
@@ -145,5 +165,27 @@ fn reads_a_save_without_the_engine_trailer() {
     // Champion names survive the champion mask.
     for (x, y) in g.champions.iter().zip(&d.champions) {
         assert_eq!(x.name(), y.name());
+    }
+}
+
+/// Saves written by the DOS game itself (any SKSAVEn.DAT without a remake
+/// trailer in the user's DATA directory) reload and rewrite with a
+/// bit-identical stream. Skips when there are none.
+#[test]
+fn original_saves_rewrite_with_identical_streams() {
+    let Some((data, cd, _)) = data() else { return };
+    for slot in 0..10 {
+        let path = slot_path(&default_data_dir(), slot);
+        let Ok(orig) = std::fs::read(&path) else { continue };
+        if trailer_slice(&orig[HEADER_LEN..]).is_some() {
+            continue;
+        }
+        let g = from_bytes(&orig, data.clone(), cd.clone()).unwrap();
+        let mine = to_bytes(&g, &g.legacy.name).unwrap();
+        let snap_len = g.dungeon.to_snapshot().len();
+        assert!(
+            stream(&mine, snap_len) == &orig[HEADER_LEN + snap_len..],
+            "slot {slot}: the remake's stream differs from the original's"
+        );
     }
 }
