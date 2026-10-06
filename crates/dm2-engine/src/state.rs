@@ -28,6 +28,11 @@ pub enum Command {
     Move(crate::world::Move),
     TurnLeft,
     TurnRight,
+    /// An interface command number from the zone or key tables (docs/10),
+    /// handled by `hand::dispatch`.
+    Ui(u16),
+    /// Command 0x50: a click in the 3D view.
+    Viewport(crate::hand::ViewRegion),
 }
 
 pub struct GameState {
@@ -68,6 +73,8 @@ pub struct GameState {
     pub creature_data: Option<std::rc::Rc<crate::creatures::data::CreatureData>>,
     /// Map whose creatures were last activated for the party.
     pub creature_map_seen: Option<usize>,
+    /// The leader's hand, open inventory and action menu (docs/10).
+    pub hand: crate::hand::HandState,
     commands: std::collections::VecDeque<Command>,
 }
 
@@ -99,6 +106,7 @@ impl GameState {
             creature_slots: Vec::new(),
             creature_data: None,
             creature_map_seen: None,
+            hand: Default::default(),
             commands: Default::default(),
         }
     }
@@ -153,6 +161,12 @@ impl GameState {
         match c {
             Command::TurnLeft => self.party.turn_left(),
             Command::TurnRight => self.party.turn_right(),
+            Command::Ui(n) => {
+                crate::hand::dispatch(self, n);
+            }
+            Command::Viewport(r) => {
+                crate::hand::viewport_click(self, r);
+            }
             Command::Move(m) => {
                 if self.tick < self.move_ready {
                     return;

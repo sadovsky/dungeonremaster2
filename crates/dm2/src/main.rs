@@ -3,7 +3,10 @@
 //! Usage:
 //!   dm2 [DATA_DIR]                          play (default data: $DM2_DATA,
 //!                                           then original/dumast2/DATA)
-//!   dm2 --screenshot OUT.png [MAP X Y DIR]  render one game frame headless
+//!   dm2 --screenshot OUT.png [MAP X Y DIR] [--ticks N] [--cmd C]...
+//!                                           render one game frame headless,
+//!                                           after N game ticks and the given
+//!                                           interface commands (hex, e.g. 0x07)
 //!   dm2 --screenshot-title OUT.png [SUB]    render title image (5,0,1,SUB) headless
 //!
 //! Controls follow the original's tables (read from SKULL.EXE): keypad
@@ -25,9 +28,11 @@ use dm2_engine::font::Font;
 use dm2_engine::gfx::{Bitmap, SCREEN_H, SCREEN_W};
 use dm2_engine::input::{self, Input, Screen, UiState, BUTTON_LEFT, BUTTON_RIGHT, MOD_ALT, MOD_CTRL, MOD_SHIFT};
 use dm2_engine::state::{Command, GameState};
-use dm2_engine::ui::{self, ChampionView, UiTables, UiView};
+use dm2_engine::hand;
+use dm2_engine::ui::{self, ChampionView, Icon, InventoryView, MenuView, UiTables, UiView};
 use dm2_engine::viewport;
 use dm2_engine::world::{Move, PartyPos};
+use dm2_formats::dungeon::ThingRef;
 use macroquad::prelude::*;
 
 const SCALE: i32 = 3;
@@ -135,6 +140,54 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
         });
     }
     v.leader = g.leader;
+    let icon = |t: u16| -> Option<Icon> {
+        if t == 0xFFFF {
+            return None;
+        }
+        hand::item_key(g, ThingRef(t)).map(|(c, i)| (c, i, ITEM_ICON))
+    };
+    for (i, c) in g.champions.iter().take(4).enumerate() {
+        v.hands[i] = [icon(c.inventory(0)), icon(c.inventory(1))];
+        v.busy[i] = [hand::hand_busy(g, i, 0), hand::hand_busy(g, i, 1)];
+        v.cells[i] = (c.cell() + 4 - g.party.dir) & 3;
+    }
+    v.held = icon(g.hand.held);
+    v.inventory_open = g.hand.inventory_open;
+    if let Some(ci) = g.hand.inventory_open {
+        let c = &g.champions[ci];
+        let mut rng = g.rng.clone();
+        let container = hand::open_container(g).map(|_| {
+            (hand::CONTAINER_FIRST..hand::CONTAINER_FIRST + hand::CONTAINER_CELLS)
+                .map(|s| icon(hand::slot_item(g, ci, s)))
+                .collect()
+        });
+        let info = (g.hand.show_info && g.hand.held != 0xFFFF)
+            .then(|| hand::item_key(g, ThingRef(g.hand.held)))
+            .flatten()
+            .and_then(|(cat, idx)| {
+                let gd = g.data.as_ref()?;
+                dm2_engine::font::text(&gd.gdat, cat, idx, 24, &Default::default())
+            });
+        v.inventory = Some(InventoryView {
+            champion: ci,
+            slots: (0..30).map(|s| icon(c.inventory(s))).collect(),
+            container,
+            name: c.name().into_bytes(),
+            stats: [
+                (c.health().max(0) as u16, c.max_health().max(0) as u16),
+                (c.stamina().max(0) as u16, c.max_stamina().max(0) as u16),
+                (c.mana().max(0) as u16, c.max_mana().max(0) as u16),
+            ],
+            food: c.food(),
+            water: c.water(),
+            poisoned: c.poison_pool() > 0,
+            load: (c.load(), dm2_engine::champions::max_load(c, &mut rng)),
+            info,
+        });
+    }
+    if let Some(m) = &g.hand.menu {
+        v.menu = Some(MenuView { champion: m.champion, names: m.actions.iter().map(|a| a.name.clone().into_bytes()).collect() });
+    }
     if demo && g.champions.is_empty() {
         v.champions[0] = Some(ChampionView {
             name: b"TESTER".to_vec(),
@@ -147,17 +200,34 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
     v
 }
 
+/// Sub-index of an item's 16×16 icon (0x37F76 default).
+const ITEM_ICON: u8 = 24;
+
 fn ui_state(screen: Screen, view: &UiView) -> UiState {
     UiState {
         screen,
         champions: std::array::from_fn(|i| view.champions[i].is_some()),
         inventory_open: view.inventory_open,
         leader: view.leader,
+        menu_choices: view.menu.as_ref().map_or(0, |m| m.names.len()),
+        container_open: view.inventory.as_ref().is_some_and(|i| i.container.is_some()),
     }
 }
 
+/// Viewport inputs from the simulation: each active creature's frame.
+fn view_extras(g: &GameState) -> viewport::ViewExtras {
+    let mut ex = viewport::ViewExtras { tick: g.tick, ..Default::default() };
+    for slot in g.creature_slots.iter().flatten() {
+        if let Some(cv) = creatures::view(g, slot.thing) {
+            ex.creature_frames.insert(slot.thing.0 & 0x3FFF, cv.frame);
+        }
+    }
+    ex
+}
+
 fn game_frame(d: &mut Data, g: &GameState, view: &UiView) -> Bitmap {
-    let vp = viewport::render(&mut d.assets, &g.dungeon, g.party.map, g.party.x, g.party.y, g.party.dir);
+    let ex = view_extras(g);
+    let vp = viewport::render_ex(&mut d.assets, &g.dungeon, g.party.map, g.party.x, g.party.y, g.party.dir, &ex);
     ui::compose(&mut d.assets, &d.font, &d.tables, view, &vp)
 }
 
@@ -173,9 +243,32 @@ fn screenshot(args: &[String], title: bool) {
         ui::title(&mut d.assets, f)
     } else {
         let mut g = new_game(&d);
-        if args.len() >= 5 {
-            let n: Vec<i32> = args[1..5].iter().map(|s| s.parse().expect("MAP X Y DIR must be numbers")).collect();
+        // Positional MAP X Y DIR, then --ticks N and --cmd C options.
+        let pos: Vec<&String> = args[1..].iter().take_while(|a| !a.starts_with("--")).collect();
+        if pos.len() >= 4 {
+            let n: Vec<i32> = pos[..4].iter().map(|s| s.parse().expect("MAP X Y DIR must be numbers")).collect();
             g.party = PartyPos { map: n[0] as usize, x: n[1], y: n[2], dir: n[3] as u8 };
+        }
+        let mut ticks = 0u32;
+        let mut cmds = Vec::new();
+        let mut it = args[1..].iter().skip_while(|a| !a.starts_with("--"));
+        while let Some(a) = it.next() {
+            let v = it.next().map(String::as_str).unwrap_or("0");
+            let num = |v: &str| u32::from_str_radix(v.trim_start_matches("0x"), if v.starts_with("0x") { 16 } else { 10 });
+            match a.as_str() {
+                "--ticks" => ticks = num(v).expect("--ticks N"),
+                "--cmd" => cmds.push(num(v).expect("--cmd C") as u16),
+                _ => panic!("unknown option {a}"),
+            }
+        }
+        for c in cmds {
+            if let Some(gc) = input::game_command(c) {
+                g.push_command(gc);
+            }
+            g.advance();
+        }
+        for _ in 0..ticks {
+            g.advance();
         }
         let demo = std::env::var_os("DM2_DEMO_CHAMPION").is_some();
         game_frame(&mut d, &g, &ui_view(&g, demo))
@@ -262,6 +355,7 @@ async fn play(args: Vec<String>) {
         let view = ui_view(&game, demo);
         // Commands from the original key and zone tables.
         let mut cmds: Vec<u16> = Vec::new();
+        let mut game_cmds: Vec<Command> = Vec::new();
         if let Some(inp) = &d.input {
             let st = ui_state(screen, &view);
             for k in get_keys_pressed() {
@@ -276,7 +370,13 @@ async fn play(args: Vec<String>) {
             );
             for (b, mask) in [(MouseButton::Left, BUTTON_LEFT), (MouseButton::Right, BUTTON_RIGHT)] {
                 if is_mouse_button_pressed(b) {
-                    cmds.extend(inp.click(&d.assets.layout, &st, sx, sy, mask));
+                    if let Some(c) = inp.click(&d.assets.layout, &st, sx, sy, mask) {
+                        if c == 0x50 && screen == Screen::Game {
+                            game_cmds.extend(input::click_command(&d.assets.layout, c, sx, sy));
+                        } else {
+                            cmds.push(c);
+                        }
+                    }
                 }
             }
         } else if screen == Screen::Title && is_key_pressed(KeyCode::Enter) {
@@ -298,6 +398,9 @@ async fn play(args: Vec<String>) {
                 }
                 _ => {}
             }
+        }
+        for c in game_cmds {
+            game.push_command(c);
         }
         if screen == Screen::Game {
             for (k, c) in EXTRA_KEYS {
@@ -328,10 +431,17 @@ async fn play(args: Vec<String>) {
             debug = !debug;
         }
 
-        let frame = match screen {
+        let mut frame = match screen {
             Screen::Title => ui::title(&mut d.assets, TITLE_FRAME),
             _ => game_frame(&mut d, &game, &view),
         };
+        // The held item follows the mouse (the original's cursor, 0x7FBB4).
+        let (mx, my) = mouse_position();
+        let (cx, cy) = ((mx / screen_width() * SCREEN_W as f32) as i32, (my / screen_height() * SCREEN_H as f32) as i32);
+        if screen == Screen::Game {
+            ui::draw_cursor(&mut d.assets, &mut frame, view.held, cx, cy);
+        }
+        show_mouse(view.held.is_none() || screen != Screen::Game);
         for (i, &c) in frame.px.iter().enumerate() {
             let [r, g, b] = d.assets.palette[c as usize];
             rgba[i * 4..i * 4 + 4].copy_from_slice(&[r, g, b, 255]);
