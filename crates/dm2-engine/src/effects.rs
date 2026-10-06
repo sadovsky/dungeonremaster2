@@ -16,6 +16,8 @@ pub enum Effect {
     PartyFell { falls: u16 },
     /// A creature group was damaged by the dungeon (doors, falls, bumps).
     CreatureDamaged { thing: ThingRef, amount: u16 },
+    /// A creature group's damage reached its HP; it plays its death action.
+    CreatureDied { thing: ThingRef, map: usize, x: i32, y: i32 },
     /// A shooter actuator fired (missile creation belongs to the combat code).
     Shoot { map: usize, x: i32, y: i32, cell: u8, dir: u8, actuator: ThingRef },
     /// End-game actuator (0x12).

@@ -68,8 +68,14 @@ pub struct Champion {
 }
 
 impl Default for Champion {
+    /// A blank record. Inventory slots hold EMPTY, not 0: thing reference 0
+    /// is a real thing, and dropping it on death would corrupt a list.
     fn default() -> Self {
-        Champion { raw: [0; RECORD_SIZE] }
+        let mut c = Champion { raw: [0; RECORD_SIZE] };
+        for slot in 0..INVENTORY_SLOTS {
+            c.set_inventory(slot, EMPTY);
+        }
+        c
     }
 }
 

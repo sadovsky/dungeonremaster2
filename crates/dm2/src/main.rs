@@ -17,7 +17,9 @@ mod png;
 use std::path::{Path, PathBuf};
 
 use dm2_engine::assets::{self, Assets};
+use dm2_engine::creatures::{self, data::CreatureData};
 use dm2_engine::data::GameData;
+use dm2_formats::gdat::Gdat;
 use dm2_engine::exe::Exe;
 use dm2_engine::font::Font;
 use dm2_engine::gfx::{Bitmap, SCREEN_H, SCREEN_W};
@@ -56,15 +58,21 @@ struct Data {
     /// Archive and executable tables the simulation needs; None if
     /// SKULL.EXE is missing (the game then runs without champions).
     game_data: Option<std::rc::Rc<GameData>>,
+    /// Creature tables; creatures stay inert without them.
+    creature_data: Option<std::rc::Rc<CreatureData>>,
 }
 
 /// Start a new game the way the original does (recruits the starting
 /// champion when the game data is available).
 fn new_game(d: &Data) -> GameState {
-    match &d.game_data {
+    let mut g = match &d.game_data {
         Some(gd) => GameState::new_game_with(&d.assets.dungeon, gd.clone()),
         None => GameState::new_game(&d.assets.dungeon),
+    };
+    if let Some(cd) = &d.creature_data {
+        creatures::set_data(&mut g, cd.clone());
     }
+    g
 }
 
 fn load(dir: &Path) -> Data {
@@ -86,8 +94,13 @@ fn load(dir: &Path) -> Data {
     if input.is_none() {
         eprintln!("warning: SKULL.EXE not found next to {}; mouse zones disabled", dir.display());
     }
-    let game_data = GameData::load(dir, &dir.join("../SKULL.EXE")).map(std::rc::Rc::new);
-    Data { assets, font, input, tables, game_data }
+    let exe_path = dir.join("../SKULL.EXE");
+    let game_data = GameData::load(dir, &exe_path).map(std::rc::Rc::new);
+    let creature_data = std::fs::read(&exe_path).ok().and_then(|exe| {
+        let gdat = std::rc::Rc::new(Gdat::open(dir.join("GRAPHICS.DAT")).ok()?);
+        CreatureData::load(gdat, &exe).ok().map(std::rc::Rc::new)
+    });
+    Data { assets, font, input, tables, game_data, creature_data }
 }
 
 /// First walkable square of a map, for debug map cycling.

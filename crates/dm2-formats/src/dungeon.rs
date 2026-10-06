@@ -477,9 +477,8 @@ impl Dungeon {
     /// Append a thing to the end of a square's list (its `next` is set to END).
     pub fn add_thing(&mut self, map: usize, x: i32, y: i32, t: ThingRef) {
         let Some(sq) = self.square_index(map, x, y) else { return };
-        // Strip the cell bits when comparing references to the list.
-        self.set_record_word(t, 0, ThingRef::END.0);
         if self.map_data[sq] & 0x10 == 0 {
+            self.set_record_word(t, 0, ThingRef::END.0);
             let slot = self.list_slot(map, x, y);
             self.object_list.insert(slot, t);
             // Keep the list length fixed by consuming a spare NONE slot at the end.
@@ -493,10 +492,16 @@ impl Dungeon {
             self.map_data[sq] |= 0x10;
             return;
         }
+        // Adding a thing that is already listed would link it to itself.
+        let same = |a: ThingRef, b: ThingRef| a.0 & 0x3FFF == b.0 & 0x3FFF;
         let mut cur = self.first_thing(map, x, y);
-        loop {
+        for _ in 0..4096 {
+            if same(cur, t) {
+                return;
+            }
             let next = ThingRef(self.record_word(cur, 0).unwrap_or(ThingRef::END.0));
             if !next.is_thing() {
+                self.set_record_word(t, 0, ThingRef::END.0);
                 self.set_record_word(cur, 0, t.0);
                 return;
             }
