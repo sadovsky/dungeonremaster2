@@ -299,8 +299,21 @@ fn sensor_fire(g: &mut GameState, map: usize, x: i32, y: i32, a: &Actuator, stat
 pub struct WallClick {
     /// At least one actuator fired.
     pub fired: bool,
-    /// The item in hand should be consumed (type 3 with word 2 bit 2).
+    /// The item in hand should be consumed (type 3 with word 2 bit 2,
+    /// type 0x1B).
     pub consume_item: bool,
+    /// The item in hand was put into the wall (type 0x1A): clear the hand
+    /// without destroying it.
+    pub stored: bool,
+    /// An item taken out of the wall for the leader's hand (type 0x1A).
+    pub take: Option<ThingRef>,
+}
+
+/// The item kind an alcove ornament accepts: attribute (9, ornament, 11,
+/// 0x0E) of the actuator's wall ornament.
+fn alcove_kind(g: &GameState, map: usize, a: &Actuator) -> Option<u16> {
+    let (cat, orn) = ornament_of(g, map, a, true)?;
+    Some(g.attrs.get(cat, orn, 0x0E))
 }
 
 /// Click the wall at (map, x, y), side `cell`, holding `item` (None = empty
@@ -335,11 +348,103 @@ pub fn click_wall(g: &mut GameState, map: usize, x: i32, y: i32, cell: u8, item:
                 let q = matched == a.inverted();
                 (q, q)
             }
+            // A lock that also needs the key item to have charges left.
+            0x15 => {
+                let charged = item.is_some_and(|i| {
+                    g.data.as_ref().is_some_and(|d| d.item_db(&g.dungeon).charges(i) != 0)
+                });
+                let matched = charged && item.is_some_and(|i| item_number(g, i) == a.data());
+                if matched && a.enabled() {
+                    out.consume_item = true;
+                }
+                let q = matched == a.inverted();
+                (q, q)
+            }
             0x17 if empty => {
                 let w2 = a.w2 ^ 4;
                 set_w(g, t, 2, w2);
                 let q = (w2 & 0x20 != 0) == (w2 & 4 != 0);
                 (q, q)
+            }
+            // Push button with a cooldown: busy until event 0x57 re-arms it
+            // after *data* + 2 ticks; inverted buttons fire 16 ticks later.
+            0x18 if empty && !a.busy() => {
+                let mut e = Event::new(0x57, map as u8, g.tick.wrapping_add(a.data() as u32 + 2));
+                [e.x, e.y] = t.0.to_le_bytes();
+                g.schedule(e);
+                set_w(g, t, 2, a.w2 | 1);
+                let action = if a.action() == FOLLOW { SET } else { a.action() };
+                if a.sound() {
+                    g.effects.push(Effect::Sound { cat: 9, idx: 0, sub: 0x88, map, x, y });
+                }
+                fire(g, map, &a, action, if a.inverted() { 16 } else { 0 });
+                out.fired = true;
+                continue;
+            }
+            // Alcove for one item kind (the ornament's attribute 0x0E).
+            0x1A => {
+                let Some(kind) = alcove_kind(g, map, &a) else { continue };
+                match item {
+                    Some(i) if !a.enabled() && item_number(g, i) == kind => {
+                        // Put the held item into the wall.
+                        g.dungeon.add_thing(map, x, y, ThingRef(i.0 & 0x3FFF | (cell as u16) << 14));
+                        out.stored = true;
+                        out.fired = true;
+                    }
+                    None if a.enabled() => {
+                        // Take one out; the alcove makes a new one when empty.
+                        let here = g
+                            .dungeon
+                            .things_at(map, x, y)
+                            .into_iter()
+                            .find(|&u| u.cell() == cell && is_item(u) && item_number(g, u) == kind);
+                        let got = match here {
+                            Some(u) => {
+                                g.dungeon.remove_thing(map, x, y, u);
+                                Some(u)
+                            }
+                            None => create_item(g, kind),
+                        };
+                        out.take = got.map(|u| ThingRef(u.0 & 0x3FFF));
+                        out.fired = got.is_some();
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            // Receptacle: consumes matching items, counting *data* down, and
+            // fires when it reaches 0 (then stays busy).
+            0x1B => {
+                let Some(kind) = alcove_kind(g, map, &a) else { continue };
+                let Some(i) = item else { continue };
+                if a.data() == 0 || item_number(g, i) != kind {
+                    continue;
+                }
+                out.consume_item = true;
+                let left = a.data() - 1;
+                set_w(g, t, 1, a.w1 & 0x7F | left << 7);
+                if left == 0 {
+                    set_w(g, t, 2, a.w2 | 1);
+                }
+                let q = left != 0;
+                (q, q)
+            }
+            // Re-arm: an empty-handed click clears the busy bit; it only
+            // sends anything in follow mode.
+            0x3F => {
+                if empty {
+                    set_w(g, t, 2, a.w2 & !1);
+                }
+                (true, true)
+            }
+            // Move the party to the target square (empty hand, bit 2 clear),
+            // facing word 2 bits 3-4, absolute when inverted.
+            0x1C if empty && !a.enabled() => {
+                let d = a.action();
+                let dir = if a.inverted() { d } else { (g.party.dir + d) & 3 };
+                let (tx, ty, _) = a.target();
+                movement::teleport_party(g, tx, ty, map, dir);
+                (false, false)
             }
             _ => continue,
         };

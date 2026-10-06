@@ -720,7 +720,7 @@ later. Kind 10: the party can be pushed back by a delayed teleport (event
 0x5D), with a chance of `min(90, 10 × load term + 25 or 50)`%; this is still
 to be modelled.
 
-## Wall sensors (0x4C134, partly)
+## Wall sensors (0x4C134)
 
 Clicking a wall cell, possibly holding an item, checks the actuators on
 that cell:
@@ -730,17 +730,22 @@ that cell:
 | 1 | Any click fires (not allowed in follow mode) |
 | 2 | Fires when "hand empty" differs from the inverted bit, i.e. normally when holding something; follow mode sends that state |
 | 3 | Fires when "holding item *data*" differs from the inverted bit; with word 2 bit 2 the item is consumed |
-| 0x15 | Like 3 but only for items with charges |
+| 0x15 | Like 3 but only for items with charges left (0x1F606); an empty item counts as not matching |
 | 0x17 | With an empty hand: toggles word 2 bit 2, and fires when that bit differs from the inverted bit |
-| 0x1A, 0x1B, 0x1C, 0x18, others | Alcoves, counting keyholes and item slots; not yet written up |
+| 0x18 | Push button with a cooldown. With an empty hand and word 2 bit 0 (busy) clear: set busy, schedule event 0x57 (re-arm, actuator in bytes 6-7) at tick + *data* + 2, and fire (set in follow mode). Inverted buttons fire with 16 extra ticks of delay. Types 0x4A and 0x46 on a door with a flag at +3 bit 0x20 take the same path. |
+| 0x1A | Alcove for one item kind: the wall ornament's attribute (9, ornament, 11, 0x0E). With word 2 bit 2 clear, holding that kind puts the item into the wall on that cell. With bit 2 set and an empty hand, it hands over an item of that kind from the cell (0x4BD17), or creates a new one (0x1DE8E) with its charges set to full when there is none. No actuator fires. |
+| 0x1B | Receptacle: when *data* is non-zero and the held item is the ornament's kind, the item is consumed and *data* decreases; on reaching 0 the actuator marks itself busy and fires. |
+| 0x1C | With an empty hand and word 2 bit 2 clear: move the party to the target square (0x4BED2), facing word 2 bits 3-4 (absolute when inverted, otherwise added to the party's facing), then fire. |
+| 0x3F | Clears the busy bit when clicked with an empty hand; it fires nothing except in follow mode (where it sends set) |
 
 ## Open questions
 
 - The tick increment returned by launcher service 0x0F (expected 1, giving 7.5 ticks per second).
 - New-game RNG seed: confirm it stays 0, or comes from a header.
 
-- The rest of the wall sensor types (0x1A-0x1C, 0x18) and floor text kind 10.
-- Event types 0x0E, 0x46, 0x55, 0x5A and actuator types 0x2C, 0x32, 0x42,
-  0x43, 0x44, 0x46.
+- Floor text kind 10, and the charges that alcove 0x1A gives a newly
+  created item (the engine leaves them at the default).
+- Event types 0x0E, 0x46 and 0x5A (the repeating ornament sound), and the
+  meaning of door/teleporter bit 13 toggled by actuator 0x46.
 - The meaning of the 512-tick (0x39044) and 64-tick (0x47CC3) periodic
   calls.

@@ -303,6 +303,12 @@ pub fn viewport_click(g: &mut GameState, r: ViewRegion) -> bool {
                     g.hand.held = EMPTY;
                 }
             }
+            if res.stored {
+                g.hand.held = EMPTY;
+            }
+            if let Some(t) = res.take {
+                g.hand.held = t.0 & 0x3FFF;
+            }
             res.fired
         }
         (Some(t), _) if near || (ahead && ahead_open(g)) => {

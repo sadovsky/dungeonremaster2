@@ -314,6 +314,65 @@ fn random_pits_drop_items_on_a_marker_square() {
     assert_eq!(marker(&g, lm, lx, ly, 0x0B), Some(id), "it lands on a matching marker square");
 }
 
+/// A wall square on map 0 next to an open floor square.
+fn wall_spot(g: &GameState) -> Option<(i32, i32)> {
+    let md = &g.dungeon.maps[0];
+    (0..md.width as i32)
+        .flat_map(|x| (0..md.height as i32).map(move |y| (x, y)))
+        .find(|&(x, y)| g.dungeon.square(0, x, y).element() == Element::Wall && !g.dungeon.square(0, x, y).has_things())
+}
+
+/// Put a fresh wall actuator of `kind` with `data` on (x, y), cell 0,
+/// targeting (1,1).
+fn wall_sensor(g: &mut GameState, x: i32, y: i32, kind: u16, data: u16, w2: u16) -> dm2_formats::dungeon::ThingRef {
+    let t = actuators::alloc_thing(g, ThingType::Actuator).unwrap();
+    g.dungeon.set_record_word(t, 1, kind | data << 7);
+    g.dungeon.set_record_word(t, 2, w2);
+    g.dungeon.set_record_word(t, 3, 1 << 6 | 1 << 11);
+    g.dungeon.add_thing(0, x, y, t);
+    t
+}
+
+#[test]
+fn cooldown_button_fires_once_until_rearmed() {
+    let Some(mut g) = game() else { return };
+    let Some((x, y)) = wall_spot(&g) else { return };
+    let t = wall_sensor(&mut g, x, y, 0x18, 5, 0);
+    assert!(actuators::click_wall(&mut g, 0, x, y, 0, None).fired);
+    assert!(!actuators::click_wall(&mut g, 0, x, y, 0, None).fired, "busy");
+    run(&mut g, 8);
+    assert_eq!(Actuator::load(&g, t).w2 & 1, 0, "re-armed after data + 2 ticks");
+    assert!(actuators::click_wall(&mut g, 0, x, y, 0, None).fired);
+}
+
+#[test]
+fn receptacle_counts_items_down_and_fires_at_zero() {
+    let Some(mut g) = game() else { return };
+    let Some((x, y)) = wall_spot(&g) else { return };
+    // Map 0's first wall ornament decides the accepted kind.
+    let t = wall_sensor(&mut g, x, y, 0x1B, 2, 1 << 12);
+    let orn = g.dungeon.map_lists(0).wall_ornaments[0];
+    let kind = g.attrs.get(9, orn, 0x0E);
+    let Some(item) = actuators::create_item(&mut g, kind) else { return };
+    let r = actuators::click_wall(&mut g, 0, x, y, 0, Some(item));
+    assert!(r.consume_item && !r.fired, "first item: 2 -> 1, no fire");
+    let item2 = actuators::create_item(&mut g, kind).unwrap();
+    let r = actuators::click_wall(&mut g, 0, x, y, 0, Some(item2));
+    assert!(r.consume_item && r.fired, "second item: 1 -> 0, fires");
+    assert_eq!(Actuator::load(&g, t).w2 & 1, 1, "spent");
+}
+
+#[test]
+fn party_mover_button_moves_the_party() {
+    let Some(mut g) = game() else { return };
+    let Some((x, y)) = wall_spot(&g) else { return };
+    // Target (1,1), absolute facing east (action bits 1), inverted = absolute.
+    wall_sensor(&mut g, x, y, 0x1C, 0, 1 << 3 | 0x20);
+    actuators::click_wall(&mut g, 0, x, y, 0, None);
+    run(&mut g, 2);
+    assert_eq!((g.party.map, g.party.x, g.party.y, g.party.dir), (0, 1, 1, 1));
+}
+
 #[test]
 fn script_variables_cover_flags_bytes_and_words() {
     let Some(mut g) = game() else { return };
