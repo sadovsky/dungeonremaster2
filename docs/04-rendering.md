@@ -298,9 +298,12 @@ Cells 9 and 10 (the far side cells at depth 2) have no contents pass
 - **Image**: (category, index, 1, sub). Sub is 0 normally, or 1 for an
   item in the centre column's middle slot when that image exists. Open
   chests use subs 4 and 5 instead of 0 and 1 (table 0x75D6A).
-- **Stacking**: a counter 0-15 per cell indexes a table of (x, y) nudge
-  pairs (0x75B94) into the offsets 0, 1, 2, 3, 0, −3, −2, −1 (0x75BC2), so
-  piled items fan out slightly.
+- **Stacking**: a counter per quadrant, starting at 0 and wrapping at 16
+  (0x522A7), indexes a table of (x, y) nudge pairs (0x75B94) into the
+  offsets 0, 1, 2, 3, 0, −3, −2, −1 (0x75BC2), so piled items fan out
+  slightly. The first item takes the first pair too. The offsets are added
+  to the request's screen position after scaling (0x4E502); the y nudge
+  is skipped for alcove items (0x51EB7's fifth argument).
 - The per-category offset attribute (cat, 0xFE, 12, sub) is added.
 - Colour key: attribute (cat, index, 11, 4) when present, else 10. The
   attribute can be 0x8000; the request's key field is 16 bits, so that
@@ -715,8 +718,9 @@ alcove items, door buttons and wall ornaments.
 Simplifications, still TODO:
 - Door buttons drawn from a door-button ornament (the branch selected by
   the cell summary rather than the door's flag bit 6) are not drawn.
-- Floor items do not fan out by the stacking table (0x75B94), and alcove
-  items are drawn at the ornament's slot without 0x51EB7's stacking.
+- Floor items fan out by the stacking table (read from the user's
+  SKULL.EXE by the frontend into `ViewExtras::stack_nudges`); alcove items
+  are still drawn at the ornament's slot without stacking.
 - Kind-1 (drop on floor) records are not recorded; `hand` keeps its
   layout-region rule for drops.
 - The frontend supplies missile directions (`missiles::view_dir`), the

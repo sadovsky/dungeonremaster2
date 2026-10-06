@@ -153,6 +153,10 @@ pub struct ViewExtras {
     /// The party's darkness step, 0-5 (global 0x7F282); bounds how much a
     /// mid-step wall may be brightened (0x802CE = step × 10).
     pub darkness_step: i32,
+    /// Floor-item stacking table (0x75B94): 16 pairs of 3-bit selectors
+    /// into the nudge offsets, read from the user's SKULL.EXE by the
+    /// frontend. None: piled items are not fanned out.
+    pub stack_nudges: Option<[u8; 32]>,
 }
 
 /// Drawing state of one creature group, filled by the frontend from
@@ -188,6 +192,7 @@ impl Default for ViewExtras {
             creatures: HashMap::new(),
             mid_step: false,
             darkness_step: 0,
+            stack_nudges: None,
         }
     }
 }
@@ -274,11 +279,13 @@ struct Req {
     /// Darken by the ambient level only, with no depth row or set remap:
     /// the ceiling and floor (0x4E32A darkens them by 0x802CE directly).
     ambient_only: bool,
+    /// Screen-pixel offset added after scaling (0x4E502's position adds).
+    post: (i32, i32),
 }
 
 impl Req {
     fn new(cat: u8, idx: u8, sub: u8, rid: u16) -> Req {
-        Req { cat, idx, sub, rid, flip: 0, xs: 64, ys: 64, xoff: 0, yoff: 0, depth: None, key: None, wall_mid: false, ambient_only: false }
+        Req { cat, idx, sub, rid, flip: 0, xs: 64, ys: 64, xoff: 0, yoff: 0, depth: None, key: None, wall_mid: false, ambient_only: false, post: (0, 0) }
     }
 }
 
@@ -339,6 +346,7 @@ fn draw_sprite(a: &mut Assets, buf: &mut Bitmap, cx: &Ctx, s: &Sprite, base_off:
     if r.flip & 1 != 0 {
         ox = -ox;
     }
+    let (ox, oy) = (ox + r.post.0, oy + r.post.1);
     let img = (s.w as i32, s.h as i32);
     let p = if (ox, oy) != (0, 0) {
         a.layout.resolve(r.rid | 0x8000, ox, oy, img)
@@ -1110,9 +1118,13 @@ fn draw_contents(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c:
             continue;
         }
         if !creatures_only && c < 16 && cx.on(layers::ITEMS) {
+            // Items piled in one quadrant fan out by a per-quadrant
+            // counter, 0-15 (0x522A7 -> 0x51EB7).
+            let mut stack = 0usize;
             for &t in &cell.things {
                 if (5..=10).contains(&(t.kind() as u16)) && QUAD_SLOT[(t.cell().wrapping_sub(cx.dir) & 3) as usize] == s {
-                    draw_item(a, buf, cx, t, c, s, depth);
+                    draw_item(a, buf, cx, t, c, s, depth, stack);
+                    stack = (stack + 1) & 15;
                 }
             }
         }
@@ -1148,7 +1160,7 @@ fn draw_missiles_at(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell,
     }
 }
 
-fn draw_item(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usize, slot: u8, depth: usize) {
+fn draw_item(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usize, slot: u8, depth: usize, stack: usize) {
     let row = slot as usize / 5;
     if c == 0 && 4 - row < 2 {
         return; // behind the camera
@@ -1156,7 +1168,8 @@ fn draw_item(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usi
     let (cat, idx) = item_key(cx.dg, t);
     let sc = ITEM_SCALE[depth * 4 + 4 - row];
     let key = key_attr(a, cat, idx, Some(10), false);
-    let r = Req { xs: sc, ys: sc, depth: Some(depth), key, ..Req::new(cat, idx, 0, 5000 + 25 * c as u16 + slot as u16) };
+    let post = cx.ex.stack_nudges.map_or((0, 0), |t| (NUDGE[(t[2 * stack] & 7) as usize], NUDGE[(t[2 * stack + 1] & 7) as usize]));
+    let r = Req { xs: sc, ys: sc, depth: Some(depth), key, post, ..Req::new(cat, idx, 0, 5000 + 25 * c as u16 + slot as u16) };
     let placed = draw(a, buf, cx, r);
     // Items within reach (the party's square and the one ahead) are
     // clickable; a pile in one quadrant shares a record (0x522A7, 0x51CC6).
