@@ -29,7 +29,8 @@ pub fn dispatch(g: &mut GameState, ev: Event) {
         0x46 => crate::apply::light_expired(g, ev),
         creatures::EV_CONTINUE | creatures::EV_STEP => creatures::event(g, ev),
         0x5E => creatures::text_spawn_event(g, ev.map as usize, ev.x as i32, ev.y as i32, ev.b9),
-        // TODO: 0x15 (sounds), 0x3C/0x3D (deferred arrival), 0x55/0x5A.
+        actuators::EVENT_ORNAMENT_STEP => actuators::ornament_step(g, ev),
+        // TODO: 0x15 (sounds), 0x3C/0x3D (deferred arrival), 0x5A.
         _ => {}
     }
 }

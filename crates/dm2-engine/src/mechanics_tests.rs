@@ -246,3 +246,26 @@ fn animated_ornament_finishes_its_cycle_when_switched_off() {
         assert_eq!(Actuator::load(&g, t).w2 & 1, 0, "animation stops at the end of the cycle");
     }
 }
+
+#[test]
+fn one_shot_ornament_plays_a_single_cycle() {
+    let Some(mut g) = game() else { return };
+    let t = actuators::alloc_thing(&mut g, ThingType::Actuator).unwrap();
+    g.dungeon.set_record_word(t, 1, 0x32 | 0x55 << 7);
+    g.dungeon.set_record_word(t, 2, 1 << 12);
+    g.dungeon.set_record_word(t, 3, 0);
+    let mut ev = crate::timeline::Event::new(4, 0, 0);
+    ev.b9 = SET;
+    actuators::wall_actuator(&mut g, ev, t);
+    let a = Actuator::load(&g, t);
+    assert_eq!(a.w2 & 1, 1, "busy while playing");
+    assert_eq!(a.data(), 0, "frame counter reset");
+    // A second trigger while playing does not restart it.
+    actuators::wall_actuator(&mut g, ev, t);
+    assert_eq!(g.timeline.iter().filter(|(_, e)| e.kind == actuators::EVENT_ORNAMENT_STEP).count(), 1);
+    run(&mut g, 600);
+    let a = Actuator::load(&g, t);
+    assert_eq!(a.w2 & 1, 0, "done after one cycle");
+    assert!(a.data() > 0, "the counter advanced");
+    assert!(!g.timeline.iter().any(|(_, e)| e.kind == actuators::EVENT_ORNAMENT_STEP));
+}

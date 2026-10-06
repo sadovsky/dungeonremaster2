@@ -239,7 +239,7 @@ Who schedules each type was recovered by scanning every call to 0x56390
 | 0x48 | inline | 0x4565A | A party effect expires: for each champion in mask +5, subtract the u16 at +6 from the effect amount at +0x103 (not below 0). See 07-combat-magic, "Party shields and effects". |
 | 0x4B | inline | 0x474FC | Champion +5: decrement champion byte +0x1F and subtract the u16 at +6 from field +0x48, then 0x474FC. Tentative: an expiring per-champion effect. |
 | 0x54 | 0x5A073(1) | | Champion status update |
-| 0x55 | 0x59293 | actuator 0x32 (0x570B1) | Actuator 0x32 follow-up |
+| 0x55 | 0x59293 | actuator 0x32 (0x570B1) | One-shot ornament step: add 1 to the actuator's 9-bit frame counter (word 1 bits 7-15); when it reaches a multiple of the ornament's cycle length (0x56CF4) clear the busy bit, otherwise reschedule for the next tick |
 | 0x56 | 0x593CF | clock actuators (0x592FA) | Periodic actuator tick (types 0x1E, 0x33-0x37) |
 | 0x57 | inline | wall sensors 0x4C134 | Re-arm an actuator: clear bit 0 of the thing's word 2 |
 | 0x58 | 0x59608 | 0x22A68 | Clear bit 11 of word 1 of thing +6 |
@@ -323,7 +323,7 @@ kind 0x17 plays a sound on set. Types not listed below do nothing.
 | 0x2D | inline | If *data* is 1-400: decrement it and forward the incoming action. If 401-499: a percentage gate. One `random(100)` call; the gate fails when *data* − 400 ≤ the roll, so it passes with probability (*data* − 400)%. In "follow" mode it sends set on a pass and clear on a fail; otherwise it forwards the incoming action only on a pass. |
 | 0x2E | inline | Creature generator: on set, create a creature of type *data* at the target square through 0x30BA6. Direction comes from word 2 bits 3-4, or random if bit 2 is set. If bit 5 is set, also store a value from word 2 into the creature's word +8; bit 6 plays a sound. |
 | 0x31 | inline | Debounced relay: if not busy, mark busy and schedule a re-arm (0x5B) after *data* ticks; if the action matches, fire the target (with the configured action when bit 2 is set) |
-| 0x32 | 0x570B1 | Unknown; schedules 0x55 |
+| 0x32 | 0x570B1 | Play the ornament's animation once. If word 2 bit 0 (busy) is clear: set it, reset the 9-bit frame counter in word 1 bits 7-15, schedule event 0x55 for the next tick (bytes 8-9 the actuator, bytes 10-11 the wall/floor flag) and, with the sound bit, play the ornament's sound 0x88. A trigger while it is playing does not restart it. If word 2 bit 2 is set it also relays the event as 0x3D does (0x571F3). |
 | 0x3B, 0x40, 0x47, 0x48, 0x49 | 0x57E6C | Item relay between the event's square and the actuator's target. 0x40 matches against an item-kind list loaded from GRAPHICS.DAT instead of the single *data* kind. 0x47 and 0x49 reverse the direction. 0x48 and 0x49 move only the first match. Items carried by creatures on the square are searched too. |
 | 0x3C | inline | Item generator: on set (or clear if inverted), create an item of kind *data* and place it at the target square and cell (0x57D4C) |
 | 0x3D | 0x571F3 | Relay with *data* as extra delay. In "follow" mode: not inverted, it forwards the incoming action after the delay; inverted, it forwards the action at once and then sends the opposite action (toggle stays toggle) after *data* ticks, making a pulse. Other modes fire the configured action on a matching trigger (set, or clear if inverted). |

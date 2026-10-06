@@ -439,7 +439,8 @@ fn floor_actuator(g: &mut GameState, ev: Event, t: ThingRef) {
         0x3B | 0x40 | 0x47 | 0x48 | 0x49 => item_relay(g, ev, &a),
         0x3D => relay(g, ev, &a, a.data() as u32),
         0x2C => animated_ornament(g, ev, &a, false),
-        // TODO: 0x32 (0x570B1), 0x42-0x44.
+        0x32 => one_shot_ornament(g, ev, &a, false),
+        // TODO: 0x42-0x44.
         _ => {}
     }
 }
@@ -583,8 +584,8 @@ pub(crate) fn wall_actuator(g: &mut GameState, ev: Event, t: ThingRef) {
             }
         }
         0x2C => animated_ornament(g, ev, &a, true),
-        // TODO: 0x32 (0x570B1), 0x41 (randomise from an ornament
-        // attribute), 0x42-0x44.
+        0x32 => one_shot_ornament(g, ev, &a, true),
+        // TODO: 0x41 (randomise from an ornament attribute), 0x42-0x44.
         _ => {}
     }
 }
@@ -654,6 +655,55 @@ fn animated_ornament(g: &mut GameState, ev: Event, a: &Actuator, wall: bool) {
     set_w(g, a.thing, 2, w2);
     if a.inverted() && a.action() == FOLLOW {
         fire(g, map, a, ev.b9, 0);
+    }
+}
+
+/// Actuator 0x32 (0x570B1): play the ornament's animation once. If it is
+/// not already playing (word 2 bit 0), mark it busy, reset the frame counter
+/// (word 1 bits 7-15) and start event 0x55 next tick; with the sound bit,
+/// play the ornament's sound 0x88. When word 2 bit 2 is set it also relays
+/// the event like 0x3D (0x571F3).
+fn one_shot_ornament(g: &mut GameState, ev: Event, a: &Actuator, wall: bool) {
+    let map = ev.map as usize;
+    if a.w2 & 1 == 0 {
+        set_w(g, a.thing, 2, a.w2 | 1);
+        set_w(g, a.thing, 1, a.w1 & 0x7F);
+        let mut e = Event::new(EVENT_ORNAMENT_STEP, map as u8, g.tick.wrapping_add(1));
+        e.x = ev.x;
+        e.y = ev.y;
+        e.set_w8(a.thing.0);
+        e.w10 = u16::from(wall);
+        g.schedule(e);
+        if a.sound() {
+            if let Some((cat, idx)) = ornament_of(g, map, a, wall) {
+                g.effects.push(Effect::Sound { cat, idx, sub: 0x88, map, x: ev.x as i32, y: ev.y as i32 });
+            }
+        }
+    }
+    if a.w2 & 4 != 0 {
+        let a = Actuator::load(g, a.thing);
+        relay(g, ev, &a, 0);
+    }
+}
+
+/// Event type that steps a one-shot ornament animation.
+pub const EVENT_ORNAMENT_STEP: u8 = 0x55;
+
+/// Event 0x55 (0x59293): advance a one-shot ornament's frame counter; at the
+/// end of a cycle clear its busy bit, otherwise come back next tick.
+pub fn ornament_step(g: &mut GameState, ev: Event) {
+    let t = ThingRef(ev.w8());
+    if !t.is_thing() {
+        return;
+    }
+    let a = Actuator::load(g, t);
+    let n = ornament_cycle(g, ev.map as usize, &a, ev.w10 != 0).max(1);
+    let count = ((a.w1 >> 7) + 1) & 0x1FF;
+    set_w(g, t, 1, a.w1 & 0x7F | count << 7);
+    if count as u32 % n == 0 {
+        set_w(g, t, 2, a.w2 & !1);
+    } else {
+        g.schedule(Event { tick: g.tick.wrapping_add(1), ..ev });
     }
 }
 
