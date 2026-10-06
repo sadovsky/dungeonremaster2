@@ -50,7 +50,8 @@ fn pinned_views() {
     let views: [((usize, i32, i32, u8), u64); 8] = [
         ((3, 10, 9, 0), 0x8cea3120aed4479b),
         ((6, 8, 8, 1), 0x53566c2c295f1b8f),
-        ((4, 6, 11, 2), 0xd788da890a57df50),
+        // A depth-4 front-face ornament is now drawn (cells 16-20 show ornaments).
+        ((4, 6, 11, 2), 0x50fac760491539ff),
         ((8, 12, 3, 0), 0x34eaa6dde0fdba81),
         ((7, 12, 11, 1), 0x8a9dbdd9e46d85e9),
         ((0, 3, 4, 0), 0xc9631cee3dab9307),

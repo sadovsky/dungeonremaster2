@@ -487,6 +487,19 @@ separate visual generator to keep the simulation deterministic. Sound (24, 0, 2,
   on the grid point, not bottom-anchored as the side-face records (kind 7)
   would place it. Confirmed against the original: the start view's side
   ornament moved ~20 px down and now matches.
+- **Far cells 16-20 show front-face ornaments** too: the dispatcher runs
+  the wall faces (0x53E41) for every wall cell, and the face table gives
+  cells 16-20 a front face. Their ids are 3100 + 25·cell + slot like the
+  nearer front faces, scaled at depth 4 (19/64). Confirmed against the
+  original while walking north on map 0: a gate ornament four squares
+  ahead appears in both.
+- **Open: depth-4 side cells (17, 18).** Against the original, their wall
+  images reach 2-3 px further towards the centre (x 90-92 at the start
+  view, which the original leaves black), with or without mirroring.
+  Shifting the mirrored image 2-3 px outward fixes the start view, but
+  the rule isn't traced; the walls go through the same drawer with the
+  record's own anchor (0x53C7B → 0x4E502), so the difference is likely
+  in a clip set for the far row or in the blitter.
 - **Animated ornaments** (0x1E3DA): attribute (cat, orn, 11, 0x0D) gives a
   frame count (bit 15: frames start at 1), cycled by `(tick + phase) mod
   count`; without it, an optional frame string (cat, orn, 5, 0x0D) is

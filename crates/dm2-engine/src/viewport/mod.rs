@@ -653,7 +653,9 @@ fn draw_wall(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c: usi
     let wall_mid = cx.ex.mid_step && depth >= 1;
     let r = Req { flip, key: Some(key), depth: Some(if wall_mid { depth } else { 0 }), wall_mid, ..Req::new(8, cx.set, sub, LAYOUT_WALL0 + c as u16) };
     draw(a, buf, cx, r);
-    if !cx.on(layers::ORNAMENTS) || c >= 16 {
+    // Cells 16-20 show their front face's ornament too (0x53E9E runs the
+    // wall faces for every wall cell; FACES gives 16-20 a front face).
+    if !cx.on(layers::ORNAMENTS) {
         return;
     }
     // Ornaments on the visible faces (0x53E41 -> 0x4F3DF).
