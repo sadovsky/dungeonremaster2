@@ -374,6 +374,34 @@ fn party_mover_button_moves_the_party() {
 }
 
 #[test]
+fn heavy_parties_slip_on_unstable_floors() {
+    let Some(mut base) = game() else { return };
+    // A floor square on map 0 without things, with a kind-10 text marker.
+    let md = &base.dungeon.maps[0];
+    let Some((x, y)) = (0..md.width as i32)
+        .flat_map(|x| (0..md.height as i32).map(move |y| (x, y)))
+        .find(|&(x, y)| base.dungeon.square(0, x, y).element() == Element::Floor && !base.dungeon.square(0, x, y).has_things())
+    else {
+        return;
+    };
+    let txt = actuators::alloc_thing(&mut base, ThingType::Text).unwrap();
+    base.dungeon.set_record_word(txt, 1, 2 | 10 << 11);
+    base.dungeon.add_thing(0, x, y, txt);
+    // Far over the load limit: the chance is capped at 90%.
+    base.champions[0].set_load(60000);
+    let mut slipped = 0;
+    for seed in 0..10 {
+        let mut g = base.clone();
+        g.rng = crate::rng::Rng::new(seed);
+        actuators::floor_sensors(&mut g, 0, x, y, movement::Mover::Party, false, true);
+        if g.timeline.iter().any(|(_, e)| e.kind == 0x5D) {
+            slipped += 1;
+        }
+    }
+    assert!(slipped >= 5, "slipped {slipped} of 10 times at a 90% chance");
+}
+
+#[test]
 fn script_variables_cover_flags_bytes_and_words() {
     let Some(mut g) = game() else { return };
     use actuators::{script_var as get, script_var_op as op};

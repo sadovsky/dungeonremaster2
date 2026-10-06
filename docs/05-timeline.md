@@ -368,6 +368,20 @@ leave the variable unchanged.
 Text things on floors: kinds 0x13 and 0x16 schedule event 0x5E on set;
 kind 0x17 plays a sound.
 
+Floor markers (text things with word 1 bits 1-2 equal to 1, kind in bits
+11-15) react to the party walking on (0x4CDCC):
+
+- **Kind 9, random pulse:** see "Floor sensors".
+- **Kind 10, unstable floor:** when the party steps on, sum over living
+  champions load ÷ (maximum load ÷ 2), giving a pressure P. The chance is
+  min(90, 10P + 25), or 10P + 50 when word 1 bit 0 is set. One
+  `random(100)` call decides. On a slip, event 0x5D is scheduled for this
+  tick to put the party back on the square with its current facing, and a
+  champion picked with `rand4()` (or the leader, if that one is dead) cries
+  out with their sound 0x82. Otherwise the floor ornament named in bits
+  3-10 plays its sound 0x88.
+- **Kinds 0x0B and 0x0C:** destination and source markers of random pits.
+
 ### What triggers actuators
 
 Actuators only receive square actions. The events are produced by:
@@ -743,7 +757,7 @@ that cell:
 - The tick increment returned by launcher service 0x0F (expected 1, giving 7.5 ticks per second).
 - New-game RNG seed: confirm it stays 0, or comes from a header.
 
-- Floor text kind 10, and the charges that alcove 0x1A gives a newly
+- The charges that alcove 0x1A gives a newly
   created item (the engine leaves them at the default).
 - Event types 0x0E, 0x46 and 0x5A (the repeating ornament sound), and the
   meaning of door/teleporter bit 13 toggled by actuator 0x46.

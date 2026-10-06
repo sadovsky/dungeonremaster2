@@ -228,7 +228,36 @@ pub fn floor_sensors(g: &mut GameState, map: usize, x: i32, y: i32, mover: Mover
                             square_action(g, map, x, y, 0, CLEAR, now + 5);
                         }
                     }
-                    // TODO(kind 10): load-based chance of being pushed back (event 0x5D).
+                    // Unstable floor (0x4CDCC): the heavier the party, the likelier
+                    // it slips and is put back on the square (event 0x5D).
+                    10 if ty.is_none() && entering && hooks::champion_count(g) != 0 => {
+                        let mut pressure = 0u32;
+                        for i in 0..g.champions.len() {
+                            if g.champions[i].is_alive() {
+                                let max = crate::champions::max_load(&g.champions[i], &mut g.rng) as u32;
+                                pressure += g.champions[i].load() as u32 / (max >> 1).max(1);
+                            }
+                        }
+                        let base = if w1 & 1 != 0 { 50 } else { 25 };
+                        let chance = (pressure * 10 + base).min(90) as u16;
+                        if g.rng.random(100) < chance {
+                            let mut e = Event::new(0x5D, map as u8, g.tick);
+                            let packed = (x as u16 & 0x1F) | (y as u16 & 0x1F) << 5 | (g.party.dir as u16 & 3) << 10;
+                            [e.x, e.y] = packed.to_le_bytes();
+                            g.schedule(e);
+                            let mut who = g.rng.rand4() as usize;
+                            if !g.champions.get(who).is_some_and(|c| c.is_alive()) {
+                                who = g.leader.unwrap_or(0);
+                            }
+                            if let Some(c) = g.champions.get(who) {
+                                let portrait = c.portrait();
+                                g.effects.push(Effect::Sound { cat: 0x16, idx: portrait, sub: 0x82, map, x, y });
+                            }
+                        } else {
+                            let orn = (w1 >> 3 & 0xFF) as u8;
+                            g.effects.push(Effect::Sound { cat: 10, idx: orn, sub: 0x88, map, x, y });
+                        }
+                    }
                     _ => {}
                 }
             }
