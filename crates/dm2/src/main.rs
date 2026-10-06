@@ -154,25 +154,37 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
         });
     }
     v.leader = g.leader;
-    let icon = |t: u16| -> Option<Icon> {
+    // Icon frame from attribute 6 (0x37F76); `slot` is where the item sits,
+    // for the "animate only while equipped" gate.
+    let icon = |t: u16, slot: Option<usize>| -> Option<Icon> {
         if t == 0xFFFF {
             return None;
         }
-        hand::item_key(g, ThingRef(t)).map(|(c, i)| (c, i, ITEM_ICON))
+        let r = ThingRef(t);
+        let (c, i) = hand::item_key(g, r)?;
+        let sub = match g.data.as_ref() {
+            Some(data) => {
+                let equipped = slot.is_some_and(|s| dm2_engine::party::slot_fits(g, r, s));
+                let visual = g.tick.wrapping_mul(2_654_435_761) ^ t as u32;
+                data.item_db(&g.dungeon).icon_sub(r, equipped, g.tick, g.party.dir, visual >> 16)
+            }
+            None => ITEM_ICON,
+        };
+        Some((c, i, sub))
     };
     for (i, c) in g.champions.iter().take(4).enumerate() {
-        v.hands[i] = [icon(c.inventory(0)), icon(c.inventory(1))];
+        v.hands[i] = [icon(c.inventory(0), Some(0)), icon(c.inventory(1), Some(1))];
         v.busy[i] = [hand::hand_busy(g, i, 0), hand::hand_busy(g, i, 1)];
         v.cells[i] = (c.cell() + 4 - g.party.dir) & 3;
     }
-    v.held = icon(g.hand.held);
+    v.held = icon(g.hand.held, None);
     v.inventory_open = g.hand.inventory_open;
     if let Some(ci) = g.hand.inventory_open {
         let c = &g.champions[ci];
         let mut rng = g.rng.clone();
         let container = hand::open_container(g).map(|_| {
             (hand::CONTAINER_FIRST..hand::CONTAINER_FIRST + hand::CONTAINER_CELLS)
-                .map(|s| icon(hand::slot_item(g, ci, s)))
+                .map(|s| icon(hand::slot_item(g, ci, s), None))
                 .collect()
         });
         let info = (g.hand.show_info && g.hand.held != 0xFFFF)
@@ -184,7 +196,7 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
             });
         v.inventory = Some(InventoryView {
             champion: ci,
-            slots: (0..30).map(|s| icon(c.inventory(s))).collect(),
+            slots: (0..30).map(|s| icon(c.inventory(s), Some(s))).collect(),
             container,
             name: c.name().into_bytes(),
             stats: [

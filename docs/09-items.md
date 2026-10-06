@@ -80,7 +80,7 @@ Meanings so far, from the code that reads them and the values in the data:
 | 3 | Food value | Eating adds it to the champion's food (0x39C3F). Present only on food items. |
 | 4 | Allowed-slot mask | See "Equipment slots". |
 | 5 | Launcher and ammunition class | Bit 15 set = launcher (bow, sling...); the low bits are a class mask. A launcher works when the ammunition's mask (bit 15 clear) shares a bit with it (0x408A8). |
-| 6 | Bits 0-4: a sub-type used when the item is shown or used (0x37F76); bit 15: a flag. TODO. |
+| 6 | Icon animation (0x37F76): bits 0-4 frame count n, bits 5-7 group size m, bits 8-12 mode, bit 15 animate only while equipped in a slot it fits, bit 14 animate only while it is the item an action is running with. Frames start at icon sub 0x18; an active gate starts them one higher with one frame fewer. Modes: 0 tick mod n, 5 the same offset by the item number, 1 random, 2 party facing, 3 charge fraction `charges·n/(max+1) + 1`, 4 charge groups `tick mod m + (charges·(n/m)/(max+1))·m + 1`, 6 like 4 offset by the item number. Maximum charges (0x1F5D0): 15 for weapons and clothing, 3 for misc. |
 | 8 | Shown on the info panel for weapons when non-zero (0x3962A); used in combat (0x46A19). Probably the ranged or thrown strength. TODO. |
 | 9 | Weapon damage (the info panel draws it as a bar scaled to 100); used in melee and throwing (0x16D72, 0x414A5, 0x478A1). |
 | 0x0A, 0x0C | Used when throwing or shooting (0x414A5, 0x478A1): 0x0C sets the missile's speed or range (default 5 to 11 if absent), 0x0A adds to the missile's energy. TODO. |
