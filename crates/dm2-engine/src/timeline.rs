@@ -70,6 +70,7 @@ impl Event {
     }
 }
 
+#[derive(Clone)]
 pub struct Timeline {
     slots: Vec<Event>,
     free: Vec<u16>,
@@ -210,6 +211,49 @@ impl Timeline {
         true
     }
 
+    /// Pool capacity.
+    pub fn capacity(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// Move every scheduled event down to slots 0..len, keeping their
+    /// relative slot order, rebuild the heap and hand out free slots in
+    /// ascending order again (the save preparation 0x55FDC / 0x55DBD /
+    /// 0x56030). Returns (old slot, new slot) for every event, so callers
+    /// can fix stored record indices.
+    pub fn compact(&mut self) -> Vec<(u16, u16)> {
+        let mut used: Vec<u16> = self.heap.clone();
+        used.sort_unstable();
+        let events: Vec<Event> = used.iter().map(|&s| self.slots[s as usize]).collect();
+        let moves = used.iter().enumerate().map(|(n, &o)| (o, n as u16)).collect();
+        *self = Timeline::from_slots(self.slots.len(), events);
+        moves
+    }
+
+    /// Build a timeline whose events occupy slots 0..events.len() in order
+    /// (a loaded save's timer array).
+    pub fn from_slots(cap: usize, events: Vec<Event>) -> Timeline {
+        let cap = cap.max(events.len());
+        let n = events.len();
+        let mut slots = vec![Event::default(); cap];
+        for (i, e) in events.into_iter().enumerate() {
+            slots[i] = Event { tick: e.tick & 0xFF_FFFF, ..e };
+        }
+        let mut t = Timeline { slots, free: (n as u16..cap as u16).rev().collect(), heap: (0..n as u16).collect() };
+        for i in (0..n / 2).rev() {
+            t.sift_down(i);
+        }
+        t
+    }
+
+    /// Scheduled events in slot order (the timer array a save writes after
+    /// `compact`).
+    pub fn slot_events(&self) -> Vec<(u16, Event)> {
+        let mut v: Vec<(u16, Event)> = self.heap.iter().map(|&s| (s, self.slots[s as usize])).collect();
+        v.sort_unstable_by_key(|e| e.0);
+        v
+    }
+
     /// Scheduled events in heap order (for saving and debugging).
     pub fn iter(&self) -> impl Iterator<Item = (u16, &Event)> {
         self.heap.iter().map(|&s| (s, &self.slots[s as usize]))
@@ -258,5 +302,24 @@ mod tests {
         assert_eq!(t.schedule(ev(1, 1, 0)), Err(TimelineError::Full));
         let e = Event { map: 7, x: 3, y: 4, b8: 2, b9: 1, w10: 0x1234, ..ev(4, 0x123456, 2) };
         assert_eq!(Event::from_bytes(&e.to_bytes()), e);
+    }
+
+    #[test]
+    fn compact_preserves_pop_order() {
+        let mut t = Timeline::with_capacity(16);
+        let a = t.schedule(ev(4, 10, 1)).unwrap().unwrap();
+        t.schedule(ev(4, 10, 1)).unwrap();
+        let c = t.schedule(ev(1, 3, 0)).unwrap().unwrap();
+        t.schedule(ev(2, 7, 0)).unwrap();
+        t.delete(a);
+        t.delete(c);
+        let mut u = t.clone();
+        let moves = u.compact();
+        assert_eq!(moves, vec![(1, 0), (3, 1)]);
+        assert_eq!(u.schedule(ev(9, 1, 0)).unwrap(), Some(2));
+        u.pop();
+        let a: Vec<Event> = std::iter::from_fn(|| t.pop()).collect();
+        let b: Vec<Event> = std::iter::from_fn(|| u.pop()).collect();
+        assert_eq!(a, b);
     }
 }

@@ -31,6 +31,7 @@ pub mod missiles;
 pub mod movement;
 pub mod party;
 pub mod rng;
+pub mod save;
 pub mod squares;
 pub mod state;
 pub mod timeline;

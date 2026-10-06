@@ -1,8 +1,10 @@
 # Save games (SKSAVEn.DAT)
 
-Verified from the writer and reader code. No real save file has been
-checked yet, so byte offsets inside the bit-packed part should be
-confirmed against one before relying on them.
+Verified from the writer and reader code, and implemented in
+`crates/dm2-engine/src/save.rs`. No save written by the DOS game has been
+checked yet: everything below, and whether the DOS game accepts the
+remake's files, still needs confirming against a real SKSAVE made in
+DOSBox (see "Open questions").
 
 ## Files
 
@@ -31,6 +33,10 @@ are path and slot substitutions, see `13-text.md`).
 | 0x34DFE | Write the things held by timers |
 | 0x34797 | Write creature and missile cross-references |
 | 0x36909 | Dungeon section parser, shared with DUNGEON.DAT; argument 0 = loading a save, so no spare slots are added |
+| 0x3426D | Before saving: deactivate every active creature slot (0x3085A) |
+| 0x55FDC / 0x55DBD / 0x56030 | Before saving: compact the timer array, rebuild the heap, rebuild the free list |
+| 0x55F4F | Before saving: refresh stored timer indices (champion +0x2E for type 0x0C, missile word 3 for types 0x1D/0x1E) |
+| 0x34236 / 0x34106 | After saving: walk every map and reactivate its creatures |
 
 ## Layout
 
@@ -72,8 +78,12 @@ All remaining data goes through a bit packer:
 - The bits go into one continuous stream, flushed 8 bits at a time.
 - A byte whose mask is 0 takes no space at all.
 
-The reader (0x34536) zero-fills masked-out bits, so fields that aren't
-saved come back as 0. The mask tables are in the data object:
+The reader (0x34536) leaves masked-out bits as they already are in the
+destination (it starts from the existing byte), so unsaved fields keep
+whatever the loader had there. The final partial byte is rotated so the
+pending bits sit at the top; the low bits are zero.
+
+The mask tables are in the data object:
 
 | Block | Size × count | Mask | Contents |
 |-------|-------------|------|----------|
@@ -106,8 +116,21 @@ The 60-byte globals record:
 | 0x28 | u16 | 0x7169C / 0x7169E | Two 4-bit values, packed |
 | 0x2A-0x3B | | 0x80470-0x80480, 0x80430 | Environment state (weather or sky, category 23); see `04-rendering.md` when written |
 
-The mask leaves gaps (for example only the low 3 bits at 0x08 and the low
-5 bits at 0x0A and 0x0C), so the stream is much shorter than 60 bytes.
+The mask leaves gaps, so the stream is much shorter than 60 bytes. As read
+from the table:
+- tick: low 24 bits only;
+- random state: low 16 bits only, so the DOS format cannot restore the
+  generator exactly (bits 16-23 feed later outputs);
+- champion count 3 bits, x and y 5 bits, facing 2 bits, map 6 bits,
+  leader 2 bits, timer count 9 bits;
+- 0x16 and 0x1A are kept in full. They are the tick of the last creature
+  attack on the party (0x716A0) and of the party's last move (0x7F19C),
+  see `06-champions.md`.
+
+The timer mask keeps the tick (24 bits), the map (6 bits), the type
+(7 bits) and bytes 5-9, but **not** the word at +10. The misc mask keeps
+only bytes 3 and 4 of 0x7FFEC, i.e. 0x7FFEF and 0x7FFF0 (the two party
+counters in `06-champions.md`).
 
 ### 4. Dynamic objects (bit-packed, same stream)
 
@@ -132,11 +155,25 @@ The mask leaves gaps (for example only the low 3 bits at 0x08 and the low
    its index in the rebuilt arrays (10 bits).
 5. **Flush:** the final partial byte is padded with zero bits.
 
-**Thing chains** (0x3491A): for each thing until 0xFFFE or 0xFFFF:
-- For types 4 and above: a 1 bit (more follows), the type (4 bits), and,
-  unless it is a creature or the caller doesn't want it, the cell
-  (2 bits). Types 0-3 (doors, teleporters, text, actuators) stay where
-  the snapshot put them.
+**Thing chains** (0x3491A, arguments: first thing, "write cells",
+"whole list"): for each thing until 0xFFFE or 0xFFFF:
+- For types 4 and above: a 1 bit, the type (4 bits), and, when cells are
+  wanted and the thing isn't a creature, the cell (2 bits). Types 0-3
+  (doors, teleporters, text, actuators) get no leading bit; they stay
+  where the snapshot put them.
+- Fields written before the record: an actuator of one of the listed
+  types writes word 1 >> 7 (9 bits); a creature writes its type byte
+  (+4, 7 bits); a container writes bits 1-2 of word 2.
+- A whole list ends with a 0 bit. A single-thing chain (an inventory
+  slot, the leader's hand, a timer's thing, a missile's payload) writes
+  no terminator, except a single 0 bit when the slot is empty (0xFFFF).
+- Inside a missile's payload a cloud writes only the low 7 bits of its
+  record index, then stops.
+- Creatures and containers are numbered in the order written; the
+  cross-reference block (0x34797) uses those numbers: a "linked"
+  container writes the number of the creature in its word 1, a missile
+  inside a creature's possessions the number of the container in its
+  word 1 (10 bits each).
 - The record, bit-packed with a per-type mask (pointer table at 0x754D7).
   The `next` link is never saved (its mask is 0); lists are rebuilt from
   the order written. Masks, as the bits kept in each word after `next`:
@@ -146,15 +183,25 @@ The mask leaves gaps (for example only the low 3 bits at 0x08 and the low
 | 0 door | word 1: 0x3E00 | Only the state bits |
 | 2 text | word 1: 0x0001 | The visible flag |
 | 3 actuator | byte 4: bits 0 and 2 | For actuator types 0x1B, 0x1D, 0x27, 0x2C, 0x2D, 0x30, 0x32 and 0x41, an extra 9-bit value (word 1 >> 7) |
-| 4 creature | words 3-6 mostly, plus 0x0780 of word 7 | Possessions follow as a nested chain. An alternative mask (0x7548B) applies to some creatures (0x1F9A3). |
+| 4 creature | words 3-6 mostly, plus 0x0780 of word 7 | Possessions follow as a whole nested chain. Creature types with info flag bit 0 (0x1F9A3) use the alternative mask 0x7548B, and then their possessions' cells are written too. |
 | 5 weapon | 0x3DFF | Kind, flags and charges |
 | 6 clothing | 0x1FFF | |
 | 7 scroll | 0xFFFF | |
 | 8 potion | 0xFFFF | |
-| 9 container | word 2: 0xE000, word 3: 0x0400 | Then the 2 state bits of byte 4, then the contents chain. Some containers (0x1FA8F) save a single "has contents" bit instead and are handled by cross-reference. |
-| 10 misc | 0xC0FF | Inside money containers the mask switches to 0xFF7F so the stack count is kept |
-| 14 missile | words 2-3: 0xFFFF, 0x03FF | Then the carried thing as a chain |
-| 15 cloud | 0xFFFF | Clouds tied to a timer of type 0x19 write a 1 bit and the timer index (10 bits) instead |
+| 9 container | word 2: 0xE000, word 3: 0x0400 | Then the contents as a whole chain. Containers with (word 2 & 6) == 2 (0x1FA8F) use mask 0x754B3 and write only a "has contents" bit; a set bit registers them for the cross-reference block. |
+| 10 misc | 0xC0FF | Inside a money container (state bits 0 and a (20, item, 5, 0x40) entry, 0x1F2AB) the mask switches to 0x754BF (0xFF7F) so the stack count is kept |
+| 14 missile | words 2-3: 0xFFFF, 0x03FF | Then the payload as a single chain. A missile among a creature's possessions uses mask 0x754CF and is registered for the cross-reference block instead. |
+| 15 cloud | 0xFFFF | Then a 1 bit and the index (10 bits) of the type-0x19 timer holding it, or a 0 bit |
+
+The pointer table at 0x754D7 holds no mask for types 1 (teleporter) and
+11-13, so those write nothing at all. Unrelocated, its entries are
+offsets from the data object's base.
+
+**Squares** (0x34E73): maps in order, then x, then y (storage order).
+Bits saved per element: pit 0x08, door 0x07, trick wall 0x04, a plain
+teleporter 0x08. A teleporter that is a map-edge link (0x1D113) saves no
+bits, and its thing list is written only on the side whose partner map
+has the higher index.
 
 ## Loading sequence (0x370D2)
 
@@ -167,9 +214,33 @@ The mask leaves gaps (for example only the low 3 bits at 0x08 and the low
 5. Post-processing (0x36EF6, 0x55F4F, 0x594A1), then 0x4AE20 places the
    party on (x, y, map). The .BAK rename happens if the .BAK was used.
 
+## The remake's files
+
+`save.rs` writes the format above, then appends a trailer with the
+engine's exact state (full random state and tick, all timer bytes, full
+champion records, move cooldown, pending damage, deferred map change).
+It ends with the trailer length (u32) and the tag `DM2R`. The DOS reader
+consumes a fixed amount and should ignore it. Without the trailer the
+loader uses the original fields only. Like the original, saving prepares
+the live game first (creature slots freed, timers compacted), so
+continuing after a save matches loading it; this is covered by a test.
+
+The loader takes the dungeon from the snapshot as is and does not parse
+the dynamic object part, since the snapshot already holds the current
+records and lists. This assumes the DOS snapshot is a plain memory copy,
+which is what the writer suggests.
+
 ## Open questions
 
-- Confirm all offsets against a real save written by the game (DOSBox).
+- Confirm all offsets against a real save written by the game (DOSBox):
+  in particular the chain terminators, the third argument of the square
+  chains (assumed "whole list"), the cloud and cross-reference rules,
+  and that the DOS game loads a remake save.
+- The edge-link rule compares the partner map with the
+  current one; which side counts as "lower" should be checked in a save
+  from a dungeon with edge links.
+- The leader's hand item (0x7FBB4) is not modelled by the engine yet; it
+  is carried through `Legacy` unchanged.
 - The meaning of the globals at 0x716A0, 0x7F19C, 0x7F270 and the
   environment bytes.
 - The exact champion mask fields (to be aligned with `06-champions.md`).
