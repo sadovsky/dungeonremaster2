@@ -269,6 +269,12 @@ fn view_extras(g: &GameState) -> viewport::ViewExtras {
         }
     }
     ex.mid_step = g.walk.is_some();
+    if let Some(d) = &g.creature_data {
+        // 0x802CC's high word (0x802CE) is the ambient level: the darkness
+        // step (0x7F282) × 10, set each frame at 0x54015.
+        ex.darkness_step = creatures::fight::darkness_level(g, d) as i32;
+        ex.ambient = ex.darkness_step * 10;
+    }
     ex
 }
 
