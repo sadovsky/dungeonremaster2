@@ -7,7 +7,7 @@ use dm2_formats::gdat::Key;
 
 use crate::assets::Assets;
 use crate::font::Font;
-use crate::gfx::{Bitmap, SCREEN_H, SCREEN_W};
+use crate::gfx::{Bitmap, Sprite, SCREEN_H, SCREEN_W};
 use crate::viewport::VP_SCREEN_POS;
 
 /// What the interface shows for one champion.
@@ -83,6 +83,16 @@ pub struct UiView {
     pub magic: Option<usize>,
     /// Item in the leader's hand, drawn as the cursor.
     pub held: Option<Icon>,
+    /// Graphics set of the party's map; picks the formation grid's floor
+    /// (8, set, 0xF5) drawn by 0x42EDD.
+    pub map_set: u8,
+    /// Invisibility active (0x7FFEE non-zero): the formation figures use
+    /// the alternate half of their sheets.
+    pub alt_figures: bool,
+    /// Party asleep (0x7F234): hand cells and formation cells are shaded.
+    pub asleep: bool,
+    /// Hand cell drawn with the highlighted tile (champion, hand).
+    pub hand_highlight: Option<(usize, usize)>,
 }
 
 /// Layout ids used below.
@@ -119,6 +129,8 @@ mod id {
     pub const HAND1: u16 = 70; // + champion
     pub const CELL_BACK: u16 = 0x57; // + party cell
     pub const CELL_FRONT: u16 = 0x53; // + party cell
+    pub const FORMATION: u16 = 0x2F; // formation grid floor
+    pub const FIGURE: u16 = 0x35; // + party cell
     pub const MENU_ROW: u16 = 0x3F; // + row
     pub const MENU_TEXT: u16 = 0x42; // + row
 }
@@ -341,25 +353,143 @@ fn action_area(a: &mut Assets, font: &Font, view: &UiView, col: &[u8; 16], s: &m
         }
         return;
     }
+    // Idle action area, in the original's order (0x3FE68): for each
+    // champion its two hand cells (0x42DA6) and its formation cell
+    // (0x4315D); then the formation grid with the figures (0x42EDD). All
+    // positions are by party cell relative to the facing, not by champion.
     for (i, c) in view.champions.iter().enumerate() {
         let Some(c) = c else { continue };
-        let cell = view.cells[i] & 3;
-        let flip = u8::from(cell == 1 || cell == 2);
-        let (back, front) = if cell < 2 { (6, 10) } else { (8, 12) };
-        a.draw(s, 1, 4, back, id::CELL_BACK + cell as u16, flip, None);
-        let lead = u8::from(view.leader == Some(i));
-        a.draw(s, 1, 4, front + lead, id::CELL_FRONT + cell as u16, flip, Some(ICON_KEY));
+        let rel = (view.cells[i] & 3) as u16;
+        for h in 0..2 {
+            let rid = if h == 1 { id::HAND1 } else { id::HAND0 } + rel;
+            let lit = view.hand_highlight == Some((i, h));
+            hand_cell(a, s, col, c.dead, view.hands[i][h], h, rid, lit, view.busy[i][h] || view.asleep);
+        }
         if c.dead {
             continue;
         }
-        for (h, rid) in [(0usize, id::HAND0), (1, id::HAND1)] {
-            if let Some((cat, idx, sub)) = view.hands[i][h] {
-                let sub = if view.busy[i][h] { sub + 1 } else { sub };
-                if !a.draw(s, cat, idx, sub, rid + i as u16, 0, Some(ICON_KEY)) {
-                    a.draw(s, cat, idx, sub.saturating_sub(1), rid + i as u16, 0, Some(ICON_KEY));
+        let flip = u8::from(rel == 1 || rel == 2);
+        let (back, front) = if rel < 2 { (6, 10) } else { (8, 12) };
+        a.draw(s, 1, 4, back, id::CELL_BACK + rel, flip, Some(CELL_KEY));
+        if view.asleep || c.damage.is_some() {
+            shade_at(a, s, 1, 4, back, id::CELL_BACK + rel, col[0]);
+        }
+        let lead = u8::from(view.leader == Some(i));
+        a.draw(s, 1, 4, front + lead, id::CELL_FRONT + rel, flip, Some(CELL_KEY));
+        if view.asleep {
+            shade_at(a, s, 1, 4, front + lead, id::CELL_FRONT + rel, col[0]);
+        }
+    }
+    a.draw(s, 8, view.map_set, 0xF5, id::FORMATION, 0, None);
+    for (i, c) in view.champions.iter().enumerate() {
+        let Some(c) = c else { continue };
+        if c.dead {
+            continue;
+        }
+        let rel = (view.cells[i] & 3) as i32;
+        let Some(sheet) = a.sprite(1, 6, i as u8) else { continue };
+        let x0 = FIGURE * (rel + if view.alt_figures { 4 } else { 0 });
+        if let Some(fig) = crop(&sheet, x0, 0, FIGURE, FIGURE) {
+            if let Some(p) = a.layout.resolve(id::FIGURE + rel as u16, FIGURE, FIGURE, (FIGURE, FIGURE)) {
+                fig.blit(s, &p, 0, Some(ICON_KEY));
+            }
+        }
+    }
+}
+
+/// Formation-cell images (1, 4, 6-13) are keyed on nibble 4 (checked
+/// against the original: their nibble-4 areas show what lies beneath).
+const CELL_KEY: u8 = 4;
+
+/// Size of one party figure in the (1, 6, champion) sheets (0x71726/0x7172A).
+const FIGURE: i32 = 17;
+
+/// A w×h piece of a sprite, keeping its colour map.
+fn crop(sp: &Sprite, x0: i32, y0: i32, w: i32, h: i32) -> Option<Sprite> {
+    if x0 < 0 || y0 < 0 || x0 + w > sp.w as i32 || y0 + h > sp.h as i32 {
+        return None;
+    }
+    let mut px = Vec::with_capacity((w * h) as usize);
+    for y in y0..y0 + h {
+        let row = y as usize * sp.w;
+        px.extend_from_slice(&sp.px[row + x0 as usize..row + (x0 + w) as usize]);
+    }
+    Some(Sprite { w: w as usize, h: h as usize, px, cmap: sp.cmap, off: (0, 0) })
+}
+
+/// Shade the box an image (cat, idx, sub) occupies at `rid` with a
+/// checkerboard of colour `c`, like 0x1BDC3 does for busy hands and
+/// sleeping or wounded champions.
+fn shade_at(a: &mut Assets, s: &mut Bitmap, cat: u8, idx: u8, sub: u8, rid: u16, c: u8) {
+    let Some(sp) = a.sprite(cat, idx, sub) else { return };
+    let Some(p) = a.layout.resolve(rid, sp.w as i32, sp.h as i32, (sp.w as i32, sp.h as i32)) else { return };
+    shade(s, p.x, p.y, p.w, p.h, c);
+}
+
+fn shade(s: &mut Bitmap, x: i32, y: i32, w: i32, h: i32, c: u8) {
+    for yy in y.max(0)..(y + h).min(s.h as i32) {
+        for xx in x.max(0)..(x + w).min(s.w as i32) {
+            if (xx + yy) & 1 == 0 {
+                s.px[yy as usize * s.w + xx as usize] = c;
+            }
+        }
+    }
+}
+
+/// One hand cell of the action area (0x42DA6): the cell tile, then the
+/// hand's icon centred on it (0x3844C). An item gets a one-pixel drop
+/// shadow in colour 0 (16×16 icon in a 17×17 box); an empty hand shows
+/// the bare-hand picture (1, 2, 7 + hand) plainly. A dead champion's cells
+/// are cleared.
+#[allow(clippy::too_many_arguments)]
+fn hand_cell(a: &mut Assets, s: &mut Bitmap, col: &[u8; 16], dead: bool, item: Option<Icon>, hand: usize, rid: u16, lit: bool, shaded: bool) {
+    let Some(tile) = a.sprite(1, 4, if lit { 4 } else { 2 }) else { return };
+    let Some(p) = a.layout.resolve(rid, tile.w as i32, tile.h as i32, (tile.w as i32, tile.h as i32)) else { return };
+    if dead {
+        fill(s, p.x, p.y, p.w, p.h, col[0]);
+        return;
+    }
+    tile.blit(s, &p, 0, None);
+    // 0x3844C asks 0x37F76 with the "no context" flag, so action-area icons
+    // always use the item's base frame: no animation, no equipped variant.
+    let (icon, shadow) = match item {
+        Some((c, i, _)) => (a.sprite(c, i, crate::items::ICON_BASE), true),
+        None => (a.sprite(1, 2, 7 + hand as u8), false),
+    };
+    if let Some(icon) = icon {
+        // Both paths centre a 17×17 box (16×16 icon plus its shadow).
+        let (bw, bh) = (icon.w as i32 + 1, icon.h as i32 + 1);
+        let x = p.x + ((tile.w as i32 + 1) >> 1) - ((bw + 1) >> 1);
+        let y = p.y + ((tile.h as i32 + 1) >> 1) - ((bh + 1) >> 1);
+        let at = |x, y| crate::layout::Placement { x, y, w: icon.w as i32, h: icon.h as i32, skip_x: 0, skip_y: 0 };
+        if shadow {
+            for yy in 0..icon.h {
+                for xx in 0..icon.w {
+                    if icon.px[yy * icon.w + xx] != ICON_KEY {
+                        let (dx, dy) = (x + 1 + xx as i32, y + 1 + yy as i32);
+                        if dx >= 0 && dy >= 0 && (dx as usize) < s.w && (dy as usize) < s.h {
+                            s.px[dy as usize * s.w + dx as usize] = col[0];
+                        }
+                    }
                 }
             }
         }
+        // 0x1AF61: an item icon's colour map goes through the 256-byte remap
+        // table (1, 0, 7, 1) before drawing, which gives the action area its
+        // dimmed item icons.
+        let mut dimmed = Sprite { w: icon.w, h: icon.h, px: icon.px.clone(), cmap: icon.cmap, off: (0, 0) };
+        // Only items take this path; the bare-hand picture is drawn plainly.
+        if let (true, Some(m), Some(t)) = (shadow, dimmed.cmap.as_mut(), a.gdat.get(Key::new(1, 0, 7, 1))) {
+            if t.len() >= 256 {
+                for c in m.iter_mut() {
+                    *c = t[*c as usize];
+                }
+            }
+        }
+        dimmed.blit(s, &at(x, y), 0, Some(ICON_KEY));
+    }
+    if shaded {
+        shade(s, p.x, p.y, p.w, p.h, col[0]);
     }
 }
 

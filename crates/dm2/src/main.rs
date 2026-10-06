@@ -156,6 +156,11 @@ fn ui_view(g: &GameState, demo: bool) -> UiView {
         });
     }
     v.leader = g.leader;
+    v.map_set = g.dungeon.maps[g.party.map].tileset;
+    v.alt_figures = g.magic_counter != 0;
+    v.asleep = g.party_status.asleep;
+    // Before any selection the leader's action hand is the one left lit.
+    v.hand_highlight = g.hand.highlight.or(g.leader.map(|l| (l, 1)));
     // Icon frame from attribute 6 (0x37F76); `slot` is where the item sits,
     // for the "animate only while equipped" gate.
     let icon = |t: u16, slot: Option<usize>| -> Option<Icon> {

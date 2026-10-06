@@ -41,11 +41,16 @@ pub struct HandState {
     pub busy_until: [[u32; 2]; 4],
     /// The eye was clicked: show the held item's details (0x3A409).
     pub show_info: bool,
+    /// Last hand cell selected in the action area (champion, hand), drawn
+    /// with the highlighted tile. Presentation only: the original sets
+    /// 0x7FB50/0x7FB4C when a hand or party cell is clicked and never
+    /// redraws the cell until its contents change, so the highlight stays.
+    pub highlight: Option<(usize, usize)>,
 }
 
 impl Default for HandState {
     fn default() -> Self {
-        HandState { held: EMPTY, inventory_open: None, menu: None, magic: None, busy_until: [[0; 2]; 4], show_info: false }
+        HandState { held: EMPTY, inventory_open: None, menu: None, magic: None, busy_until: [[0; 2]; 4], show_info: false, highlight: None }
     }
 }
 
@@ -429,6 +434,7 @@ pub fn open_menu(g: &mut GameState, champion: usize, hand: usize) -> bool {
     if actions.is_empty() {
         return false;
     }
+    g.hand.highlight = Some((champion, hand));
     g.hand.menu = Some(ActionMenu { champion, hand, actions });
     g.hand.magic = None;
     true
