@@ -263,12 +263,49 @@ Without matching ammunition the action fails.
 the square. For damaging types (0xFF80, 0xFF82, 0xFFB0, 0xFFB1 and the
 spell explosion 0xFF8E) it:
 
-- Damages every creature on the square: base = (E/2 + 1) + random(E/2 + 1)
-  + 1, minus random(2r + 1) where r is the creature's resistance nibble
-  (type info word +0x18, bits 4-7; 15 means immune), quartered for
-  non-material creatures.
-- Damages the party with type 1 on all body parts (0x4766B, mask 0x3F)
-  when the party is on the square.
+- Rolls one base for the whole square: (E/2 + 1) + random(E/2 + 1) + 1.
+  For 0xFF82 and 0xFFB1 the base is halved, and if that leaves 0 nothing
+  is hurt. 0xFF80 and 0xFFB0 keep the full base.
+- Damages the party first, when it is on the square: the base, on all body
+  parts (mask 0x3F), attack type 1 (0x4766B).
+- Then each creature group on the square takes the same base, not a new
+  roll:
+  - for a resistant type (info byte 0x19 bit 0x10), unless the explosion
+    is a fireball, the shared base becomes max(1, base / 4), and stays so
+    for any later group;
+  - a non-material type takes base / 4;
+  - then random(2r + 1) is subtracted, with r the explosion-resistance
+    nibble (info word +0x18 bits 4-7; 15 means immune), and the rest is
+    dealt if positive.
+- Fireballs and 0xFFB0 can spread to a neighbouring square
+  (0x2FBE0); this spread is not modelled in the engine yet. 0xFF8E is not in
+  this damaging list in the original; the engine still treats it as a full
+  roll, which is unverified.
+
+### Clouds (event 0x19, 0x18395; damage 0x181F0)
+
+A cloud's word 1 holds its kind (bits 0-6) and strength s (high byte).
+Each step it hurts what is on its square through 0x181F0, gated by the
+kind's flag byte (table 0x716C4, kinds 0-7 only): bit 2 lets it reach the
+party, bit 3 creatures, bit 1 doors. The amount:
+
+1. d = s, quartered for creatures with info flag 0x19 bit 0x10 (not for
+   kind 0).
+2. If flag bit 0 is set, d becomes (s/2 + 1) + random(s/2 + 1) + 1. This
+   replaces step 1, so the quartering is lost (a quirk kept as is).
+3. By kind:
+   - **2:** halved.
+   - **3:** only non-material creatures (info flag 0x20) are hurt.
+   - **0 and 2 against doors:** only doors with bit 0x80 in byte +2.
+   - **7 (poison):** max(1, min(s >> 5, 4) + randbit()). For a creature that
+     amount goes through 0x31574: 0 if the poison-resistance nibble (info
+     word +0x18 bits 8-11) is 15, otherwise ((d + rand4()) × 8) /
+     (nibble + 2).
+   - **Others:** d.
+
+Kind 7 clouds of strength 6 or more and kind 0x28 above 0x37 linger,
+losing 3 and 0x28 strength each step. Cloud damage to doors is not yet
+modelled in the engine.
 
 0xFF84 and 0xFF8D act on doors ahead (open or break, depending on the
 door's flags). 0xFFE4 is the first step of rebirth. 0xFFA8 is a "fizzle"

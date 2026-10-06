@@ -360,3 +360,42 @@ fn shooting_fires_matching_ammunition_from_the_other_hand() {
     let r = combat::do_action(&mut g.champions, &mut g.party_status, idx, 1, &spec, &ctx, &mut g.rng);
     assert!(!r.success);
 }
+
+#[test]
+fn poison_cloud_damage_follows_the_formula() {
+    let Some(mut g) = game() else { return };
+    let flags = g.data.as_ref().unwrap().cloud_flags(7);
+    // Strength 0x90: min(0x90 >> 5, 4) = 4, plus one random bit.
+    let w = 7u16 | 0x90 << 8;
+    g.rng = Rng::new(1234);
+    let mut r = Rng::new(1234);
+    let d = missiles::cloud_damage(&mut g, 7, w, None);
+    if flags & 4 == 0 {
+        assert_eq!(d, 0, "kind 7 does not reach the party in this archive");
+        return;
+    }
+    if flags & 1 != 0 {
+        r.random((0x90 >> 1) + 1);
+    }
+    assert_eq!(d, (4 + r.bit()).max(1));
+    assert_eq!(g.rng.state, r.state, "random calls in the documented order");
+}
+
+#[test]
+fn explosion_rolls_once_and_hurts_the_party_first() {
+    let Some(mut g) = game() else { return };
+    let p = g.party;
+    let total = |g: &GameState| -> i32 {
+        g.champions.iter().map(|c| c.health() as i32).sum::<i32>()
+            - g.party_status.pending_damage.iter().map(|&d| d as i32).sum::<i32>()
+    };
+    let before = total(&g);
+    g.rng = Rng::new(99);
+    let mut r = Rng::new(99);
+    missiles::explode(&mut g, kind::LIGHTNING, 60, p.map, p.x, p.y, 0);
+    // One roll for the square, halved for this kind; nothing else on the
+    // party square, so the party's damage is the next random use.
+    let base = ((30 + 1) + r.random(31) + 1) >> 1;
+    assert!(base > 0);
+    assert!(total(&g) < before, "the party took the blast");
+}

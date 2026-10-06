@@ -425,33 +425,114 @@ pub fn explode(g: &mut GameState, what: u16, strength: u8, map: usize, x: i32, y
     ev.set_w8(placed.0);
     g.schedule(ev);
     if matches!(what, kind::FIREBALL | kind::LIGHTNING | kind::BLAST_A | kind::BLAST_B | kind::SPELL_BURST) {
+        // One roll for the whole square (0x16746): halved for 0xFF82 and
+        // 0xFFB1, and nothing is hurt when that half is 0. (0xFF8E is not in
+        // the original's list here; it keeps the full roll, unverified.)
         let e = strength as u16;
-        let groups: Vec<ThingRef> =
-            g.dungeon.things_at(map, x, y).into_iter().filter(|t| t.kind() == ThingType::Creature).collect();
-        for grp in groups {
-            let r = creatures::resistance(g, grp) as u16;
-            if r == 15 {
-                continue;
-            }
-            let base = (e / 2 + 1) + g.rng.random(e / 2 + 1) + 1;
-            let mut d = base as i32 - g.rng.random(2 * r + 1) as i32;
-            if creatures::is_non_material(g, grp) {
-                d >>= 2;
-            }
-            if d > 0 {
-                creatures::damage(g, grp, map, x, y, d as u16);
-            }
+        let mut base = (e / 2 + 1) + g.rng.random(e / 2 + 1) + 1;
+        if matches!(what, kind::LIGHTNING | kind::BLAST_B) {
+            base >>= 1;
         }
-        if g.party.map == map && g.party.x == x && g.party.y == y {
-            // TODO(docs/07): the exact party amount; the creature base roll is used.
-            let d = (e / 2 + 1) + g.rng.random(e / 2 + 1) + 1;
-            apply::damage_party(g, d as i16, PARTS_ALL, attack::FIRE);
+        if base > 0 {
+            // The party first: all body parts, attack type 1.
+            if g.party.map == map && g.party.x == x && g.party.y == y {
+                apply::damage_party(g, base as i16, PARTS_ALL, attack::FIRE);
+            }
+            let groups: Vec<ThingRef> =
+                g.dungeon.things_at(map, x, y).into_iter().filter(|t| t.kind() == ThingType::Creature).collect();
+            for grp in groups {
+                let info = {
+                    let ty = creatures::creature_type(g, grp);
+                    g.creature_data.clone().and_then(|d| creatures::type_info(g, &d, ty)).map(|(i, _)| i)
+                };
+                // Resistant types quarter the shared roll for the rest of the
+                // square, except against fireballs.
+                if info.as_ref().is_some_and(|i| i.raw[0x19] & 0x10 != 0) && what != kind::FIREBALL {
+                    base = ((base >> 2) & 0x3FFF).max(1);
+                }
+                let r = creatures::resistance(g, grp) as u16;
+                if r == 15 {
+                    continue;
+                }
+                let mut d = base;
+                if creatures::is_non_material(g, grp) {
+                    d = (base >> 2) & 0x3FFF;
+                }
+                let d = d as i32 - g.rng.random(2 * r + 1) as i32;
+                if d > 0 {
+                    creatures::damage(g, grp, map, x, y, d as u16);
+                }
+            }
         }
     }
     if matches!(what, kind::OPEN_DOOR | kind::BREAK_DOOR) {
         door_hit(g, what, map, x, y);
     }
     Some(placed)
+}
+
+/// How much a cloud hurts the party (`target` None) or a creature group
+/// (0x181F0). `w` is the cloud's word 1: kind in bits 0-6, strength s in
+/// the high byte. The kind's flag byte (0x716C4) gates the target: bit 2
+/// the party, bit 3 creatures. Then:
+/// - d = s, quartered for creatures with info flag 0x19 bit 0x10 (kind 0
+///   excepted);
+/// - flag bit 0 replaces d with (s/2 + 1) + random(s/2 + 1) + 1 (which
+///   discards that quartering, as in the original);
+/// - kind 2 halves d; kind 3 only hurts non-material creatures (info flag
+///   0x20); kind 7 (poison) is max(1, min(s >> 5, 4) + randbit()), and for
+///   creatures ((d + rand4) × 8) / (poison resistance + 2), 0 when the
+///   resistance nibble (info word +0x18 bits 8-11) is 15.
+pub(crate) fn cloud_damage(g: &mut GameState, kind: u8, w: u16, target: Option<ThingRef>) -> u16 {
+    if kind > 7 {
+        return 0;
+    }
+    let flags = g.data.as_ref().map_or(0, |d| d.cloud_flags(kind));
+    if flags == 0 {
+        return 0;
+    }
+    let info = match target {
+        None if flags & 4 == 0 => return 0,
+        None => None,
+        Some(_) if flags & 8 == 0 => return 0,
+        Some(c) => {
+            let ty = creatures::creature_type(g, c);
+            g.creature_data.clone().and_then(|d| creatures::type_info(g, &d, ty)).map(|(i, _)| i)
+        }
+    };
+    let s = w >> 8;
+    let mut d = s;
+    if let Some(i) = &info {
+        if i.raw[0x19] & 0x10 != 0 && kind != 0 {
+            d >>= 2;
+        }
+    }
+    if flags & 1 != 0 {
+        let half = (s >> 1) + 1;
+        d = half + g.rng.random(half) + 1;
+    }
+    match kind {
+        2 => d >> 1,
+        3 => match &info {
+            Some(i) if i.raw[0] & 0x20 != 0 => d,
+            _ => 0,
+        },
+        7 => {
+            let p = ((s >> 5).min(4) + g.rng.bit()).max(1);
+            match &info {
+                None => p,
+                Some(i) => {
+                    let r = (i.word18() >> 8) & 0xF;
+                    if r == 15 {
+                        0
+                    } else {
+                        ((p + g.rng.rand4()) * 8) / (r + 2)
+                    }
+                }
+            }
+        }
+        _ => d,
+    }
 }
 
 /// Cloud lifetime step, event 0x19 (0x18395).
@@ -466,22 +547,15 @@ pub fn cloud_event(g: &mut GameState, ev: Event) {
     let kind = (w & 0x7F) as u8;
     let strength = (w >> 8) as u8;
     if !matches!(kind, 0 | 2 | CLOUD_BOUNCE) {
-        let flags = g.data.as_ref().map_or(0, |d| d.cloud_flags(kind));
-        let dmg = |g: &mut GameState| -> u16 {
-            if flags & 1 != 0 {
-                g.rng.random(strength as u16 / 2 + 1) + 1
-            } else {
-                strength as u16
+        if g.party.map == map && g.party.x == x && g.party.y == y {
+            let d = cloud_damage(g, kind, w, None);
+            if d > 0 {
+                apply::damage_party(g, d as i16, PARTS_ALL, attack::MAGIC);
             }
-        };
-        // TODO(0x181F0): kinds 3 and 7 use further per-kind formulas.
-        if flags & 4 != 0 && g.party.map == map && g.party.x == x && g.party.y == y {
-            let d = dmg(g);
-            apply::damage_party(g, d as i16, PARTS_ALL, attack::MAGIC);
         }
-        if flags & 8 != 0 {
-            if let Some(grp) = creatures::group_at(g, map, x, y) {
-                let d = dmg(g);
+        if let Some(grp) = creatures::group_at(g, map, x, y) {
+            let d = cloud_damage(g, kind, w, Some(grp));
+            if d > 0 {
                 creatures::damage(g, grp, map, x, y, d);
             }
         }
