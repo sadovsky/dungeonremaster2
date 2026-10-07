@@ -182,6 +182,8 @@ pub mod hit_flags {
     pub const DOOR: (u16, i16) = (0x2006, 100);
     /// A thing landing on the group (move routine, 0x4B108): interrupt only.
     pub const FALL: (u16, i16) = (0x2000, 0);
+    /// A missile passing the group (0x17A7B): alert with no damage; chance 100.
+    pub const ALERT: (u16, i16) = (0x2006, 100);
 }
 
 /// Damage a creature group with the missile/effect flags; see `hit`.
@@ -844,12 +846,11 @@ mod tests;
 /// A missile passing nearby wakes a creature (docs/05, "Missile flight"):
 /// make sure it holds an active slot so its AI starts thinking.
 pub fn alert(g: &mut GameState, c: ThingRef, map: usize, x: i32, y: i32) {
-    if slot_of(g, c).is_some() {
-        return;
-    }
-    if let Some(d) = g.creature_data.clone() {
-        let _ = activate(g, &d, c, map, x, y);
-    }
+    // Missile flight wakes a group through the hit handler with no damage
+    // (0x1802F, 0x18106): a dormant group is left alone, an inactive one
+    // is activated, and the status-bit chance roll is always drawn.
+    let (f, ch) = hit_flags::ALERT;
+    hit(g, c, map, x, y, f, ch, 0);
 }
 
 /// Spell-reflecting creature type (docs/05: type flag 0x02).

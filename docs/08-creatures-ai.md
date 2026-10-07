@@ -845,3 +845,11 @@ also commits an attack action to the slot; that half is not ported yet.
   tested only for the kinds whose 0x752EA flags include 0x20 (kinds 2-4, 6,
   7 and 0x0A). Inferred from the draw log, where a kind 0x0D goal (flags
   0x45) never took the party's square.
+
+**Hit handler (round 11).** `creatures::hit` follows 0x24E62 from the
+disassembly with each caller's flags and chance (see docs/05, round 11):
+melee 0x6002/90 (also on a miss), missiles and clouds 0x200D/100, a
+closing door 0x2006/100, a missile passing a group 0x2006/100 with no
+damage, a falling thing 0x2000/0. Creature-versus-creature hits still use
+the missile flags; their caller (0x3127B) takes its flags from a register
+and was not traced.

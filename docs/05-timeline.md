@@ -324,9 +324,24 @@ whole first melee round; the idle run stays
 identical through tick 155 and the pit run through tick 1711. The planner's search setup (0x321B8) is now ported too: each expanded
 square steps the planner register once, bit 0 picking the turning sense
 and the low two bits the first of the four neighbours, with the layer
-moves after them. At tick 97 the original runs the hit handler (only its
-final `random(100)`) while creature 0x109B is processed, and the remake
-does not hit anything there.
+moves after them. Missile flight wakes the groups it passes through the
+hit handler too (0x1802F and 0x18106 in the flight handler 0x17A7B, flags
+0x2006, chance 100, no damage), so a dormant group is skipped, an inactive
+one activated and the chance roll drawn; the remake's alert now does the
+same. Goal kind 0x0A is ported as described in round 9 (tentative: the
+flag table at 0x75136 is indexed by creature type); goal word +0x0C, which
+sends kinds 5 and 0x0D to the kind 0x0B test, belongs to the planner's own
+goal record and is still not modelled.
+
+Next divergence, tick 97: in the original a missile is in flight on map 22
+and its flight event alerts creature 0x109B through the hit handler (only
+the final `random(100)`, since no damage is owed and no turn is asked
+for). The start save holds no missile event (only two ornament events and
+the weather step) and no creature on the map was in a ranged action, so
+something launches it silently between ticks 57 and 97; in the remake
+nothing does. A wall shooter set off by a creature or the party is the
+likeliest source; it needs the hooked build with the missile launch
+routines (0x16457, 0x47773, 0x47813) logged to settle.
 
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
