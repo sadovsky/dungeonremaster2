@@ -51,10 +51,10 @@ the same food and water, which from seed 0 are draws 121 and 122. So:
 - after that it draws about 37-39 times per tick, even with the party
   idle in the starting cave.
 
-The remake now follows the original's new-game order (weather start 0x59F38,
-then the creature pass of 0x3624F, then the recruit), but makes 32 draws
-before the recruit and about 1 per tick while idle, so its random results
-do not yet line up with the original's.
+Round 3 settled this with a draw log taken inside the running original
+(below, "Draw log"). The remake now matches the original's draw stream
+exactly up to the recruit: 122 draws, and the starting champion's food and
+water come out at the original's 1697/1686.
 
 **Idle draw rate (measured, round 2).** Two more new games, left idle and
 saved, give 4,564 draws by tick 114 at DOSBox's normal speed and 1,281 by
@@ -81,23 +81,57 @@ teleporter and cloud fields (0x509E6), none of them in the starting cave.
 The start map's two pending 0x5A events (wall and floor ornament
 animations, 0x5964E) draw nothing.
 
-**Open lead: creature animation.** The per-map pass 0x34106 (called for
-every map by 0x34236 at the main loop's start, after loading through
-0x342A3 and after saving through 0x3502B) tests info byte 0 bit 0 of each
-inactive creature group's type: clear means activate (0x306A8), set means
-start an animation through 0x301F3 → 0x14E42 instead. All 299 groups in the
-shipped dungeon have the bit set. 0x14F1B, reached from 0x14E42 and from
-the slot animation driver 0x25420, draws one number per frame that can
-branch randomly. 299 groups stepping a frame about every 8 ticks would give
-about 37 draws per tick, which matches the measured rate. But with the bit
-set on every type, the decompiled tests in 0x34106 and in 0x306A8 (which
-schedules the first step through 0x3023F only when the bit is clear) would
-never start any creature's AI, while creatures do act in the original. So
-either the decompiler has those tests inverted, or the remake's info
-record isn't the one 0x1F8D9 returns. This needs a dynamic check (for
-example counting active slots in a DOSBox memory dump) before porting:
-an attempt to port the pass as read left every creature in the remake
-inactive and was reverted.
+**Draw log (round 3).** A DOSBox 0.74 build with a small hook in its normal
+CPU core (it matches the generator's `imul eax,[state],0xBB40E62D`
+instruction, so it catches every inlined copy) logged each draw with the
+game tick (0x7F22C), four stack words and the creature whose AI context is
+loaded (0x7F548). The generator is inlined at three places: 0x1C6A1 (raw,
+also behind `random(n)` at 0x1C6B7), 0x1C6DC (one bit) and 0x1C6F6 (two
+bits). A new game left idle for 158 ticks gave:
+
+| Phase | Draws | Callers |
+|-------|-------|---------|
+| Before the recruit | 120 | weather start 0x59F38 (3), new-game creature pass 0x3624F (28), one weather step 0x5A073 (1), then 80 creature activations through 0x3023F/0x14F1B (88) |
+| Recruit | 2 | 0x49242 (food and water) |
+| Tick 1 | about 417 | every activated creature's first step: set selection 0x259CC (two per think), frame timing 0x3023F, think 0x262F7, context roll 0x24BFC |
+| Idle, per tick | 36.2 | 0x3023F 41%, 0x259CC 24%, 0x24BFC 12%, 0x14F1B 10%, 0x262F7 9%, weather about 1 per tick |
+
+**Creature pass at play start (0x34236 → 0x34106).** 0x34236 runs the
+per-map pass for every map in order (selecting each map, then restoring the
+party's), at the main loop's start, after loading (0x342A3) and after
+saving (0x3502B); 0x24629 runs it for the arrival map on a map change. The
+pass visits the current map's squares column by column; on each square the
+first creature group without a slot is either activated (0x306A8) when its
+type's info byte 0 bit 0 is clear, or left dormant when the bit is set:
+0x301F3 → 0x14E42 writes the first frame of action 0x11's sequence to
+record word +8 and its frame count to word +10, flagged 0x9000 (or
+`(w12 & 0x3F) << 6 | 0x8000` with record word +12 set), keeping the old
+word's 0x6000 bits and an old 0x8001 pattern (mask 0x803F). A dormant group
+draws nothing. In the shipped dungeon 219 groups are dormant and 80 are
+awake (round 2's "all 299 have the bit set" was wrong). Dormant groups wake
+only through the actuator signal 0x2538C (which activates a group whose bit
+is set) or by being hit; the thing-move routine 0x4B108 activates a moved
+group only when the bit is clear.
+
+**Activation (0x306A8)** runs the frame scheduler 0x3023F at once for awake
+types: it starts the current action's sequence (0x14E42 → 0x14F1B, a draw
+per branching frame) and rolls jitter, flip and extra ticks. The off-map
+slowdown branch (×4 plus a random bit) is not taken here: the log shows the
+extra-tick and jitter draws at activation but no off-map bit, which then
+appears on every later step. The first step is due on the next tick.
+
+**Slot pool.** Sized at game start (0x342F9) as min(awake groups + 100,
+creature records): 180 for the shipped dungeon. The remake had a fixed 75,
+which left the five awake creatures on maps 42 and 43 inactive.
+
+**Remaining gap.** The remake now matches through the recruit and makes
+about 32 draws per idle tick against 36.2; its creatures think about 20%
+less often (518 thinks in 156 ticks against 663, across the same 80
+creatures). Every per-step routine draws the same kinds of numbers, so the
+difference is in how long the chosen actions last, not in which draws are
+made. Tools: `examples/rngtrace.rs` counts the remake's draws per call site
+(through `rng::trace_start`), `examples/creaturewhy.rs` explains a
+creature's activation state.
 
 **Idle upkeep matches.** Over 114 idle ticks from a new game the original
 drains food by 4 and water by 2 with health and stamina unchanged

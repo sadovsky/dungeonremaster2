@@ -181,6 +181,10 @@ pub fn script_condition(g: &GameState, n: u16) -> bool {
 /// (0x25962 / 0x259CC). Returns the behaviour list address.
 fn select_set(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> u32 {
     let c = ctx.thing;
+    // 0x259CC starts with a raw draw whose value it doesn't use; it still
+    // advances the random stream.
+    g.rng.rnd();
+    crate::rng::trace_tag("think", (c.0 & 0x3FF) as u32);
     let mut st = status(g, c);
     let n = if ctx.cflags & 2 != 0 { 2 } else { (((c.0 & 3) + 1) * 2 - 1) * 2 };
     if g.rng.random(n) == 0 {
@@ -267,6 +271,19 @@ fn pick_behaviour(g: &mut GameState, d: &CreatureData, ctx: &Ctx, list: u32) -> 
     Some(gl.program)
 }
 
+/// AI context setup (0x24BFC): once per creature event, roll alertness as
+/// `random((15 - (info word 0x16 & 15)) * 2 + 1)`. The original compares the
+/// roll with another value to set a flag (0x7F589); only the roll is kept
+/// here, so the random stream matches.
+pub fn context_roll(g: &mut GameState, ctx: &Ctx) {
+    if g.creature_ctx_rolled {
+        return;
+    }
+    g.creature_ctx_rolled = true;
+    let n = (15 - (ctx.info.alertness_word() & 15)) * 2;
+    g.creature_alert_roll = g.rng.random(n + 1);
+}
+
 /// Think (0x262F7): choose and start the next action.
 pub fn think(g: &mut GameState, d: &CreatureData, ctx: &Ctx) {
     let list = select_set(g, d, ctx);
@@ -282,6 +299,11 @@ pub fn think(g: &mut GameState, d: &CreatureData, ctx: &Ctx) {
         }
         return;
     }
+    // Context setup with its alertness roll (0x24BFC), then a two-bit draw
+    // (0x1C6F6) whose zero test 0x262F7 keeps for later; both happen here in
+    // the original, before the move tests.
+    context_roll(g, ctx);
+    let _quarter = g.rng.rand4() == 0;
     // A creature that can't stay where it is tries to step away.
     if mode != 0 && !super::terrain::can_enter(g, ctx.map, ctx.x, ctx.y, ctx.info.terrain(), ctx.info.door_size().max(1)) {
         let mut dir = if g.rng.bit() != 0 { (facing(g, ctx.thing) + 2) & 3 } else { g.rng.rand4() as u8 };
@@ -738,6 +760,14 @@ pub(super) fn transform(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> bool 
 /// Delay before the next step, after playing the frame's sound and
 /// re-rolling jitter and flip.
 pub fn frame_delay(g: &mut GameState, ctx: &Ctx, an: &Anim) -> u16 {
+    frame_delay_ex(g, ctx, an, true)
+}
+
+/// `frame_delay` with the off-map slowdown branch optionally disabled. At
+/// activation (0x306A8 → 0x3023F) the original never takes that branch:
+/// its draw log shows the extra-tick and jitter draws there but no
+/// off-map bit, which appears on every later step.
+pub fn frame_delay_ex(g: &mut GameState, ctx: &Ctx, an: &Anim, allow_off_map: bool) -> u16 {
     let s = ctx.slot(g).clone();
     let off = if s.seq_off == NO_FRAME { 0 } else { s.seq_off };
     let f = an.frame(s.seq_start, off);
@@ -773,7 +803,7 @@ pub fn frame_delay(g: &mut GameState, ctx: &Ctx, an: &Anim) -> u16 {
     }
     let extra = if f.extra_ticks() != 0 { g.rng.random(f.extra_ticks()) } else { 0 };
     let mut delay = extra + f.base_ticks();
-    let off_map = ctx.map != g.party.map && ctx.cflags >> 16 & 1 == 0;
+    let off_map = allow_off_map && ctx.map != g.party.map && ctx.cflags >> 16 & 1 == 0;
     if s.action == ACTION_DIE && g.party_status.counter_0b != 0 && ctx.info.flags1() & 0x10 == 0 {
         delay *= 3;
     } else if off_map && st & 0x8000 != 0 && st & 2 == 0 {

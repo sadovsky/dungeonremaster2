@@ -89,12 +89,16 @@ fn resume(d: &Data) -> Result<GameState, String> {
 /// Start a new game the way the original does (recruits the starting
 /// champion when the game data is available).
 fn new_game(d: &Data) -> GameState {
+    // With game data, start in the original's random-draw order (creature
+    // activation before the recruit); creature data is set inside.
     let mut g = match &d.game_data {
-        Some(gd) => GameState::new_game_with(&d.assets.dungeon, gd.clone()),
+        Some(gd) => GameState::new_game_full(&d.assets.dungeon, gd.clone(), d.creature_data.clone()),
         None => GameState::new_game(&d.assets.dungeon),
     };
-    if let Some(cd) = &d.creature_data {
-        creatures::set_data(&mut g, cd.clone());
+    if g.creature_data.is_none() {
+        if let Some(cd) = &d.creature_data {
+            creatures::set_data(&mut g, cd.clone());
+        }
     }
     g
 }
@@ -1016,10 +1020,10 @@ mod screen_tests {
         let cases: [(&str, &[u16], u64); 5] = [
             ("start", &[], 0x5419f7d0883bebfb),
             // The food/water bars depend on the starting champion's random
-            // food and water, drawn after the weather and creature passes
-            // as in the original (new_game.rs); the values still differ
-            // from the original's until its per-tick draws are modelled.
-            ("inventory", &[7], 0xc888e6df95b3a919),
+            // food and water. They are drawn after the weather start, the
+            // creature pass and the all-maps activation pass, as in the
+            // original, and now equal its 1697/1686.
+            ("inventory", &[7], 0x87afdfccdf4a8a37),
             ("action menu", &[0x75], 0xb1c79885b597f7c3),
             ("paused", &[0x90], 0xf6498d891cf26ca8),
             ("eye, empty hand", &[7, 0x47], 0xe6d8a3c85198e6ad),
