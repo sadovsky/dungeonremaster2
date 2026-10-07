@@ -753,6 +753,73 @@ fn ornament_cycle(g: &GameState, map: usize, a: &Actuator, wall: bool) -> u32 {
     crate::font::text(&data.gdat, cat, orn, 0x0D, &Default::default()).map_or(1, |t| (t.len() as u32).max(1))
 }
 
+/// Event type of the repeating ornament sound (0x5964E).
+pub const EV_ORNAMENT_SOUND: u8 = 0x5A;
+
+/// Arm an animated ornament's repeating sound (0x56D6A). Word 1 bit 15 marks
+/// a sound already scheduled. Otherwise event 0x5A is scheduled at the next
+/// tick where the tick plus the ornament's phase (word 1 bits 7-14) plus its
+/// sound offset (number attribute 0x88) is a multiple of the cycle, bit 15
+/// is set, and when that is the current tick the sound plays at once.
+/// Returns the new word 1.
+fn arm_ornament_sound(g: &mut GameState, map: usize, a: &Actuator, wall: bool, n: u32, w1: u16, x: i32, y: i32) -> u16 {
+    if w1 & 0x8000 != 0 {
+        return w1;
+    }
+    let Some((cat, orn)) = ornament_of(g, map, a, wall) else { return w1 };
+    let phase = (w1 >> 7 & 0xFF) as u32;
+    let base = g.tick.wrapping_add(phase).wrapping_add(g.attrs.get(cat, orn, 0x88) as u32);
+    let rem = base % n.max(1);
+    let mut ev = Event::new(EV_ORNAMENT_SOUND, map as u8, g.tick.wrapping_add(n.max(1) - rem));
+    ev.x = x as u8;
+    ev.y = y as u8;
+    ev.set_w8(a.thing.0);
+    g.schedule(ev);
+    if rem == 0 {
+        play_ornament_sound(g, map, cat, orn, wall, a.thing.cell(), x, y);
+    }
+    (w1 & 0x7F) | ((phase as u16 | 0x100) << 7)
+}
+
+/// The ornament's sound (0x88, fallback index 0xFE). A wall ornament's sound
+/// comes from the square in front of it unless the party stands there.
+fn play_ornament_sound(g: &mut GameState, map: usize, cat: u8, idx: u8, wall: bool, cell: u8, x: i32, y: i32) {
+    let (mut sx, mut sy) = (x, y);
+    if wall {
+        let (fx, fy) = (x + crate::viewport::DX[cell as usize & 3], y + crate::viewport::DY[cell as usize & 3]);
+        if !(g.party.map == map && (g.party.x, g.party.y) == (fx, fy)) {
+            sx = fx;
+            sy = fy;
+        }
+    }
+    g.effects.push(Effect::SoundAt { vol: 0x8C, mode: 1, cat, idx, sub: 0x88, map, x: sx, y: sy });
+}
+
+/// Event 0x5A (0x5964E): while the ornament still animates (word 2 bit 0)
+/// and the party is on the event's map, play its sound and come back one
+/// cycle later; otherwise drop the sound, clearing word 1 bit 15 (the
+/// phase in bits 7-14 is kept).
+pub fn ornament_sound_event(g: &mut GameState, ev: Event) {
+    let t = ThingRef(ev.w8());
+    if !t.is_thing() || t.kind() != ThingType::Actuator {
+        return;
+    }
+    let a = Actuator::load(g, t);
+    let map = ev.map as usize;
+    if a.w2 & 1 != 0 && map == g.party.map {
+        let wall = g.dungeon.square(map, ev.x as i32, ev.y as i32).element() == Element::Wall;
+        let n = ornament_cycle(g, map, &a, wall).max(1);
+        let mut next = ev;
+        next.tick = ev.tick.wrapping_add(n);
+        g.schedule(next);
+        if let Some((cat, orn)) = ornament_of(g, map, &a, wall) {
+            play_ornament_sound(g, map, cat, orn, wall, t.cell(), ev.x as i32, ev.y as i32);
+        }
+    } else {
+        set_w(g, t, 1, (a.w1 & 0x7F) | (a.w1 >> 7 & 0xFF) << 7);
+    }
+}
+
 /// Actuator 0x2C (0x56F11): an animated ornament switched on and off.
 /// Word 2 bit 2 holds the switch, bit 0 "animating", and word 1 bits 7-14
 /// the animation phase. Switching on starts the animation aligned to the
@@ -780,13 +847,9 @@ fn animated_ornament(g: &mut GameState, ev: Event, a: &Actuator, wall: bool) {
             w2 |= 1;
             let start = ((n - g.tick % n) % n) as u16;
             w1 = (w1 & 0x807F) | (start & 0xFF) << 7;
-            // The original also schedules a repeating ornament sound
-            // (event 0x5A, attribute 0x88) when the sound bit is set; the
-            // first one plays now.
+            // With the sound bit set, arm the repeating ornament sound.
             if a.sound() {
-                if let Some((cat, idx)) = ornament_of(g, map, a, wall) {
-                    g.effects.push(Effect::Sound { cat, idx, sub: 0x88, map, x: ev.x as i32, y: ev.y as i32 });
-                }
+                w1 = arm_ornament_sound(g, map, a, wall, n, w1, ev.x as i32, ev.y as i32);
             }
         }
     }

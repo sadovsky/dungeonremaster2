@@ -254,8 +254,13 @@ fn thunder(g: &mut GameState) {
     crate::sound_queue::request(g, 0x17, set, 0, 0x40, p.map, p.x, p.y, delay.clamp(1, 15) as i8);
 }
 
+/// 0x59F12 builds the event on the stack and writes only the due tick (as a
+/// whole 32-bit word, so the "map" byte is the tick's top byte, 0 in
+/// practice), the type and priority 0; the square and parameter bytes are
+/// left as whatever the stack held and nothing reads them.
 fn schedule(g: &mut GameState, delay: u32) {
-    let ev = Event::new(EV_WEATHER, g.party.map as u8, g.tick.wrapping_add(delay));
+    let due = g.tick.wrapping_add(delay);
+    let ev = Event::new(EV_WEATHER, (due >> 24) as u8, due);
     g.schedule(ev);
 }
 

@@ -95,6 +95,12 @@ fn main() {
             }
         }
     }
+    // SAVEOUT=PATH writes the state at END_TICK as a save, to compare field by
+    // field with the original's save at that tick (examples/statediff).
+    if let Ok(p) = std::env::var("SAVEOUT") {
+        let bytes = dm2_engine::save::to_bytes(&g, "REMAKE").expect("save");
+        std::fs::write(&p, bytes).expect("SAVEOUT");
+    }
     if tl {
         let p = std::env::var("TLLOG").unwrap();
         std::fs::write(&p, tl_out.join("\n") + "\n").expect("TLLOG");

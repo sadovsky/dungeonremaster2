@@ -565,6 +565,47 @@ so it walks the creature into the door square. Porting the movement test's
 door branches is the next step. The hooked build still writes no save, so
 the field-by-field combat comparison is still open.
 
+**Round 17: doors in the movement test, and a whole fight compared field by field.**
+
+- **Closed doors stop a walk.** Think's wander only stores action 2; the
+  walk is carried out by the walk's frame event (0x29DE7), which runs the
+  movement test again with the slot's mode plus 0x80. When the destination's
+  terrain class masked by the creature's terrain mask is exactly 0x4000 (a
+  closed door, 0x4200, for a type without the 0x0200 bit), the test hands
+  the door to the door routine (0x2CC42) in mode 0 with that commit bit
+  (0x2E51A) and returns its result. The walk handler moves the creature only
+  for actions whose flag entry has bit 4 (0x29E4A), which the routine's
+  turn, bash and casts lack, so the step fails and the creature stays put.
+  The round 8 log now matches over its whole length: 8,413 draws through
+  tick 258.
+- **Saves from the draw-logging build.** The build always saved; the probe
+  clicked the wrong row. In the save list slot n's name sits at
+  y = 55 + 7n, not 53 + 8n, so "slot 8" landed in slot 9 and was reported
+  as not written.
+- **A combat run checked at its save (c5).** From the round 8 start save,
+  attack at tick 191; the original saved at tick 352. The remake matches its
+  draw stream through tick 350 and, compared field by field at 352
+  (`examples/statediff`, both saves loaded as the original loads them),
+  differs only where noted below. Fixes made on the way:
+  - hands' busy counters (+0x2A-0x2C), the action byte (+0x20, the command
+    code, set by the executor at 0x4155A) and the end of an action (0x40AA6)
+    clearing the defence bonus; the remake had kept its own busy timer;
+  - the creature melee frame recording the heaviest blow and its side in
+    +0x29/+0x28 (docs/06);
+  - the weather event's map byte (event table, 0x54);
+  - event 0x5A, the repeating ornament sound: two such events pending in the
+    start save fire while the party is elsewhere and clear their actuators'
+    word 1 bit 15; the remake had no handler.
+- **Still different at the c5 save:** creature record 155 (thing 0x109B,
+  the creature the tick-97 floor trap strikes) keeps status bit 0x1000 in
+  the remake while the original clears it, although that creature makes no
+  random draws in either run; two square bytes (map data 1954 and 6891); and
+  the leftover stack bytes of the weather event, which nothing reads.
+- **Not ported:** the reload that ends actions 0x20 and 0x2A (0x40B09), and
+  the per-square sound position quirk of 0x5964E (it indexes the direction
+  tables with the event's byte 9).
+
+
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
 (5,13), from the pit probe's save), the original reached its game-over
@@ -842,13 +883,13 @@ Who schedules each type was recovered by scanning every call to 0x56390
 | 0x47 | inline | 0x414A5, 0x422F5 | Decrement counter 0x7FFEE. When it reaches 0, mark the champion whose inventory is open (0x7F972) with flag 0x40. Tentative: light or magic-map duration. |
 | 0x48 | inline | 0x4565A | A party effect expires: for each champion in mask +5, subtract the u16 at +6 from the effect amount at +0x103 (not below 0). See 07-combat-magic, "Party shields and effects". |
 | 0x4B | inline | 0x474FC | Champion +5: decrement champion byte +0x1F and subtract the u16 at +6 from field +0x48, then 0x474FC. Tentative: an expiring per-champion effect. |
-| 0x54 | 0x5A073(1) | itself, weather start (0x59F12) | Weather step: advance the rain curve one step, reschedule after random(256)+50 ticks; after 32 steps start a new cycle (see docs/04 "Outdoor weather"). The weather state (rain intensity and level, cloud level and build-up, storm, wind, curve step, pattern and multiplier, next hour change) is saved in the globals record, bytes 0x2A-0x3B (docs/12), and restored on load; the hour offset and hour light are recomputed from the dungeon |
+| 0x54 | 0x5A073(1) | itself, weather start (0x59F12) | 0x59F12 writes only the due tick (a whole 32-bit word, so the map byte is the tick's top byte, 0 in practice), the type and priority 0; the other bytes are leftover stack contents. Weather step: advance the rain curve one step, reschedule after random(256)+50 ticks; after 32 steps start a new cycle (see docs/04 "Outdoor weather"). The weather state (rain intensity and level, cloud level and build-up, storm, wind, curve step, pattern and multiplier, next hour change) is saved in the globals record, bytes 0x2A-0x3B (docs/12), and restored on load; the hour offset and hour light are recomputed from the dungeon |
 | 0x55 | 0x59293 | actuator 0x32 (0x570B1) | One-shot ornament step: add 1 to the actuator's 9-bit frame counter (word 1 bits 7-15); when it reaches a multiple of the ornament's cycle length (0x56CF4) clear the busy bit, otherwise reschedule for the next tick |
 | 0x56 | 0x593CF | clock actuators (0x592FA) | Periodic actuator tick (types 0x1E, 0x33-0x37) |
 | 0x57 | inline | wall sensors 0x4C134 | Re-arm an actuator: clear bit 0 of the thing's word 2 |
 | 0x58 | 0x59608 | 0x22A68 | Clear bit 11 of word 1 of thing +6 |
 | 0x59 | 0x5961B | actuator 0x2C (0x56F11) | If thing +8's word 2 bit 2 is clear: clear bit 0 and redraw |
-| 0x5A | 0x5964E | 0x56D6A | Actuator follow-up (0x56D6A also reads ornament attributes) |
+| 0x5A | 0x5964E | 0x56D6A | Repeating ornament sound. 0x56D6A (an animated-ornament actuator switched on with its sound bit) schedules it unless the actuator's word 1 bit 15 is already set, at the next tick where tick + phase + the ornament's attribute 0x88 is a multiple of the cycle, then sets bit 15. The handler plays the sound (0x88) and comes back one cycle later while the actuator still animates (word 2 bit 0) and the party is on the event's map; otherwise it clears bit 15 |
 | 0x5B | inline (same as 0x57) | wall actuator 0x31 | Re-arm after the debounce delay |
 | 0x5C | inline | wall sensors 0x4C134 | Set bit 0 of word 1 of thing +6/+7 |
 | 0x5D | inline | floor sensors 0x4CDCC | If the event's map (+8) is the party's map: move the party to (x, y) taken from +6 bits 0-4 and 5-9, then turn it to direction bits 10-11. A delayed teleport. |

@@ -37,8 +37,6 @@ pub struct HandState {
     pub menu: Option<ActionMenu>,
     /// Champion whose spell panel is open (0x7FB6E in the spell state).
     pub magic: Option<usize>,
-    /// Tick until which each champion's hand is busy after an action.
-    pub busy_until: [[u32; 2]; 4],
     /// The eye was clicked: show the held item's details (0x3A409).
     pub show_info: bool,
     /// Last hand cell selected in the action area (champion, hand), drawn
@@ -50,7 +48,7 @@ pub struct HandState {
 
 impl Default for HandState {
     fn default() -> Self {
-        HandState { held: EMPTY, inventory_open: None, menu: None, magic: None, busy_until: [[0; 2]; 4], show_info: false, highlight: None }
+        HandState { held: EMPTY, inventory_open: None, menu: None, magic: None, show_info: false, highlight: None }
     }
 }
 
@@ -428,7 +426,8 @@ fn action_key(g: &GameState, champion: usize, hand: usize) -> Option<(u8, u8)> {
 }
 
 pub fn hand_busy(g: &GameState, champion: usize, hand: usize) -> bool {
-    champion < 4 && g.tick < g.hand.busy_until[champion][hand.min(1)]
+    // A hand is busy while its busy counter (+0x2A+hand) runs (0x40A0A).
+    g.champions.get(champion).is_some_and(|c| c.raw[0x2A + hand.min(1)] != 0)
 }
 
 /// 0x3FC6D for the bare-hand command 0x11: the action hand needs an item
@@ -518,8 +517,11 @@ pub fn choose_action(g: &mut GameState, n: usize) -> bool {
         target_untouchable: group.is_some_and(|c| creatures::is_non_material(g, c)),
     };
     let r = combat::do_action(&mut g.champions, &mut g.party_status, menu.champion, menu.hand, &spec, &ctx, &mut g.rng);
-    if menu.champion < 4 {
-        g.hand.busy_until[menu.champion][menu.hand.min(1)] = g.tick + r.busy as u32;
+    if let Some(c) = g.champions.get_mut(menu.champion) {
+        if c.is_alive() {
+            let haste = g.party_status.haste != 0;
+            champions::add_busy(c, menu.hand.min(1) as i16, r.busy, haste);
+        }
     }
     if let (Some(sub), Some((cat, idx))) = (r.sound, action_key(g, menu.champion, menu.hand)) {
         let p = g.party;

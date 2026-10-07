@@ -478,6 +478,9 @@ pub fn do_action(
     }
     // The stamina cost's random bit is drawn in the executor's prologue
     // (0x4161A), before the command runs and makes its own draws.
+    // The hand's action byte (+0x20) takes the command (0x4155A) until its
+    // busy time runs out (0x40AA6).
+    champions[idx].raw[0x20 + hand.min(1)] = cm as u8;
     let tr_cost = tr as i32 + rng.bit() as i32;
     champions[idx].set_hand_defence(hand, ta as i8);
     let mut success = true;

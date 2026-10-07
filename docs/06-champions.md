@@ -57,8 +57,9 @@ Helpers used everywhere: 0x1C67E = min (signed 16-bit), 0x1C687 = max,
 | 0x1F | 1 | Number of pending poison events (non-zero = poisoned) |
 | 0x20, 0x21 | 1 each | Per-hand action state (0xFF idle; 1 means the hand's defensive bonus is active) |
 | 0x22 | 4 | Rune buffer: symbol bytes (0x60 + row×6 + column), NUL-terminated |
-| 0x28 | 1 | Direction at the time of recruiting |
-| 0x29-0x2C | | Action timers and per-hand cooldown bookkeeping (see 07) |
+| 0x28 | 1 | Side the heaviest creature blow came from: set at recruiting to the party's facing, then by the creature melee frame (0x2A72E) to the direction from the attacker to the party, turned round |
+| 0x29 | 1 | Heaviest creature blow so far, plus one (0x2A701 keeps it when a new blow's damage + 1 is larger; cleared at death) |
+| 0x2A-0x2C | 1 each | Busy counters for hands 0-1 and a third slot. An action adds its busy time (0x40A0A: time × 5/4, a quarter while hasted, + 2; the larger of old and new plus half the smaller, capped at 255). The main loop counts them down once a tick (0x4904F → 0x3FE68); reaching zero ends the hand's action (0x40AA6): action byte +0x20 back to 0xFF, defence bonus +0x42 to 0 |
 | 0x2E | 2 | Timer event index (0xFFFF = none) |
 | 0x32 | 2 | Redraw flags: 0x08 stats bar, 0x10/0x20 panels, 0x40 dead; 0x400-0x7C00 select panel parts |
 | 0x34 | 2 | Wound bits (bit 0 ready hand, 1 action hand, 2 head, 3 torso, 4 legs, 5 feet) |

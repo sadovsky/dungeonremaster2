@@ -229,6 +229,9 @@ impl GameState {
         self.world_phase();
         crate::creatures::update(self);
         champions::tick(self);
+        // The main loop then counts down the hands' busy counters (0x4904F
+        // with argument 1, through 0x3FE68), before the tick moves on.
+        champions::count_down_busy(self);
         while let Some(c) = self.commands.pop_front() {
             self.execute(c);
         }

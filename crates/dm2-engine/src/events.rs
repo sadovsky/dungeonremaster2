@@ -20,6 +20,7 @@ pub fn dispatch(g: &mut GameState, ev: Event) {
         0x56 => actuators::clock_tick(g, ev),
         0x57 | 0x5B => actuators::rearm(g, ev),
         0x59 => actuators::release(g, ev),
+        actuators::EV_ORNAMENT_SOUND => actuators::ornament_sound_event(g, ev),
         0x5C => actuators::set_visible(g, ev),
         0x5D => delayed_teleport(g, ev),
         0x4B => crate::champions::poison_event(g, &ev),
@@ -32,7 +33,7 @@ pub fn dispatch(g: &mut GameState, ev: Event) {
         0x5E => creatures::text_spawn_event(g, ev.map as usize, ev.x as i32, ev.y as i32, ev.b9),
         actuators::EVENT_ORNAMENT_STEP => actuators::ornament_step(g, ev),
         crate::sound_queue::EV_DELAYED_SOUND => crate::sound_queue::event(g, ev),
-        // TODO: 0x3C/0x3D (deferred arrival), 0x5A.
+        // TODO: 0x3C/0x3D (deferred arrival).
         _ => {}
     }
 }

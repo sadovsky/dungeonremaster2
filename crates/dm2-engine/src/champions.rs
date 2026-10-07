@@ -868,6 +868,54 @@ pub fn regen_due(tick: u32, asleep: bool) -> bool {
 }
 
 /// Per-tick champion work called from `GameState::advance`.
+/// Add an action's busy time to a hand's busy counter (0x40A0A, +0x2A+hand;
+/// hand -1 adds it to all three counters). The time is scaled by 5/4, cut
+/// to a quarter while the haste counter (0x7FFF0) runs, plus 2; the larger
+/// of the old count and the new time is kept plus half the smaller, capped
+/// at 255.
+pub fn add_busy(c: &mut Champion, hand: i16, busy: u16, haste: bool) {
+    let mut t = busy.wrapping_add(busy >> 2);
+    if haste {
+        t >>= 2;
+    }
+    t = t.wrapping_add(2);
+    let hands: &[usize] = if hand < 0 { &[0, 1, 2] } else { &[0] };
+    for &k in hands {
+        let i = 0x2A + if hand < 0 { k } else { hand as usize };
+        let cur = c.raw[i] as u16;
+        let v = if t > cur { t + (cur >> 1) } else { cur + (t >> 1) };
+        c.raw[i] = v.min(0xFF) as u8;
+    }
+}
+
+/// Count down every recruited champion's three busy counters (0x3FE68, run
+/// once a tick by the main loop through 0x4904F). A counter reaching zero
+/// finishes that hand's action (0x40AA6): for a living champion's hands 0-1
+/// the hand's action byte (+0x20) returns to 0xFF and its defence bonus
+/// (+0x42) to 0.
+pub fn count_down_busy(g: &mut GameState) {
+    for c in g.champions.iter_mut() {
+        count_down_hands(c);
+    }
+}
+
+/// One champion's part of `count_down_busy`.
+pub fn count_down_hands(c: &mut Champion) {
+    for h in 0..3 {
+        let b = c.raw[0x2A + h];
+        if b == 0 {
+            continue;
+        }
+        c.raw[0x2A + h] = b - 1;
+        if b == 1 && c.is_alive() && h < 2 {
+            // TODO(0x40B09): finishing actions 0x20 and 0x2A also reloads
+            // the hand from the quiver or a container.
+            c.raw[0x20 + h] = 0xFF;
+            c.raw[0x42 + h] = 0;
+        }
+    }
+}
+
 pub fn tick(g: &mut GameState) {
     let tick = g.tick;
     if regen_due(tick, g.party_status.asleep) {
@@ -1107,5 +1155,35 @@ mod tests {
             }
         }
         assert!(seen > 0);
+    }
+
+    /// 0x40A0A: busy time scaled by 5/4 plus 2, the larger of old and new
+    /// kept plus half the smaller, capped at 255; a quarter while hasted.
+    #[test]
+    fn busy_time_combines_like_the_original() {
+        let mut c = Champion::default();
+        add_busy(&mut c, 0, 8, false);
+        assert_eq!(c.raw[0x2A], 12, "8 + 2 + 2");
+        add_busy(&mut c, 0, 8, false);
+        assert_eq!(c.raw[0x2A], 18, "12 + 12/2");
+        add_busy(&mut c, 1, 8, true);
+        assert_eq!(c.raw[0x2B], 4, "hasted: 10/4 + 2");
+        add_busy(&mut c, -1, 400, false);
+        assert_eq!(&c.raw[0x2A..0x2D], &[255, 255, 255], "all hands, capped");
+    }
+
+    /// 0x3FE68 / 0x40AA6: a hand's counter runs down one a tick; reaching
+    /// zero ends its action and drops its defence bonus.
+    #[test]
+    fn busy_countdown_finishes_the_hands_action() {
+        let mut c = Champion::default();
+        c.set_health(10);
+        c.raw[0x20] = 4;
+        c.raw[0x42] = 3;
+        c.raw[0x2A] = 2;
+        count_down_hands(&mut c);
+        assert_eq!((c.raw[0x2A], c.raw[0x20], c.raw[0x42]), (1, 4, 3));
+        count_down_hands(&mut c);
+        assert_eq!((c.raw[0x2A], c.raw[0x20], c.raw[0x42]), (0, 0xFF, 0));
     }
 }

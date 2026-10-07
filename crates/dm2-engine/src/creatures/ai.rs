@@ -1135,7 +1135,16 @@ fn attack_frame(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> bool {
         for _ in 0..count.min(living.len()) {
             let k = if flags & 0x10 != 0 { g.rng.random(pool.len() as u16) as usize } else { 0 };
             let idx = pool.remove(k.min(pool.len() - 1));
-            fight::attack_champion(g, d, &ctx.info, idx);
+            let dealt = fight::attack_champion(g, d, &ctx.info, idx);
+            // The struck champion keeps the heaviest blow so far, plus one,
+            // in +0x29 and the side it came from in +0x28: the direction from
+            // the creature to the party, turned round (0x2A6DA-0x2A72E).
+            let v = dealt.wrapping_add(1);
+            if v > g.champions[idx].raw[0x29] as i16 {
+                g.champions[idx].raw[0x29] = v as u8;
+                let dir = direction_toward_rand(ctx.x, ctx.y, g.party.x, g.party.y, &mut g.rng);
+                g.champions[idx].raw[0x28] = (dir + 2) & 3;
+            }
             if pool.is_empty() {
                 break;
             }

@@ -593,3 +593,63 @@ fn surviving_damage_schedules_and_moves_the_damage_display() {
     run(&mut g, 6);
     assert_eq!(g.champions[0].u16_at(0x2E), 0xFFFF);
 }
+
+/// A type-0x2C (animated ornament) actuator with its square, if any.
+fn animated_ornament_actuator(g: &GameState) -> Option<(usize, i32, i32, dm2_formats::dungeon::ThingRef)> {
+    for (mi, m) in g.dungeon.maps.iter().enumerate() {
+        for x in 0..m.width as i32 {
+            for y in 0..m.height as i32 {
+                for t in g.dungeon.things_at(mi, x, y) {
+                    if t.kind() == ThingType::Actuator && Actuator::load(g, t).kind() == 0x2C {
+                        return Some((mi, x, y, t));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn ornament_sound_event(map: usize, x: i32, y: i32, t: dm2_formats::dungeon::ThingRef, tick: u32) -> crate::timeline::Event {
+    let mut ev = crate::timeline::Event::new(actuators::EV_ORNAMENT_SOUND, map as u8, tick);
+    ev.x = x as u8;
+    ev.y = y as u8;
+    ev.set_w8(t.0);
+    ev
+}
+
+/// Event 0x5A (0x5964E) with the party on another map drops the repeating
+/// ornament sound: word 1 bit 15 clears, the phase bits stay, and nothing
+/// is rescheduled. Seen in the combat probe, where two such events pending
+/// in the save fire while the party is elsewhere.
+#[test]
+fn ornament_sound_stops_when_the_party_is_elsewhere() {
+    let Some(mut g) = game() else { return };
+    let Some((map, x, y, t)) = animated_ornament_actuator(&g) else { return };
+    let a = Actuator::load(&g, t);
+    g.dungeon.set_record_word(t, 1, a.w1 | 0x8000 | 0x2A << 7);
+    g.dungeon.set_record_word(t, 2, a.w2 | 1);
+    g.party.map = (map + 1) % g.dungeon.maps.len();
+    let ev = ornament_sound_event(map, x, y, t, g.tick);
+    actuators::ornament_sound_event(&mut g, ev);
+    let w1 = Actuator::load(&g, t).w1;
+    assert_eq!(w1 & 0x8000, 0, "bit 15 cleared");
+    assert_eq!(w1 >> 7 & 0xFF, 0x2A, "phase kept");
+    assert!(g.timeline.iter().all(|(_, e)| e.kind != actuators::EV_ORNAMENT_SOUND), "not rescheduled");
+}
+
+/// With the party on the ornament's map and the ornament still animating,
+/// event 0x5A keeps bit 15 and comes back one cycle later.
+#[test]
+fn ornament_sound_repeats_while_the_party_is_there() {
+    let Some(mut g) = game() else { return };
+    let Some((map, x, y, t)) = animated_ornament_actuator(&g) else { return };
+    let a = Actuator::load(&g, t);
+    g.dungeon.set_record_word(t, 1, a.w1 | 0x8000);
+    g.dungeon.set_record_word(t, 2, a.w2 | 1);
+    g.party.map = map;
+    let now = g.tick;
+    actuators::ornament_sound_event(&mut g, ornament_sound_event(map, x, y, t, now));
+    assert_ne!(Actuator::load(&g, t).w1 & 0x8000, 0, "bit 15 kept");
+    assert!(g.timeline.iter().any(|(_, e)| e.kind == actuators::EV_ORNAMENT_SOUND && e.tick > now), "rescheduled");
+}
