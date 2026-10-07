@@ -102,7 +102,54 @@ fn first_ticks_draw_like_the_original() {
     // recruit draw 3 + 417 = 420 times, mostly every awake creature's first
     // think and frame.
     let Some((draws, _)) = idle_counts(2) else { return };
-    assert!((416..=424).contains(&draws), "ticks 0-1 drew {draws}, original 420");
+    assert_eq!(draws, 420, "ticks 0-1 drew {draws}, original 420");
+}
+
+#[test]
+fn creature_events_carry_the_creature_type_as_priority() {
+    // 0x3059D: the event's priority byte is the creature's type (record
+    // byte +4), which orders same-tick creature events.
+    let Some((g0, d)) = load() else { return };
+    let Some(gd) = crate::data::GameData::load_default() else { return };
+    let g = GameState::new_game_full(&g0.dungeon, Rc::new(gd), Some(d));
+    let mut seen = 0;
+    for s in g.creature_slots.iter().flatten() {
+        let Some(ev) = s.event.and_then(|e| g.timeline.get(e)) else { continue };
+        assert_eq!(ev.prio, creature_type(&g, s.thing), "creature {:#x}", s.thing.0);
+        seen += 1;
+    }
+    assert!(seen > 0);
+}
+
+#[test]
+fn idle_draws_match_the_original_log_through_tick_51() {
+    // The original's draw log (re/state/rnglog.txt, recorded with the hooked
+    // DOSBox build; local only) against the remake's ordered draws: equal
+    // per-tick counts, including setup under tick 0, through tick 51.
+    let log = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../re/state/rnglog.txt");
+    let Ok(text) = std::fs::read_to_string(log) else { return };
+    let mut orig = [0u32; 52];
+    for line in text.lines() {
+        if let Some(t) = line.split_whitespace().next().and_then(|t| t.parse::<usize>().ok()) {
+            if t < 52 {
+                orig[t] += 1;
+            }
+        }
+    }
+    let Some((g0, d)) = load() else { return };
+    let Some(gd) = crate::data::GameData::load_default() else { return };
+    crate::rng::trace_seq_start();
+    let mut g = GameState::new_game_full(&g0.dungeon, Rc::new(gd), Some(d));
+    while g.tick < 52 {
+        g.advance();
+    }
+    let mut ours = [0u32; 52];
+    for (t, ..) in crate::rng::trace_seq_take() {
+        if (t as usize) < 52 {
+            ours[t as usize] += 1;
+        }
+    }
+    assert_eq!(ours, orig);
 }
 
 #[test]
