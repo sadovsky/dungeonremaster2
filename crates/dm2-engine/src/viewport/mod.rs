@@ -910,9 +910,12 @@ fn draw_floor_ornament(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Ce
     // (0x4E620), not the key.
     let set_key = a.gdat.lookup(Key::new(8, cx.set, 11, 100)).and_then(|k| u8::try_from(k).ok());
     let key = key_attr(a, 10, orn, set_key, true);
-    let slot = match attr(a, 10, orn, 5) {
-        0 => 12u16,
-        v => (v & 0xFF).saturating_sub(1),
+    // Attribute 5: slot + 1 in the low byte and the anchor kind in the high
+    // byte (default slot 12, anchor 0 = centred), passed to the drawer as
+    // for wall ornaments (0x50081).
+    let (slot, anchor) = match attr(a, 10, orn, 5) {
+        0 => (12u16, 0u16),
+        v => ((v & 0xFF).saturating_sub(1), v >> 8),
     };
     let rid = 5000 + 25 * c as u16 + slot;
     let (sub, sc) = if a.has_image(10, orn, FLOOR_ORN_SUB[c]) {
@@ -926,6 +929,7 @@ fn draw_floor_ornament(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Ce
     r.ys = sc;
     r.depth = Some(depth);
     r.key = key;
+    r.anchor = Some(anchor as i16);
     draw(a, buf, cx, r);
 }
 

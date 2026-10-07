@@ -540,7 +540,9 @@ separate visual generator to keep the simulation deterministic. Sound (24, 0, 2,
     colour key; its cause is open.
 - **Floor ornaments** (0x50081): from the cell summary's floor slot (the
   set's attribute 0x6B, or an actuator or text thing on the square);
-  category 10.
+  category 10. Attribute 5 places them like wall ornaments: slot + 1 in the
+  low byte and an anchor kind in the high byte, both passed to the drawer;
+  when the attribute is 0 the slot is 12 and the anchor 0 (centred).
 
 ### Depth scale and shading
 
@@ -971,10 +973,10 @@ Simplifications, still TODO:
   (here colour 14) after drawing the linked map's squares beyond the link
   (0x52BF6 / 0x52518 over the cells behind it). Floor ornament 34 is such a
   portal frame: 41% of its depth-2 image is colour 14, which the original
-  fills with the view across the link and the remake shows as a brown
-  blob. Not implemented; this accounts for most of the remaining
-  difference at that view (11,057 differing pixels, the floor bands now
-  matching).
+  fills with the view across the link. Not implemented. At that view the
+  brown blob and the shifted tiled floor came from ignoring attribute 5's
+  anchor, not from this path: with the anchor honoured the view differs in
+  480 viewport pixels (was 11,057), none of them in the portal.
 - (Resolved.) The door view at map 2 (19,12) differed in the panel and
   around it. Two causes, both in the door-across path:
   - **Panel light.** 0x5346E passes the lit drawer (0x4E502) a light

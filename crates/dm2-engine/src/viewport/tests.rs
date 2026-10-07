@@ -83,7 +83,12 @@ fn pinned_views() {
         // map set's key as fallback (0x50081), not from attribute 0x11; the
         // 263 changed pixels are exactly floor ornament 12's sprite at
         // (168,74), whose background is now transparent.
-        ((5, 12, 23, 0), 0xec26d00bbbb11ba3),
+        // Floor ornaments now pass attribute 5's anchor kind to the drawer
+        // (0x50081; default anchor 0, centred, when the attribute is 0), so
+        // ornament 12 is centred on its grid point. The same rule took the
+        // map 3 tiled-floor view (gallery 08) from 11,057 to 480 differing
+        // viewport pixels against the original.
+        ((5, 12, 23, 0), 0x5e7b7b3e05f6b092),
     ];
     let mut bad = Vec::new();
     for ((m, x, y, d), want) in views {
