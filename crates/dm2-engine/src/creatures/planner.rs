@@ -321,7 +321,7 @@ pub fn search(g: &mut GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> 
     let dbg = *DBG.get_or_init(|| std::env::var("DM2_PLANDBG").ok().and_then(|v| v.parse().ok())) == Some(g.tick);
     if dbg {
         eprintln!("PLAN tick {} searcher map {} ({},{}) group {:#x} lfsr {:#06x} goals {:?}", g.tick, s.map, s.x, s.y, s.group.0,
-            g.planner_lfsr, goals.iter().map(|gl| (gl.kind, gl.limit, gl.program)).collect::<Vec<_>>());
+            g.planner_lfsr, goals.iter().map(|gl| (gl.kind, gl.limit, gl.program, gl.arg, gl.mode, gl.value, gl.tag)).collect::<Vec<_>>());
     }
     let mut last_map = s.map;
     let inside = |g: &GameState, map: usize, x: i32, y: i32| {
@@ -475,7 +475,11 @@ fn clear_line(g: &mut GameState, map: usize, x: i32, y: i32, tx: i32, ty: i32) -
 /// other than the creature's own.
 fn path_to_party(g: &mut GameState, s: &Searcher, value: u16, map: usize, x: i32, y: i32) -> bool {
     let (tx, ty) = (g.party.x, g.party.y);
-    path_filter(g, s, s.attack_mask & value, 0, map, x, y, tx, ty).is_some()
+    let ok = path_filter(g, s, s.attack_mask & value, 0, map, x, y, tx, ty).is_some();
+    if std::env::var("DM2_PLANDBG").ok().and_then(|t| t.parse::<u32>().ok()) == Some(g.tick) {
+        eprintln!("PATH at ({x},{y}) map {map} -> party ({tx},{ty}) mask {:#x} value {:#x} range {} -> {ok}", s.attack_mask, value, s.range);
+    }
+    ok
 }
 
 /// What the path test's filters leave (0x2C404 up to 0x2C88C).

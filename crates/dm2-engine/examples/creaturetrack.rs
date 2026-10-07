@@ -60,12 +60,16 @@ fn main() {
         let facing = creatures::facing(&g, c);
         match creatures::slot_of(&g, c).and_then(|si| g.creature_slots[si].as_ref()) {
             Some(s) => println!(
-                "{tick} facing {facing} action {:#04x} queued {:#04x} turn_to {} stage {} program {} at ({},{}) map {}",
+                "{tick} facing {facing} action {:#04x} queued {:#04x} turn_to {} stage {} program {} step {} set {} act_tick {} alert {} at ({},{}) map {}",
                 s.action,
                 s.queued,
                 s.turn_to,
                 s.stage,
                 s.program,
+                s.step,
+                s.set,
+                s.act_tick,
+                g.creature_alert_roll,
                 s.pos.x(),
                 s.pos.y(),
                 s.pos.map()

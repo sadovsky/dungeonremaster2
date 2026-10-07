@@ -214,7 +214,11 @@ pub fn build(g: &GameState, d: &CreatureData, ctx: &Ctx, program: u8, builder: u
         let s = d.bytes_at(FIXED_SPEC, 14).map(Spec::from);
         return s.and_then(|s| goal_from(g, ctx, &s, program, false)).into_iter().collect();
     }
-    if builder == 6 || builder == 7 {
+    // Builders 2 and 3 (0x276CD/0x276E2 -> 0x27663) and 6 and 7
+    // (0x27877/0x2788C -> 0x277FB) all build alertness-gated attack goals
+    // with the same tag pairs: 2 and 6 take tag 2 (analysis tag 1), 3 and 7
+    // tag 4 (analysis tag 3).
+    if matches!(builder, 2 | 3 | 6 | 7) {
         return attack_goals(g, d, ctx, program, builder, arg, data);
     }
     let (tag, zero_limit) = match builder {
@@ -234,9 +238,9 @@ pub fn build(g: &GameState, d: &CreatureData, ctx: &Ctx, program: u8, builder: u
         .collect()
 }
 
-/// Builders 6 and 7 (0x277FB): attack goals. Nothing unless the creature
+/// Builders 2, 3, 6 and 7 (0x27663 and 0x277FB): attack goals. Nothing unless the creature
 /// is alert this think (0x7F589) and its type has attack bits (info word
-/// +0x0E). The distance analysis with tag 1 (builder 6) or 3 (builder 7)
+/// +0x0E). The distance analysis with tag 1 (builders 2, 6) or 3 (3, 7)
 /// drops the throw attack (value bit 8) from the goals' values when the
 /// creature carries nothing of those specs' kinds; then the specs with tag 2
 /// or 4 become goals, with a zero distance limit when the row's argument is
@@ -245,7 +249,7 @@ fn attack_goals(g: &GameState, d: &CreatureData, ctx: &Ctx, program: u8, builder
     if data == 0 || g.creature_alert_roll == 0 {
         return Vec::new();
     }
-    let (analysis_tag, tag) = if builder == 6 { (1, 2) } else { (3, 4) };
+    let (analysis_tag, tag) = if matches!(builder, 2 | 6) { (1, 2) } else { (3, 4) };
     let mask = u16::from_le_bytes([ctx.info.raw[0x0E], ctx.info.raw[0x0F]]);
     let mut narrow = 0xFFFFu16;
     if mask & 8 != 0 && carried_count(g, d, ctx.thing, data, analysis_tag) <= 0 {

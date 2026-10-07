@@ -271,8 +271,8 @@ data for every behaviour that uses them:
 |---------|-----|-------|
 | 0 | none | one fixed spec at 0x731D2: "stay here" (goal type 0) |
 | 1 | row argument | the general case (0x2759E) |
-| 2 | 2 | plain tag rule (0x27663) |
-| 3 | 4 | as 2 |
+| 2 | 2 | attack goals (0x276CD calls 0x27663 with analysis tag 1): nothing unless the creature is alert this think (0x7F589); then the distance analysis drops the throw bit as for 6 and 7, and the tag's specs are built only while the type has attack bits. Earlier notes called this a plain tag rule, which let a not-alert creature attack |
+| 3 | 4 | as 2, with analysis tag 3 (0x276E2) |
 | 6, 7 | 2, 4 | attack goals (0x277FB): nothing unless the creature is alert this think (0x7F589) and its type has attack bits; the distance analysis (0x26A67, tag 1 or 3) drops the throw attack (value 8) when the creature carries nothing of those specs' kinds; a non-zero row argument gives a zero distance limit |
 | 4 | 1 | distance-limited by the analysis (0x276F2) |
 | 5 | 3 | as 4 |
@@ -386,7 +386,7 @@ Opcodes (dispatch at 0x27CD2, index = letter − 0x3F):
 | `N` | 0x2905A | Possession transfer: first discard kind arg 4 (or the global default at 0x7F7DA; −2 skips this), then if a possession of kind arg 3 (default 0x7F7D8) exists, put it on the creature's own square through 0x2EA68 mode 0x81. Failed when nothing matches. |
 | `O` | default (0x29C0F) | Queue the action given by arg 3 (or the global default) |
 | `P` | 0x2911C | Creature flag word (active record +0x0A): arg 4 low nibble 0 clears bit arg 3, 1 sets it, other values test it; modes 3 and 4 copy bits from the global switch list at 0x7F7DE (entries of type 0x13 or 0x14). A change queues action 0x33 unless arg 4 has bit 0x10. Done when the bit already had the wanted state. |
-| `Q` | 0x2923E | Move one step toward the target square. Returns "done" on arrival. Info+0x16 bits 12-15 give a chance of breaking off (quartered while the creature is afraid). |
+| `Q` | 0x2923E | Approach the target square (slot +0x18). Done when standing on it. Otherwise it rolls a chance flag (info +0x16 bits 12-15, quartered while status bit 0x2000 is set, not bit 4). With no path to follow (seen when the target is the next square and holds the party or a group), it only faces the target: done once the creature faces it, so a following `R` attacks at once; with the flag and a random bit it idles; otherwise it queues a quarter turn toward it. An empty target square is approached along a path, and there the flag still breaks off the approach. |
 | `R` | 0x27E28 | Commit to acting on the slot's target: the path test 0x2C404 in committing mode with move flags 2 for goal type 8, 3 for type 9 and 0 otherwise, the goal's mode byte as the slot argument and the attack mask ANDed with the goal's value word. Returns 0xFC once committed, 0xFD when a filter refuses (docs/05, round 12) |
 | `S` | 0x28017 | Same handler as `B`, after clearing the arguments |
 | `T` | 0x293A4 | Runs the planner again (0x3188A) |

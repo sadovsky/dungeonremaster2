@@ -86,6 +86,10 @@ pub fn direction_toward_rand(x: i32, y: i32, tx: i32, ty: i32, rng: &mut crate::
     }
 }
 
+fn manhattan(x: i32, y: i32, tx: i32, ty: i32) -> i32 {
+    (x - tx).abs() + (y - ty).abs()
+}
+
 pub(super) fn party_here(g: &GameState, map: usize, x: i32, y: i32) -> bool {
     g.party.map == map && g.party.x == x && g.party.y == y && g.champions.iter().any(|c| c.is_alive())
 }
@@ -879,18 +883,45 @@ fn opcode(g: &mut GameState, d: &CreatureData, ctx: &Ctx, row: &Row) -> Res {
         }
         b'R' => act_on_target(g, ctx),
         b'Q' => {
+            // 0x2923E. A target on the creature's own square is done with no
+            // draw (the draw logs show none there, though the code reads as if
+            // the roll came first). Otherwise the chance roll: the alertness
+            // word's top nibble, quartered while status bit 0x2000 is set; a
+            // roll below it sets a flag.
             let t = ctx.slot(g).target;
             if t.map() != ctx.map || (t.x(), t.y()) == (ctx.x, ctx.y) {
                 return Res::Done;
             }
-            {
+            let flag = {
                 let mut chance = (ctx.info.alertness_word() >> 12) as u16;
-                if status(g, ctx.thing) & 4 != 0 {
-                    chance /= 4;
+                if status(g, ctx.thing) & 0x2000 != 0 {
+                    chance >>= 2;
                 }
-                if chance != 0 && g.rng.random(16) < chance {
-                    return Res::Failed;
+                chance != 0 && (g.rng.rnd() & 15) < chance as u32
+            };
+            // With no path to follow (0x33E61 returns 0: seen for a target on
+            // the next square that holds the party, which cannot be entered;
+            // an empty target square is approached along a path instead, as
+            // the pit run's draws show) the creature only faces the target: done
+            // once it faces it; otherwise, with the flag and a random bit, it
+            // idles (0xFC, tentatively modelled as idle and stop); else a
+            // quarter turn toward it (0x2C005).
+            let occupied = party_here(g, t.map(), t.x(), t.y())
+                || group_at(g, t.map(), t.x(), t.y()).is_some_and(|c| c.0 & 0x3FFF != ctx.thing.0 & 0x3FFF);
+            if manhattan(ctx.x, ctx.y, t.x(), t.y()) == 1 && occupied {
+                let dir = direction_toward_rand(ctx.x, ctx.y, t.x(), t.y(), &mut g.rng);
+                if dir == facing(g, ctx.thing) {
+                    return Res::Done;
                 }
+                if flag && g.rng.bit() != 0 {
+                    set_action(g, ctx, 0);
+                    return Res::InProgress;
+                }
+                queue_turn(g, ctx, dir);
+                return Res::InProgress;
+            }
+            if flag {
+                return Res::Failed;
             }
             let dir = planner::first_step(g, &searcher(ctx), t.x(), t.y(), planner::DEFAULT_LIMIT + 4)
                 .unwrap_or_else(|| direction_toward(ctx.x, ctx.y, t.x(), t.y()));
