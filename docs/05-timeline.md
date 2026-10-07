@@ -557,13 +557,39 @@ is not on the map yet; a negative `to_x` means remove it from the map.
 immediately. The move routine records the destination map in 0x717F4.
 At the start of the next tick the main loop runs 0x24629:
 
-- stop interface updates (0x14C55) and fade music (0x59785(0));
+- stop interface updates (0x14C55) and run the leave pass over the old
+  map (0x59785(0));
 - set the party's map position (0x1C82D);
 - load the new map's graphics set (0x3AB31);
-- restart music (0x59785(1)) and reload map resources (0x34106);
+- run the enter pass over the new map (0x59785(1)), then activate its
+  creatures (0x34106);
 - redraw the whole viewport.
 
-It then places the party with the move routine.
+It then places the party with the move routine. The leave/enter steps are
+skipped while 0x7FA80 is set.
+
+**Map leave/enter pass (0x59785, code; `map_entry.rs`).** Scans every
+square of the party's current map, column by column, and on squares with
+things looks only at the leading things of types 0-3 (it stops at the
+first thing of a higher type):
+
+- An actuator of type 0x21 fires its target (0x4BC4C) with a value from
+  word 2. If bits 3-4 are both set, the value is 1 when bit 5 equals the
+  pass (1 entering, 0 leaving) and 0 otherwise. Otherwise the actuator
+  only reacts to one direction (bit 5 clear means entering) and fires
+  with value bits 3-4.
+- An actuator of type 0x2C with word 2 bit 0 set restarts its ornament
+  animation on entry (0x56CF4 / 0x56D6A; not yet in the remake).
+- A text thing in mode 2 (word 1 bits 1-2) whose type field (bits 11-15)
+  is 0x15 is a first-entry creature spawn. On entry, if word 1 bit 0 is
+  clear, it sets the bit, draws `rand4()` for the facing and creates a
+  creature of type word 1 bits 3-10 on that square through 0x30BA6 (level
+  7, so base hit points plus `random(base/8 + 1)`). The shipped dungeon
+  has these on maps 2, 3, 4, 5, 6, 9 and 41.
+
+Because the pass also runs at game start, a save must never leave the
+party on a map with an unfired first-entry spawn (see `12-savegame.md`,
+"Loading sequence").
 
 **Teleporting the party (0x4BED2).** Takes (x, y, map, facing). It validates
 the coordinates against the target map. If the map differs, it takes the

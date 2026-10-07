@@ -878,12 +878,9 @@ Simplifications, still TODO:
 - Outdoor weather and time of day (section 3) are implemented with the
   simplifications listed there; not yet compared against the original's
   outdoor views.
-- Loading in the original a remake save whose party was moved onto map 2
-  or 3 stops with system error 71 (0x47, raised only by creature
-  activation 0x306A8 when no slot can be freed). Moving it onto map 1 works,
-  and the dungeon headers in both saves are identical. The pool is sized
-  `min(non-flagged creature records + 100, header word)` at 0x342F9; why
-  activation fails is not known.
+- (Resolved.) Remake saves with the party moved onto map 2 or 3 stopped
+  the original with system error 71. The cause was the skipped map-entry
+  pass, not rendering; see `12-savegame.md`, "Loading sequence".
 
 - Where the actuator-supplied phase for animated ornaments comes from, per
   actuator type.

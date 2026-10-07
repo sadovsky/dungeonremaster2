@@ -189,3 +189,58 @@ fn original_saves_rewrite_with_identical_streams() {
         );
     }
 }
+
+/// SYSTEM ERROR 71: a save whose party map still has a pending first-entry
+/// spawn crashes the original on load. Teleporting the party by assignment
+/// produces one; arriving through the map-change path runs the spawns.
+#[test]
+fn party_arrival_clears_original_load_hazards() {
+    let Some((data, cd, dg)) = data() else { return };
+    let mut base = GameState::new_game_with(&dg, data);
+    if let Some(c) = &cd {
+        creatures::set_data(&mut base, c.clone());
+    }
+    let maps_with_spawns: Vec<usize> =
+        (0..base.dungeon.maps.len()).filter(|&m| !crate::map_entry::pending_spawns(&base, m).is_empty()).collect();
+    assert!(maps_with_spawns.contains(&2), "map 2 has a first-entry spawn in the shipped dungeon");
+    for &m in &maps_with_spawns {
+        let spot = crate::map_entry::pending_spawns(&base, m)[0];
+        // Assignment only: what the old posave did.
+        let mut g = base.clone();
+        g.party = crate::world::PartyPos { map: m, x: spot.0, y: spot.1, dir: 0 };
+        assert!(!original_load_hazard(&g).is_empty(), "map {m}: teleported party must be flagged");
+        // Proper arrival.
+        let mut g = base.clone();
+        let creatures_before = (0..g.dungeon.maps[m].width as i32)
+            .flat_map(|x| (0..g.dungeon.maps[m].height as i32).map(move |y| (x, y)))
+            .filter(|&(x, y)| creatures::group_at(&g, m, x, y).is_some())
+            .count();
+        crate::movement::arrive(&mut g, crate::world::PartyPos { map: m, x: spot.0, y: spot.1, dir: 0 });
+        assert!(original_load_hazard(&g).is_empty(), "map {m}: arrival must run the spawns");
+        let creatures_after = (0..g.dungeon.maps[m].width as i32)
+            .flat_map(|x| (0..g.dungeon.maps[m].height as i32).map(move |y| (x, y)))
+            .filter(|&(x, y)| creatures::group_at(&g, m, x, y).is_some())
+            .count();
+        assert!(creatures_after > creatures_before, "map {m}: first entry creates a creature");
+        // Arriving again doesn't spawn twice.
+        crate::movement::arrive(&mut g, crate::world::PartyPos { map: 0, x: 1, y: 8, dir: 0 });
+        crate::movement::arrive(&mut g, crate::world::PartyPos { map: m, x: spot.0, y: spot.1, dir: 0 });
+        assert!(crate::map_entry::pending_spawns(&g, m).is_empty());
+    }
+}
+
+/// Saves written by the original never carry the hazard.
+#[test]
+fn original_saves_have_no_load_hazard() {
+    let Some((data, cd, _)) = data() else { return };
+    let dir = default_data_dir();
+    for slot in 0..10u8 {
+        let path = slot_path(&dir, slot);
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        if bytes.ends_with(TRAILER_MAGIC) {
+            continue; // written by the remake
+        }
+        let g = from_bytes(&bytes, data.clone(), cd.clone()).expect("original save loads");
+        assert!(original_load_hazard(&g).is_empty(), "{}", path.display());
+    }
+}
