@@ -30,6 +30,8 @@ pub enum Res {
 /// Actions with known meanings.
 pub mod action {
     pub const IDLE: u8 = 0;
+    /// The dying action: hits and queued actions leave it alone (0x24DB5, 0x24E62).
+    pub const DYING: u8 = 0x13;
     pub const WALK: u8 = 1;
     pub const WALK_NEAR: u8 = 2;
     pub const STEP_LEFT: u8 = 3;
@@ -59,6 +61,28 @@ pub fn direction_toward(x: i32, y: i32, tx: i32, ty: i32) -> u8 {
         2
     } else {
         0
+    }
+}
+
+/// Direction from (x, y) toward (tx, ty) as the original's 0x1863D picks it:
+/// the axis with the larger distance wins, and an exact diagonal draws one
+/// random bit to choose (set: the x axis).
+pub fn direction_toward_rand(x: i32, y: i32, tx: i32, ty: i32, rng: &mut crate::rng::Rng) -> u8 {
+    let (sx, sy) = (x - tx, y - ty);
+    let (mut ax, mut ay) = (sx.abs(), sy.abs());
+    if ax == ay {
+        if rng.bit() != 0 {
+            ax += 1;
+        } else {
+            ay += 1;
+        }
+    }
+    if ax < ay {
+        if sy > 0 { 0 } else { 2 }
+    } else if sx > 0 {
+        3
+    } else {
+        1
     }
 }
 
@@ -1162,6 +1186,25 @@ pub fn frame_delay_ex(g: &mut GameState, ctx: &Ctx, an: &Anim, allow_off_map: bo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn randomised_direction_breaks_diagonal_ties_with_one_bit() {
+        use crate::rng::Rng;
+        // Off the diagonal no draw is made, and the longer axis wins.
+        let mut r = Rng::new(1);
+        assert_eq!(direction_toward_rand(5, 5, 9, 6, &mut r), 1);
+        assert_eq!(direction_toward_rand(5, 9, 6, 5, &mut r), 0);
+        assert_eq!(r.state, 1, "no draw off the diagonal");
+        // On a diagonal one bit decides: set picks the x axis.
+        for seed in 0..16u32 {
+            let mut a = Rng::new(seed);
+            let mut b = Rng::new(seed);
+            let x_axis = b.bit() != 0;
+            let d = direction_toward_rand(5, 5, 8, 8, &mut a);
+            assert_eq!(d, if x_axis { 1 } else { 2 });
+            assert_eq!(a.state, b.state, "exactly one draw on a tie");
+        }
+    }
 
     #[test]
     fn direction_toward_prefers_the_longer_axis() {

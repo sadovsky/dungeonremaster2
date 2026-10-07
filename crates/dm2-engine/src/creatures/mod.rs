@@ -168,34 +168,143 @@ pub fn halves_door_damage(g: &GameState, c: ThingRef) -> bool {
     info_of(g, c).is_some_and(|i| i.flags19() & 0x10 != 0)
 }
 
-/// Damage a creature group (0x24E62): owed damage is applied on its next step.
+/// Flags and chance a caller passes to the hit handler (0x24E62).
+///
+/// Low byte: status bit (in record word +0x0A) set when the chance roll
+/// passes, or cleared with 0x8000. 0x4000: turn toward the party.
+/// 0x2000: allow interrupting the creature's current action.
+pub mod hit_flags {
+    /// Champion melee (0x18A57): turn, interruptible, status bit 2; chance 90.
+    pub const MELEE: (u16, i16) = (0x6002, 90);
+    /// Missiles, explosions and clouds (0x1726B, 0x16746): bit 13; chance 100.
+    pub const MISSILE: (u16, i16) = (0x200D, 100);
+    /// A closing door (0x564C6): bit 6; chance 100.
+    pub const DOOR: (u16, i16) = (0x2006, 100);
+    /// A thing landing on the group (move routine, 0x4B108): interrupt only.
+    pub const FALL: (u16, i16) = (0x2000, 0);
+}
+
+/// Damage a creature group with the missile/effect flags; see `hit`.
 pub fn damage(g: &mut GameState, c: ThingRef, map: usize, x: i32, y: i32, amount: u16) {
-    g.effects.push(Effect::CreatureDamaged { thing: c, amount });
-    if amount == 0 {
-        return;
+    let (f, ch) = hit_flags::MISSILE;
+    hit(g, c, map, x, y, f, ch, amount);
+}
+
+/// The hit handler (0x24E62), with the original's draws in order: an
+/// optional turn-request bit, the fear roll on the owed damage, the turn
+/// toward the party, and the status-bit chance roll. Owed damage is
+/// applied on the creature's next step. Called with amount 0 too (a missed
+/// blow still makes its draws).
+pub fn hit(g: &mut GameState, c: ThingRef, map: usize, x: i32, y: i32, flags: u16, chance: i16, amount: u16) {
+    if amount > 0 {
+        g.effects.push(Effect::CreatureDamaged { thing: c, amount });
     }
     let Some(d) = g.creature_data.clone() else { return };
+    let mut flags = flags;
+    let mut turn = flags & 0x4000 != 0;
+    if turn {
+        flags &= !0x4000;
+        if g.rng.bit() != 0 {
+            turn = false;
+        }
+    }
+    let interruptible = flags & 0x2000 != 0;
+    flags &= !0x2000;
+    let Some((info, class)) = type_info(g, &d, creature_type(g, c)) else { return };
+    let cflags = d.class_flags(class);
+    // Info word 0 bit 0: the group is dormant until woken.
+    let dormant = info.raw[0] & 1 != 0;
     let si = match slot_of(g, c) {
         Some(si) => si,
+        None if dormant => return,
         None => match activate(g, &d, c, map, x, y) {
             Some(si) => si,
             None => return,
         },
     };
-    let Some(ctx) = Ctx::load(g, &d, si) else { return };
-    let mut st = status(g, c);
-    let hpv = hp(g, c);
-    let mut pending = ctx.slot(g).pending_damage;
-    let r = fight::take_hit(&ctx.info, ctx.cflags, &mut st, &mut pending, hpv, amount, &mut g.rng);
-    set_rec_u16(g, c, 0x0A, st);
-    ctx.slot_mut(g).pending_damage = pending;
-    if r.turned_to_party && g.party.map == ctx.map {
-        let dir = ai::direction_toward(ctx.x, ctx.y, g.party.x, g.party.y);
-        ctx.slot_mut(g).turn_to = dir;
+    // The handler reads the slot directly; it doesn't load the creature's
+    // context, so the current-creature global stays as it was.
+    let Some(Some(slot)) = g.creature_slots.get_mut(si) else { return };
+    let pending = slot.pending_damage.saturating_add(amount);
+    slot.pending_damage = pending;
+    let mut rolled = false;
+    if !dormant && chance > 0 {
+        let mut st = status(g, c);
+        if st & 4 == 0 {
+            let p = pending as u32;
+            let afraid = p > 30
+                || (p > 4 && g.rng.rand4() == 0)
+                || p * 100 / (info.base_hp().max(1) as u32) > 15;
+            if afraid {
+                st |= 4;
+                turn = true;
+            }
+            set_rec_u16(g, c, 0x0A, st);
+        }
+        if turn && cflags & 0x80 == 0 && g.rng.bit() != 0 {
+            if let Some(action) = turn_toward_party(g, c, x, y, st) {
+                queue_action(g, si, action);
+            }
+        }
+        let r = g.rng.random(100);
+        if chance as i32 > r as i32 {
+            rolled = true;
+            let bit = 1u16 << (flags & 0x0F);
+            let st = status(g, c);
+            set_rec_u16(g, c, 0x0A, if flags & 0x8000 != 0 { st & !bit } else { st | bit });
+        }
     }
-    if r.interrupt {
-        // Interrupt the current action: step again at once.
-        reschedule(g, si, EV_STEP, 0);
+    let mut interrupt = false;
+    if !dormant && interruptible && chance == 0 {
+        interrupt = true;
+    }
+    let action = g.creature_slots.get(si).and_then(|s| s.as_ref()).map_or(0, |s| s.action);
+    if !interrupt && rolled && (interruptible || (flags & 0x8000 == 0 && flags & 0x40 != 0)) {
+        let af = d.action_flags(action);
+        interrupt = af & 0x10 == 0 || (cflags & 0x410 != 0 && af & 2 != 0);
+    }
+    if action == ai::action::DYING {
+        return;
+    }
+    if interrupt || pending >= hp(g, c) {
+        // 0x3059D: the event moves to the next tick, as a continue (0x21)
+        // while record word +8 is unset, else a step (0x22).
+        let kind = if rec_u16(g, c, 8) == 0xFFFF { EV_CONTINUE } else { EV_STEP };
+        reschedule(g, si, kind, 1);
+    }
+}
+
+/// The turn a hit asks for (0x24FEF-0x250B8): face the party, or away from
+/// it while afraid. Returns the turn action (6 or 7) or None.
+fn turn_toward_party(g: &mut GameState, c: ThingRef, x: i32, y: i32, st: u16) -> Option<u8> {
+    let (px, py) = (g.party.x, g.party.y);
+    let mut dir = ai::direction_toward_rand(x, y, px, py, &mut g.rng);
+    let facing = ((rec_u16(g, c, 0x0E) >> 8) & 3) as u8;
+    if st & 8 != 0 && g.rng.rand4() != 0 {
+        dir = (dir + 2) & 3;
+    } else if facing != dir && g.rng.rand4() == 0 {
+        dir = (dir + 2) & 3;
+    }
+    if facing == (dir + 2) & 3 {
+        Some(6 + u8::from(g.rng.bit() != 0))
+    } else if facing == dir {
+        if g.rng.rand4() != 0 {
+            None
+        } else {
+            Some(6 + u8::from(g.rng.bit() == 0))
+        }
+    } else {
+        Some(6 + u8::from(facing == (dir + 3) & 3))
+    }
+}
+
+/// Queue an action for a group's next step (0x24DB5 with no interrupt):
+/// refused while its current or queued action is dying.
+fn queue_action(g: &mut GameState, si: usize, action: u8) {
+    if let Some(Some(s)) = g.creature_slots.get_mut(si) {
+        if s.action != ai::action::DYING && s.queued != ai::action::DYING {
+            s.queued = action;
+        }
     }
 }
 

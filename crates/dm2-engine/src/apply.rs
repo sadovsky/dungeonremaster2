@@ -122,8 +122,10 @@ fn apply_one(g: &mut GameState, champion: usize, e: Action) {
                     // the creature's square (0x414A5).
                     let ty = creatures::creature_type(g, c);
                     g.effects.push(crate::effects::Effect::Sound { cat: 15, idx: ty, sub: 0x8D, map: m, x, y });
-                    creatures::damage(g, c, m, x, y, amount as u16);
                 }
+                // The melee core calls the hit handler on a miss too (0x18D8E).
+                let (f, ch) = creatures::hit_flags::MELEE;
+                creatures::hit(g, c, m, x, y, f, ch, amount.max(0) as u16);
             }
         }
         Action::LaunchMissile { champion: who, what, energy, attack, step } => {

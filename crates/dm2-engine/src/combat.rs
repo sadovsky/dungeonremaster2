@@ -476,6 +476,9 @@ pub fn do_action(
     if idx >= champions.len() || !champions[idx].is_alive() {
         return out;
     }
+    // The stamina cost's random bit is drawn in the executor's prologue
+    // (0x4161A), before the command runs and makes its own draws.
+    let tr_cost = tr as i32 + rng.bit() as i32;
     champions[idx].set_hand_defence(hand, ta as i8);
     let mut success = true;
     let mut xp = ex.max(0) as u32;
@@ -592,8 +595,7 @@ pub fn do_action(
     out.success = success;
     out.busy = if success { bz.max(0) as u16 } else { (bz.max(0) as u16) >> 1 };
     if champions[idx].is_alive() {
-        let cost = tr as i32 + rng.bit() as i32;
-        champions::stamina_loss(champions, party, idx, cost as i16);
+        champions::stamina_loss(champions, party, idx, tr_cost as i16);
         if xp > 0 {
             let mult = ctx.map_multiplier;
             champions::add_experience(champions, party, idx, sk, xp, ctx.tick, mult, rng);

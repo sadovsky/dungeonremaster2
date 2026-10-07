@@ -289,6 +289,42 @@ melee core at 0x18B14 and 0x18B59, dexterity at 0x4698A/0x469EA/0x46A05,
 luck at 0x46793 plus random(0x25), strength at 0x46A42); the remake makes
 six, so its blow comes out weak and misses where the original's lands.
 
+**Round 11: melee draws and the hit handler.** The tick-95 melee in the
+combat probe parted because the action executor (0x414A5) draws the
+stamina cost's random bit in its prologue (0x4161A: the `TR` code plus one
+bit), before the command runs; the remake drew it at the end of the
+action, so every melee draw after it was shifted by one and the blow
+missed where the original's lands. With the bit moved, the remake's melee
+makes the original's draws in order and the blow lands.
+
+The hit handler (0x24E62) then had to follow the disassembly. Its callers
+pass flags and a chance: the low byte names a status bit in record word
++0x0A that a passed chance roll sets (or clears with 0x8000), 0x4000 asks
+for a turn toward the party and 0x2000 allows an interrupt. Champion melee
+passes 0x6002 with chance 90 and calls it on a miss too, with no damage;
+missiles, explosions and clouds pass 0x200D with 100, a closing door
+0x2006 with 100, a thing landing on the group 0x2000 with 0, the party's
+bump 0x4005 with 5. In order the handler draws: a bit when a turn was
+asked (set cancels it); a two-bit fear roll when the owed damage is 5-30
+(more than 30 frightens outright, and so does owed damage above 15% of the
+type's base health); a bit when a turn is still wanted and the AI class
+allows it, then the turn's own draws (direction to the party with a tie
+bit, a flee flip, and the side of the turn, queued as action 6 or 7); and
+finally `random(100)` against the chance. It reads the slot directly and
+does not reload the creature context, so the current-creature global keeps
+the creature the executor was processing. An interrupt cancels the event
+and re-adds it for the next tick (0x3059D), as a continue while record word
++8 is unset, else as a step; the remake had rescheduled for the same tick,
+so the hit creature ran twice on tick 95 and skipped tick 96.
+
+With these the combat probe matches the original draw for draw through
+draw 1897 (tick 96), past the whole first melee round; the idle run stays
+identical through tick 155 and the pit run through tick 1711. At tick 96
+the hit creature's `Q` step finds its target behind it in the original and
+turns around, while the remake's walks: the two hold different targets,
+most likely because the planner's search order is not yet randomised the
+way the original's search setup (0x321B8) does it.
+
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
 (5,13), from the pit probe's save), the original reached its game-over

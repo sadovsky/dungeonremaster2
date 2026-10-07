@@ -134,7 +134,8 @@ pub fn step(g: &mut GameState, mut ev: Event) {
                     if creatures::halves_door_damage(g, c) {
                         dmg = (dmg >> 1).max(1);
                     }
-                    creatures::damage(g, c, map, x, y, dmg);
+                    let (f, ch) = creatures::hit_flags::DOOR;
+                    creatures::hit(g, c, map, x, y, f, ch, dmg);
                     s = s.saturating_sub(1);
                     set_state(g, map, x, y, s);
                     g.effects.push(Effect::Sound { cat: 0x15, idx: 0xFE, sub: 0x85, map, x, y });

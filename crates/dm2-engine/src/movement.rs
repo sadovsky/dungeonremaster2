@@ -186,7 +186,10 @@ pub fn resolve(g: &mut GameState, mover: Mover, map: usize, x: i32, y: i32) -> D
                         }
                         g.effects.push(Effect::PartyFell { falls });
                     }
-                    Some(ThingType::Creature) => creatures::damage(g, thing, map, x, y, 20),
+                    Some(ThingType::Creature) => {
+                        let (f, ch) = creatures::hit_flags::FALL;
+                        creatures::hit(g, thing, map, x, y, f, ch, 20)
+                    }
                     _ => {}
                 }
             }

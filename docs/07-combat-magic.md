@@ -25,7 +25,7 @@ The code is a slot number into a table of two-letter names at 0x7590E.
 | 1 | LV | Minimum level in SK for the action to appear in the menu (0x3F9F5) |
 | 2 | CM | Command: which branch of the executor runs (table below) |
 | 3 | BZ | Busy time: ticks before that hand can act again. Halved when the action fails |
-| 4 | TR | Tiredness: stamina cost, plus randbit() |
+| 4 | TR | Tiredness: stamina cost, plus randbit(). The bit is drawn in the executor's prologue (0x4161A), before the command's own draws, although the loss is applied at the end. |
 | 5 | ST | Strength or amount: a command-specific magnitude (spell power, effect duration, missile energy) |
 | 6 | PA | Parameter: command-specific (for example the missile or explosion type, as 0xFF80 + PA) |
 | 7 | TA | Temporary armour: signed defence bonus for this hand while the action is active (stored at +0x42/+0x43) |
