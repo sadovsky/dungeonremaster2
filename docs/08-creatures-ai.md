@@ -156,6 +156,38 @@ loads the creature, slot, info and animation pointers into globals at
 
 ### Think (0x262F7)
 
+**Danger block (round 5, from the disassembly).** After the context setup
+and its two-bit draw, a creature not in mode 0 tests standing on its own
+square with the movement test (which in mode 5 runs the danger scan 0x2D52D
+on it). If it can't stay, it is in danger when, in mode 5, the scan finds a
+missile coming; otherwise when it isn't alert (0x7F589), or (alert) when the
+path test 0x2C404 finds no way out or `random((info word 0x18 >> 10 & 3) + 1)`
+is at most 1. In danger it sets record word +0xA bit 13; with class flag 0x10
+it may scan again (rolls depend on word +0xA bits 3 and 6) and flee from a
+missile with action 0x55; otherwise it tries four directions to step away
+(start from the planner's escape direction 0x33E61 if any, else behind it or
+random; turn left or right on a random bit), retrying once with mode 0 on a
+random bit. The remake takes 0x2C404 as finding a way and doesn't model the
+0x33E61 escape direction.
+
+**Danger scan (0x2D52D).** For each direction: with record word +0xA bit 7
+set, or on the creature's own square in the direction behind it (unless
+class flag 0x400 or info flag 4), roll `rnd & 7` and skip the direction on a
+non-zero roll. Then look up to three squares out for a missile flying back
+toward the square whose impact (0x16D72) would do damage, stopping at a
+square that blocks (0x2B9FC: walls, closing or closed doors unless the door
+type passes missiles and a random bit allows, closed trick walls, kind-0xE
+clouds, solid creature groups).
+
+**Behaviour picker (0x26008).** Runs on every think. It rolls `rand4` to keep
+the current plan only when class flag 1 is clear and the event's path cache
+is in use (0x25D49), which it isn't during think. No match restarts program
+0x11 at step 0; the same program keeps its step; another program starts at
+step 0.
+
+**Event priority.** Creature events carry the creature's type as their
+priority byte (0x3059D), which orders same-tick creature events.
+
 1. The AI class flags (0x7507A + 4 × class) choose a movement mode:
    0x40 means it never wanders; otherwise mode = 4, or 5 when the class
    has 0x20 clear.

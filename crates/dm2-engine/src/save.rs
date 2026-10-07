@@ -975,6 +975,10 @@ pub fn from_bytes(b: &[u8], data: Rc<GameData>, creatures: Option<Rc<CreatureDat
     g.creature_map_seen = None;
     // The original recomputes the outdoor flag and hour light on load.
     crate::weather::refresh(&mut g);
+    // When play resumes, the per-map creature pass (0x34236) wakes the awake
+    // groups on every map, with its random draws, as at play start. It runs
+    // on the first tick so reading and rewriting a file stays exact.
+    g.play_start_pending = true;
     Ok(g)
 }
 

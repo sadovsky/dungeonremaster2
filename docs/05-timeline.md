@@ -140,11 +140,40 @@ draw; list 0x73392 makes one draw r = rnd & 7 and then stands still
 creature list lacks the type (0x1F9FF). Only other lists run the context
 setup and its alertness roll.
 
-**Result.** Idle new game, original against remake: 663 against 666 thinks
-over ticks 2-157, 36.2 against 35.9 draws per tick, and ticks 0-1 draw 420
-against 419. The first differing draw is on tick 1: think's move test
-(0x2D52D) draws 8 times in the original and not in the remake, offset by a
-few extra frame-branch, frame-timing and context draws; open.
+**Result (round 4).** Idle new game, original against remake: 663 against
+666 thinks over ticks 2-157, 36.2 against 35.9 draws per tick, and ticks 0-1
+draw 420 against 419.
+
+**Round 5: draw for draw through tick 51.** Comparing the remake's ordered
+draw log (`examples/rngseq.rs`, through `rng::trace_seq_start` and
+`trace_context`) with the original's, creature by creature:
+
+- **The 8 tick-1 draws** come from the movement test run on the creature's
+  own square: think's first danger check (0x2D792 with the current square
+  as destination) runs the missile danger scan (0x2D52D) in mode 5, and the
+  scan rolls `rnd & 7` for the direction behind the creature. Ported with the
+  scan's blocking test (0x2B9FC) and think's whole danger and escape block.
+- **Event order.** A creature's timeline event carries the creature's type
+  (record byte +4) as its priority byte (0x3059D), so same-tick creature
+  events run higher types first. The remake had priority 0, which reordered
+  every creature on tick 1.
+- **No re-plan roll.** The behaviour picker (0x26008) runs on every think.
+  Its two-bit "keep the plan" roll only applies while the event's path cache
+  (0x7F7D4/D5/D7, reset by the context setup) is in use, which it never is at
+  that point. The remake's extra `random(4)` re-plan roll is gone.
+- **Alertness flag (0x7F589).** The context setup sets it when
+  `n / 4 + random(n + 1)` is at most the ticks since the slot's last action
+  (slot +4, mod 256), with n = (15 - alertness) * 2.
+
+Ticks 0-1 now draw exactly the original's 542 including setup, every tick-1
+draw is at the same site for the same creature, and the stream matches
+through tick 51. **Open:** on tick 52 creature 0x1039 (type 0x38) reaches
+frame offset 4 in the original but offset 2 in the remake. Its frame-event
+frame (offset 2, chained, jump 2) fires in both; the original then follows
+the chain, which needs the slot's armed byte (+0x21) set, but the remake's
+frame events always return 0. Returning each handler's success (as 0x2B75E
+passes back its handler's result) armed far too often and broke the stream
+at tick 11, so which handlers return non-zero is still to be traced.
 
 **Slot pool.** Sized at game start (0x342F9) as min(awake groups + 100,
 creature records): 180 for the shipped dungeon. The remake had a fixed 75,
@@ -769,6 +798,14 @@ When the party's move ends on an open pit, the move routine loops:
    player sees the fall.
 
 On landing:
+
+- **Damage path:** the fall damage goes through the champion damage routine
+  (0x4722A) with parts mask 0x30 (legs and feet) and attack type 2 (0x4AAE7).
+  The remake used type 0. Checked in DOSBox with a positioned save stepping
+  into the pit on map 4 at (5,5): both land on map 7 at (5,11) facing north;
+  the original took 31 damage, the remake now 37 (19 with type 0). The
+  remaining gap is in random values after loading (the random state already
+  differs a few ticks in); open.
 
 - **Normal fall:** every living champion takes `(min(max health / 4,
   17) + rand4()) × levels fallen` damage through 0x4722A, to the legs and

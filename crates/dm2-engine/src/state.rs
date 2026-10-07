@@ -80,6 +80,9 @@ pub struct GameState {
     pub creature_data: Option<std::rc::Rc<crate::creatures::data::CreatureData>>,
     /// Map whose creatures were last activated for the party.
     pub creature_map_seen: Option<usize>,
+    /// Set by a load: the next tick first runs the per-map creature pass
+    /// (0x34236), as the original does when play resumes.
+    pub play_start_pending: bool,
     /// Set once the current creature event has run its context setup and
     /// alertness roll (0x24BFC's once-per-load guard, 0x7F7E7). Transient.
     pub creature_ctx_rolled: bool,
@@ -131,6 +134,7 @@ impl GameState {
             creature_slots: Vec::new(),
             creature_data: None,
             creature_map_seen: None,
+            play_start_pending: false,
             creature_ctx_rolled: false,
             creature_class_loaded: false,
             creature_alert_roll: 0,
@@ -201,6 +205,11 @@ impl GameState {
 
     /// Run one game tick (0x24691), minus rendering.
     pub fn advance(&mut self) {
+        crate::rng::trace_context(Some(self.tick), Some(0));
+        if self.play_start_pending {
+            self.play_start_pending = false;
+            crate::creatures::pass_all_maps(self);
+        }
         self.walk = self.walk.and_then(|(p, n)| (n > 1).then_some((p, n - 1)));
         if let Some(p) = self.pending_map.take() {
             movement::arrive(self, p);

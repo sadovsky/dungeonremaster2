@@ -11,6 +11,35 @@ use std::panic::Location;
 
 thread_local! {
     static TRACE: RefCell<Option<HashMap<(&'static str, u32), u32>>> = const { RefCell::new(None) };
+    /// Ordered draw log: (tick, file, line, creature) per draw.
+    static SEQ: RefCell<Option<Vec<(u32, &'static str, u32, u32)>>> = const { RefCell::new(None) };
+    /// Tick and creature the next draws belong to, for the ordered log.
+    static CONTEXT: RefCell<(u32, u32)> = const { RefCell::new((0, 0)) };
+}
+
+/// Start an ordered log of every draw with its tick, call site and the
+/// creature being processed (set with `trace_context`), to line the remake
+/// up with the original's draw log creature by creature.
+pub fn trace_seq_start() {
+    SEQ.with(|t| *t.borrow_mut() = Some(Vec::new()));
+}
+
+/// Stop the ordered log and return it.
+pub fn trace_seq_take() -> Vec<(u32, &'static str, u32, u32)> {
+    SEQ.with(|t| t.borrow_mut().take()).unwrap_or_default()
+}
+
+/// Set the tick or creature that following draws belong to.
+pub fn trace_context(tick: Option<u32>, creature: Option<u32>) {
+    CONTEXT.with(|c| {
+        let mut c = c.borrow_mut();
+        if let Some(t) = tick {
+            c.0 = t;
+        }
+        if let Some(cr) = creature {
+            c.1 = cr;
+        }
+    });
 }
 
 /// Start counting draws per call site (file, line) on this thread.
@@ -51,6 +80,12 @@ impl Rng {
         TRACE.with(|t| {
             if let Some(m) = t.borrow_mut().as_mut() {
                 *m.entry((l.file(), l.line())).or_default() += 1;
+            }
+        });
+        SEQ.with(|t| {
+            if let Some(v) = t.borrow_mut().as_mut() {
+                let (tick, cr) = CONTEXT.with(|c| *c.borrow());
+                v.push((tick, l.file(), l.line(), cr));
             }
         });
         self.state = self.state.wrapping_mul(0xBB40_E62D).wrapping_add(11);
