@@ -1074,6 +1074,41 @@ fn find_thing(g: &GameState, c: ThingRef) -> Option<(usize, i32, i32)> {
     None
 }
 
+/// Switch a pit or teleporter square on (mode 0), off (1) or over (2)
+/// (0x29D0C, from the creature walk handlers 0x29DE7 and 0x2A088). Square
+/// bit 3 is the open pit or active teleporter; opening a pit drops what
+/// stands there (0x58C6F). A teleporter whose record word 2 has both bits
+/// 1 and 2 set is left alone. Other squares are untouched. No random draws.
+pub(crate) fn square_power(g: &mut GameState, map: usize, x: i32, y: i32, mode: u8) {
+    use dm2_formats::dungeon::ThingType;
+    let sq = g.dungeon.square(map, x, y).0;
+    let kind = sq >> 5;
+    if kind == 5 {
+        let locked = g
+            .dungeon
+            .things_at(map, x, y)
+            .into_iter()
+            .find(|t| t.kind() == ThingType::Teleporter)
+            .and_then(|t| g.dungeon.record_word(t, 2))
+            .is_some_and(|w| w & 6 == 6);
+        if locked {
+            return;
+        }
+    } else if kind != 2 {
+        return;
+    }
+    let on = sq & 8 != 0;
+    let clear = if mode == 2 { on } else { mode != 0 };
+    if clear {
+        g.dungeon.set_square(map, x, y, sq & !8);
+    } else {
+        g.dungeon.set_square(map, x, y, sq | 8);
+        if kind == 2 {
+            movement::drop_square(g, map, x, y);
+        }
+    }
+}
+
 /// Move the group to the slot's target square (0x29DE7).
 fn move_frame(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> bool {
     let t = ctx.slot(g).target;
@@ -1098,12 +1133,24 @@ fn move_frame(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> bool {
         return false;
     }
     let c = ctx.thing;
+    // Types whose info byte 9 has 0x40 hold the pit or teleporter they stand
+    // on: the square left is switched off (0x29D0C mode 1) and the square
+    // reached switched on (mode 0) around the move.
+    let powers = ctx.info.raw[9] & 0x40 != 0;
+    if powers {
+        square_power(g, ctx.map, ctx.x, ctx.y, 1);
+    }
     movement::move_thing(g, c, Some((ctx.map, ctx.x, ctx.y)), Some((t.map(), t.x(), t.y())));
     let pos = if group_at(g, t.map(), t.x(), t.y()).is_some_and(|o| o.0 & 0x3FFF == c.0 & 0x3FFF) {
         Some((t.map(), t.x(), t.y()))
     } else {
         find_thing(g, c)
     };
+    if powers {
+        if let Some((m, x, y)) = pos {
+            square_power(g, m, x, y, 0);
+        }
+    }
     match pos {
         Some((m, x, y)) => ctx.slot_mut(g).pos = Packed::new(m, x, y),
         None => {

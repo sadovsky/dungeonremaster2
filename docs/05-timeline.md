@@ -670,7 +670,40 @@ status bit 0x1000, read from the disassembly:
   whenever it changes. Thing records are at `*(0x7F288 + 4 type) + index *
   size`, so creature record 155's status is `7f298:9ba`; a square on map m
   at (x, y) is `7f3c8:<4m>:<4x>:<y>` (0x7F3C8 points to one column-pointer
-  table per map).
+  table per map). `DM2_IPWATCH` (same form, one chain) checks before every
+  instruction and logs the code address following each change, which
+  names the writer directly.
+
+**Round 19 (hooked runs on c5's inputs).** The c5 save now matches the
+original field by field: `examples/statediff` reports 0 differences at tick
+352, and every draw match is unchanged (idle through 154, round 8 through
+257, c4 through 246, pit through 1710, c5 identical to round 18's stream).
+
+- **Creature 155's 0x1000 was cleared by drawing, not by the simulation.**
+  The per-instruction watch showed the write at 0x14DB3, inside 0x14D75:
+  the frame query behind the drawing-descriptor fetch 0x14CF2. On a cycle
+  word flagged 0x8000 and 0x1000 (and not 0x4000) it clears 0x1000 and the
+  phase (`& 0xE03F`) before computing the frame. It happens on the first
+  frame drawn after the load, with the group at lateral 2, forward 4 of the
+  party's view, so the far row of the cone counts. The remake applies this
+  once per tick after the creature updates, where the original renders
+  (`creatures::view_touch`); it makes no random draws.
+- **The pit and teleporter bits come from flying creatures.** The watch put
+  the map 23 pit's bit 3 at 0x29D7F and its clearing at 0x29DDE, both in
+  0x29D0C. The walk frame event 0x29DE7 (and 0x2A088, actions 0x35-0x3A)
+  calls it for types whose info byte 9 has bit 0x40: mode 1 on the square
+  left before the move, mode 0 on the square reached after it. Mode 0 sets
+  bit 3 (a pit then drops what stands there through 0x58C6F), mode 1
+  clears it, mode 2 toggles; a teleporter whose record word 2 has bits 1
+  and 2 set is skipped. Ported for the walk (`ai::square_power`); 0x2A088
+  is still not ported.
+- **Airborne creatures (0x3014D).** Porting the pit opening exposed that the
+  remake's test was wrong: a creature is airborne when its type's terrain
+  word has bit 0x0004, or when its slot is in action 5 at stage 1 or 2
+  (0x30102). The remake had tested bit 0x0008, so the creature holding the
+  pit open fell through it.
+- **Creature signal 0x3A** (static part above) is ported too; none of the
+  comparison runs reaches one.
 
 
 **Combat probe (round 7).** With the party moved next to the awake

@@ -453,7 +453,7 @@ The frame's gameplay event depends on the current action:
 | 0x27, 0x28 | 0x2A835 | Ranged attack: launches a missile through 0x16457 (not a look-around, as earlier notes said). The remake still treats these as turns |
 | 0x19, 0x29, 0x2A, 0x2D, 0x2E | 0x2ACBC | Put possessions down on the target square |
 | 0x2F-0x31 | 0x2B23B | TODO |
-| 0x35-0x3A | 0x2A088 | TODO |
+| 0x35-0x3A | 0x2A088 | TODO. Like the walk (0x29DE7), it switches the pit or teleporter under a type with info byte 9 bit 0x40 off before a move and on after it (0x29D0C, docs/05 round 19). |
 | 0x3B, 0x3C | 0x2B35D | Transform |
 | 0x3D-0x40 | 0x2B570 | TODO |
 | 0x55 | 0x2B724 | Give up (used by think) |

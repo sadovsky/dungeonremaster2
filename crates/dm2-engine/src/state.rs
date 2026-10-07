@@ -228,6 +228,9 @@ impl GameState {
         self.walk = self.walk.and_then(|(p, n)| (n > 1).then_some((p, n - 1)));
         self.world_phase();
         crate::creatures::update(self);
+        // The original then renders; drawing a dormant group touches its
+        // cycle word (0x14D75), so that part of the frame runs here.
+        crate::creatures::view_touch(self);
         champions::tick(self);
         // The main loop then counts down the hands' busy counters (0x4904F
         // with argument 1, through 0x3FE68), before the tick moves on.

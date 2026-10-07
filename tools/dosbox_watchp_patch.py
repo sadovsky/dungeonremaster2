@@ -55,15 +55,49 @@ BLOCK = r'''	/* DM2_WATCHP: pointer chains "base:off1:...:last" (hex), see
 '''
 
 
+# DM2_IPWATCH: one pointer chain in the same form, checked before every
+# executed instruction (slow); logs "I tick ip value" with the code address
+# of the instruction that follows the write, so the writer can be found.
+IP_ANCHOR = "\tif (dm2_code_delta) {\n"
+
+IP_BLOCK = r'''	if (dm2_code_delta) {
+		static Bit32u dm2_ic[6];
+		static int dm2_ilen = -1;
+		static Bit32u dm2_ival = 0xFFFFFFFFu;
+		if (dm2_ilen < 0) {
+			dm2_ilen = 0;
+			const char * w = getenv("DM2_IPWATCH");
+			while (w && *w && dm2_ilen < 6) {
+				char * end;
+				dm2_ic[dm2_ilen++] = (Bit32u)strtoul(w, &end, 16);
+				w = (*end == ':') ? end + 1 : 0;
+			}
+		}
+		if (dm2_ilen >= 2) {
+			Bit32u ptr = LoadMd(dm2_ic[0] + dm2_data_delta);
+			for (int k = 1; k < dm2_ilen - 1 && ptr; k++) ptr = LoadMd(SegBase(ds) + ptr + dm2_ic[k]);
+			Bit32u v = ptr ? LoadMw(SegBase(ds) + ptr + dm2_ic[dm2_ilen - 1]) : 0xFFFFu;
+			if (v != dm2_ival) {
+				fprintf(dm2_log, "I %u %x %x\n", LoadMd(0x7F22C + dm2_data_delta), ip - dm2_code_delta, v);
+				dm2_ival = v;
+			}
+		}
+	}
+'''
+
+
 def main():
     p = Path(sys.argv[1])
     s = p.read_text()
-    if 'DM2_WATCHP' in s:
-        print('already patched')
-        return
-    assert ANCHOR in s, 'anchor not found'
-    p.write_text(s.replace(ANCHOR, BLOCK + ANCHOR))
-    print('patched')
+    if 'DM2_WATCHP' not in s:
+        assert ANCHOR in s, 'anchor not found'
+        s = s.replace(ANCHOR, BLOCK + ANCHOR)
+        print('patched DM2_WATCHP')
+    if 'DM2_IPWATCH' not in s:
+        assert IP_ANCHOR in s, 'hook anchor not found'
+        s = s.replace(IP_ANCHOR, IP_BLOCK + IP_ANCHOR, 1)
+        print('patched DM2_IPWATCH')
+    p.write_text(s)
 
 
 if __name__ == '__main__':

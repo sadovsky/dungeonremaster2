@@ -329,7 +329,14 @@ pub fn teleport_class(g: &GameState, c: ThingRef) -> u8 {
 pub fn is_airborne(g: &GameState, t: ThingRef) -> bool {
     match t.kind() {
         ThingType::Missile | ThingType::Cloud => true,
-        ThingType::Creature => info_of(g, t).is_some_and(|i| i.terrain() & terrain::PIT_OPEN & !terrain::PIT_CLOSED != 0),
+        // 0x3014D: terrain word bit 0x0004, or a group in action 5 at stage
+        // 1 or 2 (0x30102, mid-jump).
+        ThingType::Creature => {
+            info_of(g, t).is_some_and(|i| i.terrain() & 0x0004 != 0)
+                || slot_of(g, t)
+                    .and_then(|si| g.creature_slots[si].as_ref())
+                    .is_some_and(|s| s.action == 5 && matches!(s.stage, 1 | 2))
+        }
         _ => false,
     }
 }
@@ -588,6 +595,43 @@ pub fn activate_map(g: &mut GameState, map: usize) {
 pub fn pass_all_maps(g: &mut GameState) {
     for map in 0..g.dungeon.maps.len() {
         activate_map(g, map);
+    }
+}
+
+/// The view-cone cells (the viewport's 23, docs/04): (lateral, forward),
+/// lateral > 0 to the right. The original's c5 run shows the drawing touch
+/// below reaching a group at lateral 2, forward 4, so the far row counts too.
+const VIEW_CONTENT_CELLS: [(i32, i32); 23] = [
+    (0, 0), (-1, 0), (1, 0), (0, 1), (-1, 1), (1, 1), (0, 2), (-1, 2), (1, 2),
+    (-2, 2), (2, 2), (0, 3), (-1, 3), (1, 3), (-2, 3), (2, 3), (0, 4), (-1, 4),
+    (1, 4), (-2, 4), (2, 4), (-3, 4), (3, 4),
+];
+
+/// Frame-index query on a dormant group's cycle word (0x14D75, reached when
+/// the 3D view fetches a group's drawing descriptor through 0x14CF2): a word
+/// flagged 0x8000 and 0x1000 but not 0x4000 loses 0x1000 and its phase
+/// (`& 0xE03F`). The original writes the record while drawing, so the change
+/// lands in the game state; the remake applies it once per tick, at the
+/// point where the original renders (after the creature updates), to the
+/// dormant groups on the squares the view draws. No random numbers.
+pub fn view_touch(g: &mut GameState) {
+    let Some(d) = g.creature_data.clone() else { return };
+    if g.champions.is_empty() {
+        return;
+    }
+    let (map, px, py, dir) = (g.party.map, g.party.x, g.party.y, g.party.dir as usize);
+    for (lat, fwd) in VIEW_CONTENT_CELLS {
+        let x = px + crate::viewport::DX[dir] * fwd + crate::viewport::DX[(dir + 1) & 3] * lat;
+        let y = py + crate::viewport::DY[dir] * fwd + crate::viewport::DY[(dir + 1) & 3] * lat;
+        let Some(c) = group_at(g, map, x, y) else { continue };
+        let dormant = type_info(g, &d, creature_type(g, c)).is_some_and(|(i, _)| i.inanimate());
+        if !dormant {
+            continue;
+        }
+        let w = rec_u16(g, c, 0x0A);
+        if w & 0x4000 == 0 && w & 0x8000 != 0 && w & 0x1000 != 0 {
+            set_rec_u16(g, c, 0x0A, w & 0xE03F);
+        }
     }
 }
 

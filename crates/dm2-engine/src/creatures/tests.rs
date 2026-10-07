@@ -742,3 +742,61 @@ fn floor_signal_runs_the_dormant_cycle_step() {
     assert_ne!(st & 0x8000, 0, "the cycle step keeps bit 0x8000: {st:#06x}");
     assert_eq!(st & 0x10, 0, "no status bit 0x10 toggle: {st:#06x}");
 }
+
+/// 0x29D0C, used by the walk of types with info byte 9 bit 0x40: mode 0
+/// opens a pit (bit 3), mode 1 closes it, mode 2 toggles.
+#[test]
+fn powered_squares_follow_the_mode() {
+    let Some((mut g, _)) = load() else { return };
+    let mut pit = None;
+    'find: for (mi, m) in g.dungeon.maps.iter().enumerate() {
+        for x in 0..m.width as i32 {
+            for y in 0..m.height as i32 {
+                let sq = g.dungeon.square(mi, x, y).0;
+                if sq >> 5 == 2 && sq & 0x10 == 0 {
+                    pit = Some((mi, x, y));
+                    break 'find;
+                }
+            }
+        }
+    }
+    let Some((m, x, y)) = pit else { return };
+    let bit = |g: &GameState| g.dungeon.square(m, x, y).0 & 8;
+    super::ai::square_power(&mut g, m, x, y, 1);
+    assert_eq!(bit(&g), 0);
+    super::ai::square_power(&mut g, m, x, y, 0);
+    assert_eq!(bit(&g), 8);
+    super::ai::square_power(&mut g, m, x, y, 2);
+    assert_eq!(bit(&g), 0);
+    super::ai::square_power(&mut g, m, x, y, 2);
+    assert_eq!(bit(&g), 8);
+}
+
+/// 0x3014D: a group without a slot counts as airborne (floating over open
+/// pits) exactly when its type's terrain word has bit 0x0004.
+#[test]
+fn airborne_follows_terrain_bit_4() {
+    let Some((g, d)) = load() else { return };
+    for (_, _, _, c) in groups(&g) {
+        let Some((info, _)) = type_info(&g, &d, creature_type(&g, c)) else { continue };
+        if slot_of(&g, c).is_none() {
+            assert_eq!(is_airborne(&g, c), info.terrain() & 4 != 0, "group {:#06x}", c.0);
+        }
+    }
+}
+
+/// 0x14D75 through the view: a dormant group in the view cone flagged
+/// 0x9000 loses bit 0x1000 and its phase.
+#[test]
+fn drawing_a_dormant_group_clears_its_phase_flag() {
+    let Some((mut g, d)) = load() else { return };
+    let dormant = groups(&g).into_iter().find(|&(_, _, _, c)| {
+        type_info(&g, &d, creature_type(&g, c)).is_some_and(|(i, _)| i.inanimate())
+    });
+    let Some((map, x, y, c)) = dormant else { return };
+    // Stand one square south of the group, facing north.
+    g.party = crate::world::PartyPos { map, x, y: y + 1, dir: 0 };
+    set_rec_u16(&mut g, c, 0x0A, 0x9041);
+    view_touch(&mut g);
+    assert_eq!(rec_u16(&g, c, 0x0A), 0x8001);
+}
