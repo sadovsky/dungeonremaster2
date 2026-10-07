@@ -49,7 +49,12 @@ fn pinned_views() {
     // checked against the original's start view in DOSBox.
     let views: [((usize, i32, i32, u8), u64); 8] = [
         ((3, 10, 9, 0), 0x8cea3120aed4479b),
-        ((6, 8, 8, 1), 0x53566c2c295f1b8f),
+        // A door panel drawn from its per-depth image is now lit at depth 0
+        // (ambient only), as 0x5346E passes it to 0x4E502; the changed
+        // pixels are confined to the centre door panel. Verified against the
+        // original in DOSBox at map 2 (19,12,N): the door view went from
+        // 3,413 differing pixels to 0 with this and the door frame.
+        ((6, 8, 8, 1), 0xd50ccd4aa6e11435),
         // A depth-4 front-face ornament is now drawn (cells 16-20 show ornaments).
         // two open pits in view: pits are now keyed and lit by depth (pit view verified
         // pixel-exact against the original at (4, 5, 6, N)).
