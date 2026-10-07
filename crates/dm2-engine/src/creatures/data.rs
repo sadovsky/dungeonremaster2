@@ -60,6 +60,11 @@ impl Info {
     pub fn flags1(&self) -> u8 {
         self.raw[1]
     }
+    /// Info word +0x10 (0x7F576): what the type can do to a door it faces
+    /// (0x2CC42 masks it with 0x6F to open, 0x73 to close or break).
+    pub fn door_actions(&self) -> u16 {
+        self.w(0x10)
+    }
     pub fn defence(&self) -> u8 {
         self.raw[2]
     }

@@ -400,7 +400,7 @@ Opcodes (dispatch at 0x27CD2, index = letter − 0x3F):
 | `\` | 0x29B16 | Look for a special text thing under the creature. If it holds a creature type, set +0x1E to it and queue action 0x3B (transform); otherwise queue action 0x33 and register an event 0x13. |
 | `]` | 0x29BE7 | Queue action 0x3D + arg with mode and argument from globals |
 | `^` | default | Same as `O` |
-| `` ` `` | 0x29C2D | Act on the target with 0x2CC42 |
+| `` ` `` | 0x29C2D | Act on the door at the target square with 0x2CC42, committing, with the goal value's low byte as the mode (0 open, 1 close, 2 break); see docs/05, round 16. The movement test also calls 0x2CC42 for a door destination (mode 0 with its own commit bit) and for doors around a square (mode 2, committing) |
 | `a` | 0x29C88 | Chance test: done with probability arg 3 percent (`random(100) < arg3`), else failed. |
 | `b` | 0x29CAA | Check possessions for either of two item kinds (args 3 and 4) |
 
@@ -737,13 +737,13 @@ opcode `T` and by two other AI helpers.
 |------|----------------|
 | 0 | Always, so the start square matches |
 | 1 | The square is the creature's post (thing record word +0x0C), or its map-edge alias |
-| 2 | Party, by mode (spec +4): 0 its square; 1 its square while it faces a direction in the value mask; 2 in the line it faces, within the value (spec +6) and with a clear line (0x2BBAD); 4 exactly the value away in the same row or column with a clear line |
+| 2 | Party, by mode (spec +4): 0 its square; 1 its square when the value mask has the bit for the direction from the party toward the square the search came from, less the party's facing (bit 0 = in front of the party, so 0x0E = beside or behind it; a zero mask accepts any); 2 in the line it faces, within the value (spec +6) and with a clear line (0x2BBAD); 4 exactly the value away in the same row or column with a clear line |
 | 3 | The square is the slot's home (+0x0C), or its map-edge alias |
 | 4 | Two squares from the party |
 | 5 | Flee: keeps the square farthest from the party (distances on other layers doubled), optionally gated by a 16-bit LFSR at 0x752E8 |
 | 6, 7 | The path test 0x2C404 passes from the square (move flags 1 and 0; both alike when not committing), on the party's map: see "Path test" below. It can hold on the start square, and since goals are ranked by list order a creature with the party in reach picks this goal ahead of a later fallback |
 | 8, 9 | A thing search (0x2C0A2) finds a matching item or object at the square, filtered by the item mask at 0x7F574; it also records where |
-| 0x0A | On the party's map, when the current action allows it: a path in the creature's own facing (0x2C404) |
+| 0x0A | On the party's map, when the action just finished allows it (the action saved in 0x7F56A by the context setup for a new action, "no action" read as 0, with bits 0-1 clear in the action flag table at 0x75136; a melee attack's entry has them set): a path in the creature's own facing (0x2C404) |
 | 0x0B | A square remembered in the search's scratch record, or its map-edge alias |
 | 0x0C-0x10, 0x14, 0x15, 0x17-0x19, 0x1B | Further branches of the same switch, not yet described |
 | 0x11-0x13, 0x16, 0x1A | Not handled (never match); kind 0x1A's flags (0x02) also leave it untested per square |

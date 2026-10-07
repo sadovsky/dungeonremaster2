@@ -509,6 +509,62 @@ The hooked build still writes no save, so the field-by-field combat
 comparison remains open. `DM2_PLANDBG=TICK` now also prints each goal's
 mode, value and tag, the alertness rolls and the attack builders' view.
 
+**Round 16: two goal tests.** Both remaining combat divergences came from
+how the planner decides whether a goal is met, not from the random stream.
+
+- **Party-facing goals are relative.** Goal type 2 with mode 1 counts the
+  party's square only when a bit of the value mask is set. The bit is the
+  direction from the party toward the square the search arrived from, less
+  the party's own facing, so bit 0 means "in front of the party" and 0x0E
+  means "beside or behind it". The direction comes from 0x1863D, whose
+  diagonal tie-break draw cannot happen here because the search arrives
+  from a neighbouring square. The remake tested the absolute facing bit,
+  so at tick 165 of the c4 run a creature straight in front of a
+  south-facing party took a "beside or behind" goal and started program 42.
+  The hooked log's goal array (0x7F670 onward, 22-byte records from
+  0x7F674) showed the original building the very same two goals, which
+  pointed at the test rather than the goal list.
+- **The facing-path goal looks at the last action.** For a new action
+  (event 0x22) the context setup copies the slot's action byte (+0x1A, "no
+  action" read as 0) into 0x7F56A, clears ten bytes from +0x18 and only then
+  marks the slot as having no action. So the action byte the hook reads
+  during think is already cleared and says nothing about the creature's
+  history. Goal type 0x0A is allowed only when the action in 0x7F56A has
+  bits 0-1 clear in the action flag table (0x75136). A melee attack's
+  entry has them set, so a creature never takes this goal straight after
+  attacking. The remake indexed the table by creature type, which let the
+  round 8 run's creature attack again at tick 202.
+- **The door routine (0x2CC42) is ported, tentatively.** Opcode `` ` `` acts
+  on the door at its target square with the goal value's low byte as the
+  mode (0 open, 1 close, 2 break). The door must be in the creature's row or
+  column, the type's info word +0x10 (masked with 0x6F to open, 0x73
+  otherwise) must allow something, and a door already in the wanted state
+  just ends the step. The door's flag bytes, the distance and the reach then
+  decide whether the creature can act. With mask bit 0, a door-opening or
+  door-breaking missile flying toward the door, or such a cloud, makes the
+  creature wait instead. Otherwise it turns to face the door, then bashes it
+  (action 0x0B), casts at it (actions 0x27/0x28 with missile 0x8D or 0x84)
+  or attacks through the path test, drawing only where the choice is open,
+  plus a cell coin at the end. No comparison run exercises it yet.
+
+**Result (round 16).** The c4 combat run matches the original draw for
+draw through tick 247 (draw 8113, up from 165). From tick 248 the original
+is running its save sequence, opened by the probe about 25 seconds after
+loading, so the run is matched over its whole comparable stretch. The round 8
+combat log matches through tick 216 (draw 6725, up from 201). The idle run
+stays identical through tick 154 and the pit run through 1711.
+
+**Next divergence (round 8 log, tick 217).** Creature 0x1100 on map 36
+wanders toward the closed door at (7,2). In the original the movement test
+(0x2D792) hands a door destination to the door routine in the same think,
+with mode 0 and its own commit bit (line 0x2E51F's call, taken when the
+masked terrain class is 0x4000; a closed door's raw class is 0x4200). The
+creature bashes the door (action 0x0B) and draws the routine's cell coin.
+The remake's wander walk only refuses walls, rock and some map-edge links,
+so it walks the creature into the door square. Porting the movement test's
+door branches is the next step. The hooked build still writes no save, so
+the field-by-field combat comparison is still open.
+
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
 (5,13), from the pit probe's save), the original reached its game-over

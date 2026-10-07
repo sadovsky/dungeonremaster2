@@ -459,7 +459,7 @@ pub fn first_step(g: &GameState, s: &Searcher, tx: i32, ty: i32, limit: u8) -> O
 /// column (0x2BBAD with the blocking test 0x2B9FC): walking from the target
 /// toward (x, y), each square stepped into is tested until the walk is one
 /// square from (x, y); neither end square is tested.
-fn clear_line(g: &mut GameState, map: usize, x: i32, y: i32, tx: i32, ty: i32) -> bool {
+pub(super) fn clear_line(g: &mut GameState, map: usize, x: i32, y: i32, tx: i32, ty: i32) -> bool {
     let (sx, sy) = ((x - tx).signum(), (y - ty).signum());
     let (mut cx, mut cy) = (tx, ty);
     loop {

@@ -778,7 +778,8 @@ fn opcode(g: &mut GameState, d: &CreatureData, ctx: &Ctx, row: &Row) -> Res {
             set_action(g, ctx, ACTION_DIE);
             Res::InProgress
         }
-        b'B' | b'S' | b'X' | b'`' => {
+        b'`' => door_act(g, ctx),
+        b'B' | b'S' | b'X' => {
             // Interact with the target square; for now: attack the party
             // when it stands there and is adjacent.
             let t = ctx.slot(g).target;
@@ -1327,6 +1328,191 @@ fn act_on_target(g: &mut GameState, ctx: &Ctx) -> Res {
         return Res::Failed;
     };
     commit_attack(g, ctx, flags, tx, ty, ok, None)
+}
+
+/// Act on the door at the target square (0x2CC42, as opcode `` ` `` calls it:
+/// committing, mode = the low byte of the goal's value word, which is 0 to
+/// open a door and 1 or 2 to close or break one).
+///
+/// The door must be in the creature's row or column and the type's door mask
+/// (info word +0x10, masked with 0x6F to open or 0x73 otherwise) must allow
+/// something. A door already in the wanted state is "done" (open for mode 0,
+/// closed for the others; a destroyed door fails modes 1-2). Otherwise the
+/// door's flag bytes, the distance and the creature's reach decide whether it
+/// can act, and with mask bit 0 a missile or cloud already working on the
+/// door along the way makes the creature wait instead. When it acts it turns
+/// to face the door first, then either bashes it (action 0x0B), casts at it
+/// (actions 0x27/0x28 with a door-opening or door-breaking missile), or
+/// attacks through the path test; random draws happen only where the choice
+/// is open, plus the cell coin at the end.
+fn door_act(g: &mut GameState, ctx: &Ctx) -> Res {
+    let mode = (ctx.slot(g).kind_b as u8) & 0x7F;
+    let mut mask = (if mode == 0 { 0x6F } else { 0x73 }) & ctx.info.door_actions();
+    if mask == 0 {
+        return Res::Failed;
+    }
+    let t = ctx.slot(g).target;
+    let (x, y, tx, ty) = (ctx.x, ctx.y, t.x(), t.y());
+    let dir = direction_toward_rand(x, y, tx, ty, &mut g.rng);
+    let m = &g.dungeon.maps[ctx.map];
+    if tx < 0 || ty < 0 || tx >= m.width as i32 || ty >= m.height as i32 || (x != tx && y != ty) {
+        return Res::Failed;
+    }
+    let sq = g.dungeon.square(ctx.map, tx, ty);
+    if sq.element() != Element::Door {
+        return Res::Failed;
+    }
+    let state = sq.0 & 7;
+    let sr = searcher(ctx);
+    let mut door = None;
+    let mut dist = 0;
+    // 1: already as wanted; 2: wait (idle); 0: act.
+    let mut outcome = 0u8;
+    let wanted = if mode == 0 {
+        state == 0
+    } else {
+        if state == 5 {
+            return Res::Failed;
+        }
+        state == 4
+    };
+    if wanted {
+        outcome = 1;
+    } else {
+        let d = g.dungeon.things_at(ctx.map, tx, ty).into_iter().find(|t| t.kind() == ThingType::Door);
+        let (b2, b3) = d.and_then(|d| g.dungeon.record(d)).map_or((0, 0), |r| (r[2], r[3]));
+        door = d;
+        if mode == 2 && b3 & 0x10 == 0 {
+            return Res::Failed;
+        }
+        let mut act = true;
+        if b3 & 4 != 0 {
+            if b3 & 2 == 0 {
+                if mode == 0 {
+                    mask &= 0xFFF3;
+                    if mask == 0 {
+                        return Res::Failed;
+                    }
+                } else {
+                    outcome = 2;
+                    act = false;
+                }
+            } else if mode == 0 {
+                outcome = 2;
+                act = false;
+            }
+        }
+        if act {
+            dist = (x - tx).abs() + (y - ty).abs();
+            if dist == 1 {
+                let open_way = (mask & 3 == 0 || (b2 & 0x40 == 0 && b3 & 0x20 == 0))
+                    && (mode != 0 || ((mask & 4 == 0 || b2 & 0x80 == 0) && (mask & 8 == 0 || b3 & 1 == 0)));
+                if open_way && mask & 0x40 == 0 {
+                    return Res::Failed;
+                }
+            } else {
+                if (sr.range as i32) < dist {
+                    return Res::Failed;
+                }
+                let no_way = (mask & 1 == 0 || (b2 & 0x40 == 0 && b3 & 0x20 == 0))
+                    && (mode != 0 || mask & 4 == 0 || b2 & 0x80 == 0);
+                if no_way || !planner::clear_line(g, ctx.map, x, y, tx, ty) {
+                    return Res::Failed;
+                }
+            }
+            // With mask bit 0, something already on its way to the door
+            // (an opening or breaking missile flying this way, or such a
+            // cloud) makes the creature wait.
+            if mask & 1 != 0 {
+                let (mut sx, mut sy) = (x, y);
+                'scan: for _ in 0..=dist {
+                    for th in g.dungeon.things_at(ctx.map, sx, sy) {
+                        let busy = match th.kind() {
+                            ThingType::Missile => {
+                                let v = g.dungeon.record_word(th, 1).unwrap_or(0);
+                                (v == 0xFF8D || v == 0xFF84) && crate::missiles::view_dir(g, th) == Some(dir)
+                            }
+                            ThingType::Cloud => {
+                                let k = g.dungeon.record_word(th, 1).unwrap_or(0) & 0x7F;
+                                k == 0x0D || k == 4
+                            }
+                            _ => false,
+                        };
+                        if busy {
+                            outcome = 2;
+                            break 'scan;
+                        }
+                    }
+                    sx += DX[dir as usize];
+                    sy += DY[dir as usize];
+                }
+            }
+        }
+    }
+    if outcome != 0 && mode == 2 {
+        return Res::Failed;
+    }
+    match outcome {
+        1 => return Res::Done,
+        2 => {
+            set_action(g, ctx, action::IDLE);
+            return Res::InProgress;
+        }
+        _ => {}
+    }
+    if queue_turn(g, ctx, dir) {
+        return Res::InProgress;
+    }
+    if mask & 0x20 != 0 {
+        mask &= !0x20;
+        if mode == 0 {
+            if let Some(d) = door {
+                let w = g.dungeon.record_word(d, 1).unwrap_or(0);
+                g.dungeon.set_record_word(d, 1, w | 0x1000);
+            }
+        }
+    }
+    if dist > 1 {
+        mask &= 5;
+    }
+    let s_action;
+    let mut missile = None;
+    if mask & 0x42 == 0 || (mask & 0xFFBD != 0 && g.rng.rand4() == 0) {
+        if mask & 1 == 0 || (mask & 0xFFBC != 0 && g.rng.rand4() != 0) {
+            // Attack through the path test (0x2C404 with flags 0x84), the
+            // attack mask cut to bit 0 or to 0x50.
+            let am = sr.attack_mask;
+            let keep = if mask & 8 == 0 || am & 1 == 0 || (mask & 0xFFB4 != 0 && g.rng.bit() == 0) {
+                if mask & 4 == 0 {
+                    return Res::Failed;
+                }
+                am & 0x50
+            } else {
+                am & 1
+            };
+            let Some(ok) = planner::path_filter(g, &sr, keep, 4, ctx.map, x, y, tx, ty) else {
+                return Res::Failed;
+            };
+            return commit_attack(g, ctx, 4, tx, ty, ok, Some(dir));
+        }
+        let b = g.rng.bit() as u8;
+        s_action = 0x27 + b;
+        missile = Some(if mode == 0 { 0x8D } else { 0x84 });
+    } else {
+        s_action = 0x0B;
+    }
+    // Tentative: the cell is the coin plus the facing, like a ranged attack.
+    let cell = (g.rng.bit() as u8 + dir) & 3;
+    let s = ctx.slot_mut(g);
+    s.action = s_action;
+    if let Some(m) = missile {
+        s.arg = m;
+    }
+    s.target = Packed::new(ctx.map, tx, ty);
+    s.dir_arg = dir;
+    s.cell_arg = cell;
+    s.mode = mode;
+    Res::InProgress
 }
 
 /// R's distance analysis (0x26A67 with the chosen goal's data and tag).
