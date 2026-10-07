@@ -723,3 +723,22 @@ fn walking_into_a_closed_door_never_enters_it() {
     assert_eq!(group_at(&g, map, 6, 2), Some(c), "the creature stays put");
     assert_eq!(group_at(&g, map, door.0, door.1), None, "nothing entered the door");
 }
+
+/// Actuator type 0x3A (0x2538C): a set signal on a dormant group wakes it
+/// and runs the cycle step 0x252C3, which rebuilds the status word as
+/// `count | (status & 0xFC0) | 0x8000` (or `| 0xA000` mid-cycle), dropping
+/// bit 0x1000. The remake used to toggle status bit 0x10 instead.
+#[test]
+fn floor_signal_runs_the_dormant_cycle_step() {
+    let Some((mut g, d)) = load() else { return };
+    let dormant = groups(&g).into_iter().find(|&(_, _, _, c)| {
+        type_info(&g, &d, creature_type(&g, c)).is_some_and(|(i, _)| i.inanimate()) && rec_u8(&g, c, 5) == 0xFF
+    });
+    let Some((map, x, y, c)) = dormant else { return };
+    set_rec_u16(&mut g, c, 0x0A, 0x9001);
+    floor_signal(&mut g, map, x, y, true);
+    let st = rec_u16(&g, c, 0x0A);
+    assert_eq!(st & 0x1000, 0, "the set signal's cycle step drops bit 0x1000: {st:#06x}");
+    assert_ne!(st & 0x8000, 0, "the cycle step keeps bit 0x8000: {st:#06x}");
+    assert_eq!(st & 0x10, 0, "no status bit 0x10 toggle: {st:#06x}");
+}

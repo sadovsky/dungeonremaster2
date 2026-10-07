@@ -639,6 +639,39 @@ remake now differs from the original in two places, down from four:
   targets these squares, and the creature movement test (0x2D792-0x2E700)
   never sets a square's bit 3, so the writer is elsewhere and untraced.
 
+**Round 19 (static part).** What can and cannot clear a dormant group's
+status bit 0x1000, read from the disassembly:
+
+- The dormant dispatch (0x258F9) runs the first cycle step 0x25204 only when
+  status bit 0x4000 is set and the second, 0x252C3, only when bit 0x2000 is
+  set. Only those two steps ever write those bits (0xC000 and 0xA000), so a
+  group at 0x9001 never cycles from its own events.
+- 0x252C3 rebuilds the word as `count | (status & 0xFC0) | 0x8000` (or with
+  0xA000 mid-cycle), which drops 0x1000: from 0x9001 it gives 0x8001, the
+  value the original saves for creature 155. 0x25204 leaves 0x9001 alone
+  (its masked value is already 0x8001).
+- The only caller that runs a cycle step without those bits is the creature
+  signal 0x2538C, reached solely from floor actuator type 0x3A (0x57476). It
+  activates a dormant group without a slot, loads its context and runs
+  0x252C3 for a set action, else 0x25204. The remake had toggled status bit
+  0x10 here instead; it now follows the original. In the shipped dungeon the
+  type 0x3A actuators are on maps 1, 3 and 9 and target their own squares,
+  so none of them reaches creature 155 on map 22.
+- Neither activation (0x306A8 skips the frame scheduler for dormant types)
+  nor the per-map pass (0x34106 keeps the old status's 0x1000 when merging
+  0x14E42's result) nor the hit handler's dormant branch clears 0x1000. So
+  in the original either a type 0x3A signal reaches (1,6) through a route
+  not in the dungeon data (a cross-map relay or a timer), or the bit is
+  rewritten elsewhere; a run of the hooked build with the pointer-chain
+  watch below settles it.
+- **Pointer-chain watch.** `tools/dosbox_watchp_patch.py` adds DM2_WATCHP to
+  the hooked DOSBox: entries `base:off1:...:last` (hex) read the dword
+  global at base, follow each offset, and log the 16-bit word at the end
+  whenever it changes. Thing records are at `*(0x7F288 + 4 type) + index *
+  size`, so creature record 155's status is `7f298:9ba`; a square on map m
+  at (x, y) is `7f3c8:<4m>:<4x>:<y>` (0x7F3C8 points to one column-pointer
+  table per map).
+
 
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
@@ -1039,7 +1072,7 @@ leave the variable unchanged.
 | 0x2C | 0x56F11 (variant 0) |
 | 0x2E | Move or rotate the party: target = word 3 x/y if word 2 bit 2 is set, else the event square. Direction = word 2 bits 3-4, relative to the party's facing unless bit 5 is set (absolute). Done through 0x4BED2. |
 | 0x32 | 0x570B1 |
-| 0x3A | 0x2538C(x, y, action == set). Tentative: creature-related. |
+| 0x3A | Creature signal (0x2538C) on the target square: a dormant group there without a slot is activated; then, if the group holds a slot, its context is loaded as event 0x21 and one frame-cycle step runs, 0x252C3 for a set action and 0x25204 otherwise (docs/08). No random draws. |
 | 0x3B, 0x40, 0x47-0x49 | Item relays as on walls |
 | 0x3D | Relay as on walls |
 | 0x42, 0x43, 0x44 | As on walls |

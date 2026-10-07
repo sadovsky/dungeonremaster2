@@ -441,17 +441,18 @@ fn queue_action_interrupt(g: &mut GameState, c: ThingRef, act: u8) {
 /// Floor actuator type 0x3A (0x2538C): a signal to the group on the square.
 /// Sets or clears status bit 0x10 (tentative).
 pub fn floor_signal(g: &mut GameState, map: usize, x: i32, y: i32, set: bool) {
-    if let Some(c) = group_at(g, map, x, y) {
-        // A dormant group (info bit 0 set) without a slot wakes here (0x2538C).
-        if let Some(d) = g.creature_data.clone() {
-            let dormant = type_info(g, &d, creature_type(g, c)).is_some_and(|(i, _)| i.inanimate());
-            if dormant && rec_u8(g, c, 5) == 0xFF {
-                activate(g, &d, c, map, x, y);
-            }
-        }
-        let s = status(g, c);
-        set_rec_u16(g, c, 0x0A, if set { s | 0x10 } else { s & !0x10 });
+    // 0x2538C: a dormant group (info bit 0 set) without a slot wakes here;
+    // then, if the group holds a slot, its context is loaded (as event 0x21)
+    // and one frame-cycle step runs: 0x252C3 for a set action, else 0x25204.
+    let Some(c) = group_at(g, map, x, y) else { return };
+    let Some(d) = g.creature_data.clone() else { return };
+    let dormant = type_info(g, &d, creature_type(g, c)).is_some_and(|(i, _)| i.inanimate());
+    if dormant && rec_u8(g, c, 5) == 0xFF {
+        activate(g, &d, c, map, x, y);
     }
+    let Some(si) = slot_of(g, c) else { return };
+    let Some(ctx) = Ctx::load(g, &d, si) else { return };
+    dormant_cycle(g, &d, &ctx, true, !set);
 }
 
 /// Event 0x5E (0x30BA6 path from text kinds 0x13/0x16): spawn the creature
