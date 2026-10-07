@@ -473,36 +473,54 @@ fn clear_line(g: &mut GameState, map: usize, x: i32, y: i32, tx: i32, ty: i32) -
 /// other than the creature's own.
 fn path_to_party(g: &mut GameState, s: &Searcher, value: u16, map: usize, x: i32, y: i32) -> bool {
     let (tx, ty) = (g.party.x, g.party.y);
-    let mut mask = s.attack_mask & value;
+    path_filter(g, s, s.attack_mask & value, map, x, y, tx, ty).is_some()
+}
+
+/// What the path test's filters leave (0x2C404 up to 0x2C88C).
+pub(super) struct PathOk {
+    /// The attack mask after the filters.
+    pub mask: u16,
+    /// Manhattan distance from (x, y) to the target.
+    pub d: i32,
+    /// Cell of the champion holding an item of kind set 0x0B (bit 2), if any.
+    pub steal_cell: u8,
+}
+
+/// The path test's filters from (x, y) to the target (tx, ty) with attack
+/// mask `mask`; None when it fails. See `path_to_party`.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn path_filter(g: &mut GameState, s: &Searcher, mask: u16, map: usize, x: i32, y: i32, tx: i32, ty: i32) -> Option<PathOk> {
+    let mut mask = mask;
+    let mut steal_cell = 0u8;
     if mask == 0 || (x != tx && y != ty) {
-        return false;
+        return None;
     }
     let d = manhattan(x, y, tx, ty);
     if d > 1 {
         mask &= 0xFF8;
         if mask == 0 {
-            return false;
+            return None;
         }
     } else if d == 0 {
         mask &= 7;
         if mask == 0 {
-            return false;
+            return None;
         }
     }
     if (s.range as i32) < d {
-        return false;
+        return None;
     }
     if d == 0 {
         // Standing on the party's square: refused if any neighbour can be
         // entered (0x2D792 in mode 0; approximated by the terrain test).
         for dir in 0..4 {
             if terrain::can_enter(g, map, x + DX[dir], y + DY[dir], s.mask, s.size) {
-                return false;
+                return None;
             }
         }
     }
     if d > 1 && !clear_line(g, map, x, y, tx, ty) {
-        return false;
+        return None;
     }
     if mask & 4 != 0 {
         let near = d < 2;
@@ -516,12 +534,13 @@ fn path_to_party(g: &mut GameState, s: &Searcher, value: u16, map: usize, x: i32
             });
             if holds && (!found || g.rng.bit() != 0) {
                 found = true;
+                steal_cell = g.champions[c].raw[0x1D];
             }
         }
         if !found {
             mask &= !4;
             if mask == 0 {
-                return false;
+                return None;
             }
         }
     }
@@ -532,16 +551,16 @@ fn path_to_party(g: &mut GameState, s: &Searcher, value: u16, map: usize, x: i32
         if cloud {
             mask &= 7;
             if mask == 0 {
-                return false;
+                return None;
             }
         }
     }
     if s.cflags & 0x4000 != 0 && s.info0 & 0x20 == 0 && (map, x, y) != (s.map, s.x, s.y)
         && g.dungeon.square(map, x, y).element() == Element::Door && d < 2 && g.rng.rand4() != 0
     {
-        return false;
+        return None;
     }
-    true
+    Some(PathOk { mask, d, steal_cell })
 }
 
 #[cfg(test)]

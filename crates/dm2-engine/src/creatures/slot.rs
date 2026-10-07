@@ -80,6 +80,8 @@ pub struct Slot {
     /// their arguments are −1. 0xFFFF = none.
     pub kind_a: u16,
     pub kind_b: u16,
+    /// Type of the chosen goal (global 0x7F7D7); 0xFF = none.
+    pub goal_kind: u8,
     /// Where the group currently stands (the original finds this from the
     /// event's square; kept here for convenience).
     pub pos: Packed,
@@ -113,6 +115,7 @@ impl Slot {
             armed: 0,
             kind_a: 0xFFFF,
             kind_b: 0xFFFF,
+            goal_kind: 0xFF,
             pos: Packed::new(map, x, y),
         }
     }

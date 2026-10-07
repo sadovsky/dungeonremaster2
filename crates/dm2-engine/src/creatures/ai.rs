@@ -370,6 +370,7 @@ fn pick_behaviour(g: &mut GameState, d: &CreatureData, ctx: &Ctx, list: u32) -> 
     let s = ctx.slot_mut(g);
     s.kind_a = gl.mode;
     s.kind_b = gl.value;
+    s.goal_kind = gl.kind;
     // A goal on another layer is approached through the stairs leading there.
     let (tx, ty) = if found.map != ctx.map { found.via.unwrap_or((found.x, found.y)) } else { (found.x, found.y) };
     ctx.slot_mut(g).target = Packed::new(ctx.map, tx, ty);
@@ -874,12 +875,13 @@ fn opcode(g: &mut GameState, d: &CreatureData, ctx: &Ctx, row: &Row) -> Res {
                 }
             }
         }
-        b'Q' | b'R' => {
+        b'R' => act_on_target(g, ctx),
+        b'Q' => {
             let t = ctx.slot(g).target;
             if t.map() != ctx.map || (t.x(), t.y()) == (ctx.x, ctx.y) {
                 return Res::Done;
             }
-            if op == b'Q' {
+            {
                 let mut chance = (ctx.info.alertness_word() >> 12) as u16;
                 if status(g, ctx.thing) & 4 != 0 {
                     chance /= 4;
@@ -1235,3 +1237,164 @@ mod tests {
     }
 }
 
+
+/// Opcode `R` (0x27E28): commit to acting on the slot's target from where the
+/// creature stands. The goal's mode byte becomes the slot argument, the
+/// attack mask is the creature's ANDed with the goal's value word, and the
+/// path test runs in committing mode with move flags 2 for goal type 8, 3 for
+/// type 9 and 0 otherwise. Returns the test's code: 0xFC (in progress) once
+/// committed, 0xFD (failed) when a filter refuses.
+/// Not modelled: the distance analysis 0x26A67, which can clear mask bit 8.
+fn act_on_target(g: &mut GameState, ctx: &Ctx) -> Res {
+    let s = ctx.slot(g);
+    let flags = match s.goal_kind {
+        8 => 2,
+        9 => 3,
+        _ => 0,
+    };
+    let (mode, value, t) = (s.kind_a, s.kind_b, s.target);
+    ctx.slot_mut(g).arg = mode as u8;
+    let sr = searcher(ctx);
+    let (tx, ty) = (t.x(), t.y());
+    let Some(ok) = planner::path_filter(g, &sr, sr.attack_mask & value, ctx.map, ctx.x, ctx.y, tx, ty) else {
+        return Res::Failed;
+    };
+    commit_attack(g, ctx, flags, tx, ty, ok, None)
+}
+
+/// The committing half of the path test (0x2C898-0x2CC1A). Face the target
+/// (a queued quarter turn counts as committed); then a coin `b` and, at
+/// distance 1 or less with melee bits (0-2) in the mask, a melee strike
+/// unless ranged bits are also present and a second coin says otherwise:
+/// - melee: the mask keeps bits 0-2; with move flags 0 or 1 the cell is that
+///   of the champion the creature faces (0x45938), else (dir + 2 + b) & 3;
+/// - ranged: the mask keeps bits 3-11; with move flags 0 or 1, three times in
+///   four a new coin picks the near or far side, falling back to the other
+///   side when no champion stands there (0x458F4); the cell is (dir + b) & 3.
+/// The attack is the n-th set bit of the mask for n = random(count) + 1.
+fn commit_attack(g: &mut GameState, ctx: &Ctx, flags: u8, tx: i32, ty: i32, ok: planner::PathOk, dir: Option<u8>) -> Res {
+    let (x, y) = (ctx.x, ctx.y);
+    let dir = match dir {
+        Some(d) => d,
+        None if ok.d == 0 && ctx.map == g.party.map && (tx, ty) == (g.party.x, g.party.y) => (g.party.dir + 2) & 3,
+        None => direction_toward_rand(x, y, tx, ty, &mut g.rng),
+    };
+    if queue_turn(g, ctx, dir) {
+        return Res::InProgress;
+    }
+    let mut b = g.rng.bit() as u8;
+    let mut mask = ok.mask;
+    let melee = ok.d <= 1 && mask & 7 != 0 && (mask & 0xFF8 == 0 || g.rng.bit() != 0);
+    let cell = if melee {
+        mask &= 7;
+        let hit = if flags <= 1 { champion_facing(g, x, y) } else { None };
+        match hit {
+            Some(c) => g.champions[c].raw[0x1D],
+            None => (b + 2 + dir) & 3,
+        }
+    } else {
+        mask &= 0xFF8;
+        if flags <= 1 && g.rng.rand4() != 0 {
+            b = g.rng.bit() as u8;
+            let mut c = if b != 0 { (dir + 2) & 3 } else { dir };
+            if champion_in_cell(g, c).is_none() {
+                c = (c + 3) & 3;
+                if champion_in_cell(g, c).is_none() {
+                    b = 1 - b;
+                }
+            }
+        }
+        (dir + b) & 3
+    };
+    let n = mask.count_ones() as u16;
+    let k = g.rng.random(n) + 1;
+    let bit = nth_bit(mask, k);
+    let s = ctx.slot_mut(g);
+    let missile = match bit {
+        1 => {
+            s.action = 8;
+            None
+        }
+        2 => {
+            s.action = 0x26;
+            None
+        }
+        4 => {
+            s.action = 0x0A;
+            s.arg = 0x0B;
+            None
+        }
+        8 => {
+            s.action = 0x0E + b;
+            None
+        }
+        0x10 => Some(0x80),
+        0x20 => Some(0x83),
+        0x40 => Some(0x82),
+        0x80 => Some(0x87),
+        0x100 => Some(0x86),
+        0x200 => Some(0x81),
+        0x400 => Some(0x89),
+        0x800 => Some(0x8A),
+        _ => None,
+    };
+    if let Some(m) = missile {
+        s.arg = m;
+        s.action = 0x27 + b;
+    }
+    s.target = Packed::new(ctx.map, tx, ty);
+    s.dir_arg = dir;
+    s.cell_arg = if s.action == 0x0A { ok.steal_cell } else { cell };
+    s.mode = flags;
+    Res::InProgress
+}
+
+/// The first living champion standing in `cell`, in party order (0x458F4).
+fn champion_in_cell(g: &GameState, cell: u8) -> Option<usize> {
+    g.champions.iter().position(|c| c.raw[0x1D] == cell && c.is_alive())
+}
+
+/// The champion a creature at (x, y) next to the party strikes (0x45938
+/// with 0xFF): the party's four cells ordered from the side toward the
+/// creature (four bytes of the table at 0x716EC from the direction, 0x1869A),
+/// each pair swapped on a coin flip, then the first holding a champion.
+fn champion_facing(g: &mut GameState, x: i32, y: i32) -> Option<usize> {
+    if g.champions.is_empty() {
+        return None;
+    }
+    let (px, py) = (g.party.x, g.party.y);
+    if (x - px).abs() + (y - py).abs() >= 2 {
+        return None;
+    }
+    let dir = direction_toward_rand(px, py, x, y, &mut g.rng);
+    let data = g.data.clone()?;
+    let mut cells = [0u8; 4];
+    for (k, c) in cells.iter_mut().enumerate() {
+        *c = data.exe.u8_at(CELL_ORDER_RANDOM + dir as u32 + k as u32)?;
+    }
+    if g.rng.bit() != 0 {
+        cells.swap(0, 1);
+    }
+    if g.rng.bit() != 0 {
+        cells.swap(2, 3);
+    }
+    cells.iter().find_map(|&c| champion_in_cell(g, c))
+}
+
+/// Table of party cells by direction for 0x1869A's random order.
+const CELL_ORDER_RANDOM: u32 = 0x716EC;
+
+/// The n-th set bit of `mask`, counting from 1 (0x2FD7B); 0 if there is none.
+fn nth_bit(mask: u16, n: u16) -> u16 {
+    let mut left = n;
+    for k in 0..16 {
+        let bit = 1u16 << k;
+        if mask & bit != 0 {
+            left -= 1;
+            if left == 0 {
+                return bit;
+            }
+        }
+    }
+    0
+}
