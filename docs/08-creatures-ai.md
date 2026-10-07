@@ -88,8 +88,12 @@ See also docs/03.
 ## Active creature slots
 
 Creatures in or near play get a 34-byte slot in a pool at 0x7F898, sized
-by 0x7F89C (from DUNGEON.DAT's spare counts, see docs/03). Activation is
-at 0x306A8. A slot is free when word 0 is negative. If the pool is full,
+by 0x7F89C. Game start (0x342F9) sets that to min(placed groups whose
+type's info byte 0 bit 0 is clear + 100, creature records): 180 slots for
+the shipped dungeon. Activation is at 0x306A8. At play start, after loading
+and after saving, every map's awake groups (bit 0 clear, 80 of 299 here)
+are activated, while the others stay dormant until an actuator signal or a
+hit wakes them; see docs/05, "Creature pass at play start". A slot is free when word 0 is negative. If the pool is full,
 the game force-deactivates another creature through 0x1D748 and tries
 again; it raises error 0x47 if that fails.
 

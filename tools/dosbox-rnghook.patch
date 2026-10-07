@@ -1,0 +1,39 @@
+--- a/src/cpu/core_normal.cpp
++++ b/src/cpu/core_normal.cpp
+@@ -136,9 +136,36 @@
+ 
+ #define EALookupTable (core.ea_table)
+ 
++/* dm2 research hook: log every executed draw of Dungeon Master II's random
++ * number generator, i.e. "imul eax,[state],0xBB40E62D", with the game tick
++ * and four stack words, to the file named by DM2_RNGLOG. */
++#include <cstdio>
++#include <cstdlib>
++static FILE * dm2_log = 0;
++static bool dm2_init = false;
++static INLINE void dm2_rng_hook(void) {
++	if (!dm2_init) {
++		dm2_init = true;
++		const char * p = getenv("DM2_RNGLOG");
++		if (p) dm2_log = fopen(p, "w");
++	}
++	if (!dm2_log) return;
++	PhysPt ip = core.cseip;
++	if (LoadMb(ip) != 0x69 || LoadMb(ip + 1) != 0x05) return;
++	if (LoadMd(ip + 6) != 0xBB40E62DU) return;
++	Bit32u data_delta = LoadMd(ip + 2) - 0x70518;
++	Bit32u tick = LoadMd(0x7F22C + data_delta);
++	PhysPt sp = SegBase(ss) + reg_esp;
++	/* 0x7F548: the thing reference of the creature whose AI context is loaded. */
++	Bit32u creature = LoadMw(0x7F548 + data_delta);
++	fprintf(dm2_log, "%u %x %x %x %x %x %x %x\n", tick, ip, data_delta,
++		LoadMd(sp), LoadMd(sp + 4), LoadMd(sp + 8), LoadMd(sp + 12), creature);
++}
++
+ Bits CPU_Core_Normal_Run(void) {
+ 	while (CPU_Cycles-->0) {
+ 		LOADIP;
++		dm2_rng_hook();
+ 		core.opcode_index=cpu.code.big*0x200;
+ 		core.prefixes=cpu.code.big;
+ 		core.ea_table=&EATable[cpu.code.big*256];

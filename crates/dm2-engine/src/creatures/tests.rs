@@ -69,16 +69,39 @@ fn every_placed_creature_has_tables() {
 }
 
 #[test]
-fn activation_follows_the_party() {
-    let Some((mut g, _)) = load() else { return };
-    let Some(&(map, _, _, _)) = groups(&g).first() else { return };
-    g.party.map = map;
+fn new_game_draw_order_matches_the_original() {
+    // Measured in DOSBox: the original recruits the starting champion only
+    // after the all-maps activation pass, and its first champion starts
+    // with food 1697 and water 1686. Equal values here mean the random
+    // stream matches the original draw for draw up to the recruit.
+    let Some((g0, d)) = load() else { return };
+    let Some(gd) = crate::data::GameData::load_default() else { return };
+    let g = GameState::new_game_full(&g0.dungeon, Rc::new(gd), Some(d));
+    let c = &g.champions[0];
+    assert_eq!((c.food(), c.water()), (1697, 1686));
+}
+
+#[test]
+fn play_start_activates_every_map_by_info_bit() {
+    // 0x34236 at play start: on every map, groups whose type has info bit 0
+    // clear get a slot; the others stay dormant with a frame-cycle state.
+    let Some((mut g, d)) = load() else { return };
     g.advance();
-    let active = g.creature_slots.iter().flatten().count();
-    let on_map = groups(&g).iter().filter(|t| t.0 == map).count();
-    assert_eq!(active, on_map.min(slot::POOL_SIZE));
+    let mut active = 0;
+    for (_, _, _, c) in groups(&g) {
+        let ty = creature_type(&g, c);
+        let dormant = type_info(&g, &d, ty).is_some_and(|(i, _)| i.inanimate());
+        if dormant {
+            assert_eq!(rec_u8(&g, c, 5), 0xFF, "dormant groups get no slot");
+            assert_ne!(rec_u16(&g, c, 0x0A) & 0x8000, 0, "dormant groups get the frame-cycle state");
+        } else {
+            assert!(slot_of(&g, c).is_some(), "every awake group is active, on any map");
+            active += 1;
+        }
+    }
+    assert_eq!(g.creature_slots.iter().flatten().count(), active);
+    assert_eq!(g.creature_slots.len(), pool_size(&g, &d));
     for s in g.creature_slots.iter().flatten() {
-        assert_eq!(s.pos.map(), map);
         assert!(s.event.is_some(), "each active creature has a pending step");
     }
 }

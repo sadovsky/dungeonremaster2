@@ -258,6 +258,13 @@ pub fn floor_trap(g: &mut GameState, map: usize, ev_x: i32, ev_y: i32, _actuator
 /// Sets or clears status bit 0x10 (tentative).
 pub fn floor_signal(g: &mut GameState, map: usize, x: i32, y: i32, set: bool) {
     if let Some(c) = group_at(g, map, x, y) {
+        // A dormant group (info bit 0 set) without a slot wakes here (0x2538C).
+        if let Some(d) = g.creature_data.clone() {
+            let dormant = type_info(g, &d, creature_type(g, c)).is_some_and(|(i, _)| i.inanimate());
+            if dormant && rec_u8(g, c, 5) == 0xFF {
+                activate(g, &d, c, map, x, y);
+            }
+        }
         let s = status(g, c);
         set_rec_u16(g, c, 0x0A, if set { s | 0x10 } else { s & !0x10 });
     }
@@ -280,13 +287,40 @@ pub fn slot_of(g: &GameState, c: ThingRef) -> Option<usize> {
     })
 }
 
+/// Size of the active-slot pool, as the original's game start computes it
+/// (0x342A3 → 0x342F9): creature groups placed in the dungeon whose type has
+/// info bit 0 clear, plus 100, capped at the number of creature records.
+/// With the shipped dungeon that is min(80 + 100, 374) = 180.
+pub fn pool_size(g: &GameState, d: &CreatureData) -> usize {
+    let mut unflagged = 0usize;
+    for (m, md) in g.dungeon.maps.iter().enumerate() {
+        for x in 0..md.width as i32 {
+            for y in 0..md.height as i32 {
+                for t in g.dungeon.things_at(m, x, y) {
+                    if t.kind() != ThingType::Creature {
+                        continue;
+                    }
+                    let c = ThingRef(t.0 & 0x3FFF);
+                    let ty = creature_type(g, c);
+                    if type_info(g, d, ty).is_some_and(|(i, _)| !i.inanimate()) {
+                        unflagged += 1;
+                    }
+                }
+            }
+        }
+    }
+    let total = g.dungeon.thing_count(ThingType::Creature);
+    (unflagged + 100).min(total).max(POOL_SIZE.min(total))
+}
+
 /// Give a creature group an active slot and start it (0x306A8).
 pub fn activate(g: &mut GameState, d: &CreatureData, c: ThingRef, map: usize, x: i32, y: i32) -> Option<usize> {
     if let Some(si) = slot_of(g, c) {
         return Some(si);
     }
-    if g.creature_slots.len() < POOL_SIZE {
-        g.creature_slots.resize(POOL_SIZE, None);
+    if g.creature_slots.is_empty() {
+        let n = pool_size(g, d);
+        g.creature_slots.resize(n, None);
     }
     let si = g.creature_slots.iter().position(|s| s.is_none())?;
     let ty = creature_type(g, c);
@@ -300,6 +334,25 @@ pub fn activate(g: &mut GameState, d: &CreatureData, c: ThingRef, map: usize, x:
         // Status: set bit 15 (recently activated), clear bit 14.
         let st = status(g, c);
         set_rec_u16(g, c, 0x0A, (st | 0x8000) & !0x4000);
+        // 0x306A8 then runs the frame scheduler (0x3023F) at once: it starts
+        // the current action's sequence (0x14E42 → 0x14F1B, drawing a random
+        // number per branch frame) and rolls jitter, flip and extra ticks.
+        // These draws happen at activation in the original.
+        if let (Some(an), Some(ctx)) = (d.anim(ty), Ctx::load(g, d, si)) {
+            let action = ctx.slot(g).action;
+            let start = an.seq_start(action);
+            let mut off = NO_FRAME;
+            an.advance(start, &mut off, &mut g.rng);
+            let sl = ctx.slot_mut(g);
+            sl.seq_start = start;
+            sl.seq_off = off;
+            // The rolls happen, but the first step is due on the next tick
+            // whatever delay they produce: in the original every creature
+            // activated at play start thinks on tick 1.
+            let _ = ai::frame_delay_ex(g, &ctx, &an, false);
+            reschedule(g, si, EV_STEP, 1);
+            return Some(si);
+        }
     }
     reschedule(g, si, EV_STEP, 1);
     Some(si)
@@ -314,18 +367,67 @@ pub fn deactivate(g: &mut GameState, si: usize) {
     set_rec_u8(g, s.thing, 5, 0xFF);
 }
 
-/// Activate every creature group on `map` (the party arrived there).
+/// Per-map creature pass (0x34106), run for the party's map on arrival and
+/// for every map at play start (see `pass_all_maps`). Squares are visited
+/// column by column; on each, the first creature group without a slot is
+/// either activated (info bit 0 clear) or left dormant with a frame-cycle
+/// state (bit 0 set). Dormant groups wake only through the actuator signal
+/// (`floor_signal`, 0x2538C) or when hit.
 pub fn activate_map(g: &mut GameState, map: usize) {
     let Some(d) = g.creature_data.clone() else { return };
     let m = &g.dungeon.maps[map];
     let (w, h) = (m.width as i32, m.height as i32);
     for x in 0..w {
         for y in 0..h {
-            if let Some(c) = group_at(g, map, x, y) {
+            let Some(c) = group_at(g, map, x, y) else { continue };
+            if rec_u8(g, c, 5) != 0xFF {
+                continue;
+            }
+            let ty = creature_type(g, c);
+            let Some((info, _)) = type_info(g, &d, ty) else { continue };
+            if info.inanimate() {
+                set_dormant_state(g, &d, c, ty);
+            } else {
                 activate(g, &d, c, map, x, y);
             }
         }
     }
+}
+
+/// The per-map pass over every map in order (0x34236): at play start, after
+/// loading and after saving. This is what keeps creatures on other maps
+/// active (and drawing random numbers) from the first tick.
+pub fn pass_all_maps(g: &mut GameState) {
+    for map in 0..g.dungeon.maps.len() {
+        activate_map(g, map);
+    }
+}
+
+/// Dormant creature state (0x301F3 → 0x14E42, merged at 0x341A6): record
+/// word +8 gets the first frame of action 0x11's sequence and word +10 its
+/// frame count, flagged 0x9000 (or `(w12 & 0x3F) << 6 | 0x8000` when record
+/// word +12 is set). Bits 0x6000 of the old word survive, and an old
+/// `0x8001` pattern (mask 0x803F) is kept. No random numbers are drawn.
+fn set_dormant_state(g: &mut GameState, d: &CreatureData, c: ThingRef, ty: u8) {
+    let Some(anim) = d.anim(ty) else { return };
+    let start = anim.seq_start(0x11);
+    let mut count: u16 = 0;
+    loop {
+        let f = anim.frame(start, count);
+        count += 1;
+        if f.cont() == 0 || count >= 0x3F {
+            break;
+        }
+    }
+    let w12 = rec_u16(g, c, 0x0C);
+    let new = if w12 == 0 { count | 0x9000 } else { count | (w12 & 0x3F) << 6 | 0x8000 };
+    let old = rec_u16(g, c, 0x0A);
+    let mut v = new | (old & 0x6000);
+    if old & 0x803F == 0x8001 {
+        v = (v & 0x7FC0) | 0x8001;
+    }
+    set_rec_u16(g, c, 8, start);
+    set_rec_u16(g, c, 0x0A, v);
 }
 
 /// (Re)schedule a slot's timeline event `delay` ticks from now.
@@ -351,9 +453,18 @@ pub fn update(g: &mut GameState) {
     if g.creature_data.is_none() || g.champions.is_empty() && g.creature_map_seen.is_some() {
         return;
     }
-    if g.creature_map_seen != Some(g.party.map) {
-        g.creature_map_seen = Some(g.party.map);
-        activate_map(g, g.party.map);
+    match g.creature_map_seen {
+        // Play start, or just after a load or save: every map (0x34236).
+        None => {
+            g.creature_map_seen = Some(g.party.map);
+            pass_all_maps(g);
+        }
+        // The party arrived on another map (0x24629 → 0x34106).
+        Some(m) if m != g.party.map => {
+            g.creature_map_seen = Some(g.party.map);
+            activate_map(g, g.party.map);
+        }
+        _ => {}
     }
 }
 
@@ -373,6 +484,8 @@ pub fn event(g: &mut GameState, ev: Event) {
     };
     let Some(s) = g.creature_slots.get_mut(si).and_then(|s| s.as_mut()) else { return };
     s.event = None;
+    // A new event loads a fresh AI context (0x24A88), re-arming 0x24BFC.
+    g.creature_ctx_rolled = false;
     step(g, &d, si, ev.kind == EV_CONTINUE);
 }
 
@@ -535,7 +648,12 @@ fn drive(g: &mut GameState, d: &CreatureData, ctx: &Ctx, continuing: bool) {
         let s = ctx.slot(g);
         let f = an.frame(s.seq_start, s.seq_off);
         let fire = first || s.armed == 0 || !f.chain();
-        if fire && f.event() && more {
+        // 0x25420 runs the event of the current frame whether or not the
+        // sequence continues past it.
+        if fire && f.event() {
+            // 0x25420 sets up the context (and rolls alertness) before a
+            // frame event.
+            ai::context_roll(g, ctx);
             let armed = ai::frame_event(g, d, ctx);
             if g.creature_slots.get(ctx.si).and_then(|s| s.as_ref()).is_none() {
                 return; // removed by the event

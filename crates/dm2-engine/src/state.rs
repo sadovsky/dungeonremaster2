@@ -80,6 +80,11 @@ pub struct GameState {
     pub creature_data: Option<std::rc::Rc<crate::creatures::data::CreatureData>>,
     /// Map whose creatures were last activated for the party.
     pub creature_map_seen: Option<usize>,
+    /// Set once the current creature event has run its context setup and
+    /// alertness roll (0x24BFC's once-per-load guard, 0x7F7E7). Transient.
+    pub creature_ctx_rolled: bool,
+    /// Result of the last alertness roll (0x7F589). Transient; tentative.
+    pub creature_alert_roll: u16,
     /// Save-game fields the engine does not model yet (script variables,
     /// unknown globals); kept so a loaded save writes them back unchanged.
     pub legacy: crate::save::Legacy,
@@ -118,6 +123,8 @@ impl GameState {
             creature_slots: Vec::new(),
             creature_data: None,
             creature_map_seen: None,
+            creature_ctx_rolled: false,
+            creature_alert_roll: 0,
             legacy: Default::default(),
             hand: Default::default(),
             commands: Default::default(),
@@ -136,6 +143,31 @@ impl GameState {
         // champion recruited; each step draws random numbers.
         crate::weather::new_game(&mut g);
         crate::new_game::init_creatures(&mut g);
+        crate::party::recruit_starting_champion(&mut g);
+        g
+    }
+
+    /// New game with creatures, in the original's exact random-draw order
+    /// (measured from its draw log, docs/05): weather start (0x59F38), the
+    /// new-game creature pass (0x3624F), one weather step (0x5A073), the
+    /// all-maps activation pass (0x34236), and only then the starting
+    /// champion's recruit (0x49242), whose food and water rolls therefore
+    /// come after every creature's activation draws.
+    pub fn new_game_full(
+        dungeon: &Dungeon,
+        data: Rc<GameData>,
+        creature_data: Option<Rc<crate::creatures::data::CreatureData>>,
+    ) -> GameState {
+        let Some(cd) = creature_data else { return GameState::new_game_with(dungeon, data) };
+        let mut g = GameState::new_game(dungeon);
+        g.attrs = Attributes::from_gdat(&data.gdat);
+        g.data = Some(data);
+        crate::weather::new_game(&mut g);
+        crate::new_game::init_creatures(&mut g);
+        crate::creatures::set_data(&mut g, cd);
+        crate::weather::tick(&mut g);
+        crate::creatures::pass_all_maps(&mut g);
+        g.creature_map_seen = Some(g.party.map);
         crate::party::recruit_starting_champion(&mut g);
         g
     }
