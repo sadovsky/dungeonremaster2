@@ -486,6 +486,7 @@ pub fn event(g: &mut GameState, ev: Event) {
     s.event = None;
     // A new event loads a fresh AI context (0x24A88), re-arming 0x24BFC.
     g.creature_ctx_rolled = false;
+    g.creature_class_loaded = false;
     step(g, &d, si, ev.kind == EV_CONTINUE);
 }
 

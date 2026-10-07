@@ -18,7 +18,7 @@ fn report(label: &str, mut m: HashMap<(&'static str, u32), u32>, ticks: u32) {
             println!("think {label} {id} {n}");
         }
     }
-    m.retain(|k, _| k.0 != "think");
+    m.retain(|k, _| k.0 != "think" && k.0 != "frame");
     if !thinks.is_empty() {
         let mut hist = std::collections::BTreeMap::new();
         for t in &thinks {

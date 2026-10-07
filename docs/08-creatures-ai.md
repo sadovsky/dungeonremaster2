@@ -689,8 +689,11 @@ opcode `T` and by two other AI helpers.
 - **Data:** read from the user's SKULL.EXE and GRAPHICS.DAT at runtime
   (`data.rs`), never embedded.
 - **Done:** the slot pool and activation; the step event; animation
-  stepping and timing (including the exact off-map slowdown: delay × 4
-  plus a random tick); think with behaviour-set selection (including the
+  stepping and timing (including the off-map slowdown, delay × 4 plus a
+  random tick, which applies only on frames whose event loaded the AI
+  class: see docs/05, "When the off-map slowdown applies"); the wander
+  lists' think (0x73399 idle, 0x73392 one rnd & 7 draw choosing idle, a
+  turn or a step ahead); think with behaviour-set selection (including the
   0xC000 script conditions) and behaviour picking; goal building from the
   goal data specs with the builder tags and spec conditions (`goals.rs`);
   the planner with goal types 0-9, 0x0F, 0x11 and 0x12, crossing stairs
