@@ -49,28 +49,121 @@ Their exact meanings still need to be traced from the call sites.
 | 0x15C10 | Find a registered key and return its 1-based slot |
 | 0x15CA9 | **Play sound**: `(cat, idx, sub, ?, volume, x, y, mode)` |
 
-Behaviour of the play function:
-- The source map position (x, y) is made relative to the party and
-  rotated into the party's facing (four cases, one per direction). The
-  result gives left/right and front/back offsets used for panning.
-- Volume falls off with distance (sum of the absolute offsets). Beyond a
-  per-source audible range the sound is dropped. When an option flag is
-  set, all volumes are halved.
-- If the same sample is already queued from the same relative position
-  this tick, the request is dropped.
-- Mode: 0 means the sound plays at the party's position; 1 means it plays
-  at the given (x, y), and for a different map level the level offset is
-  added in; a negative mode routes it through the separate 6-entry
-  interface queue.
-- At most 20 positional sounds can be pending per tick.
-- Volume 200 and 0x80 are common literal volumes; 0x18,0,0x89 is a
-  frequent interface sound.
-- Only registered keys play: 0x15C10 searches the per-map table that
-  0x161D9 fills while the resource manager loads a map's entries, and a
-  key that isn't registered returns 0 and plays nothing. Which keys a map
-  registers isn't traced yet.
-- Positional sounds more than one square away are also dropped when the
-  line-of-sight test 0x2FACC fails. The remake doesn't model this test.
+Behaviour of the play function, in order (ported in `audio/sfx.rs`):
+- **Map check.** A request with mode 1 or more is accepted only when the
+  current map is the party's map (or the linked seam map 0x7F278, not
+  modelled). Modes below 1 always pass.
+- **Queue check.** At most 20 positional requests per tick; at most 6 in
+  the interface queue (negative mode).
+- **Registration.** Only keys registered for the party's map play (see
+  "Sound registration" below); 0x15C10 returns 0 for any other key.
+- **Sleep.** While the party sleeps (0x7F234) the volume is halved.
+- **Delay.** Mode 2 or more goes to the delayed queue (below) instead.
+- **Position.** The source square is made relative to the party and
+  rotated into the facing (four cases, one per direction): right and
+  forward offsets. A source on another map has its position corrected by
+  the two maps' origins first.
+- **Duplicates.** If the same sample is already queued from the same
+  relative position this tick, the request is dropped.
+- **Reachability.** When the source is more than one square away
+  (|right| + |forward| > 1), the party's sound-distance grid decides: if
+  it doesn't reach the source square the request is dropped; if the path
+  is longer than the straight distance, both offsets are scaled up to the
+  path length (rounded to nearest).
+- **Mode.** 0 plays at once, 1 joins the pending positional queue,
+  negative joins the interface queue.
+
+The driver turns a queued request into a voice (0x10877):
+- volume out of 255 = (volume × 256 / (right² + forward² + 8)) / 32, so a
+  sound at the party's square plays at its volume byte and falls off with
+  the square of the distance (one third at 4 squares, one ninth at 8);
+- the pan comes from a 16-step table indexed by the angle of the offsets
+  (not ported; the remake uses a simple proportional pan);
+- when voices run short, higher priority (the play function's fourth
+  argument) and then louder voices win (0x1084D).
+
+Volume 200 and 0x80 are the common literal volumes; (0x18, 0, 0x89) is a
+frequent interface sound.
+
+**Modes used by the callers:** eating and the volume click use mode 0;
+the party's own teleport sound uses −1 (interface queue); thunder uses a
+computed delay; every other caller uses 1.
+
+### Sound-distance grid (0x2F8F5, read by 0x2FACC)
+
+A per-square byte map of the party's map (and of the seam map, when
+there is one): steps from the party plus one, found by a breadth-first
+search of up to 8 steps through the creature planner (0x3188A), with
+squares that block movement marked by bit 7. 0x2FACC reads it for a
+square: a blocking square (a wall carrying an actuator, a closed door)
+takes the smallest value of its four neighbours; 0 means not reached and
+the sound is dropped. The grid is rebuilt whenever its flag (0x7F38C bit
+2) is set: on loading a game, when the party moves, when a door steps or
+is destroyed, when a trick wall changes, and on map change. Bit 1 of the
+same flag requests a light rebuild instead.
+
+The remake builds the grid from the movement blocking rule each tick
+that has sound requests (`SoundGrid`).
+
+### Sound registration (0x3AB31 → 0x3D826 → 0x161D9)
+
+While loading a map, 0x3AB31 builds a list of key patterns (category,
+index, type, sub, each possibly "any", plus sub ranges) for everything
+the map needs. 0x3D826 walks the archive index against that list and,
+for every matching sound entry (type 2, or a pattern with type "any"),
+registers the key; 0x1623B then loads the registered samples, and
+0x163C2 releases them all on the next map change. The sound-relevant
+patterns are:
+
+| Category | Indexes registered |
+|----------|--------------------|
+| 1, 7, 0x10, 0x15, 0x18 | all |
+| 3 | 0 (global) and map number + 1 (the map's wall actuator sounds) |
+| 8 | 0xFE and the map's graphics set |
+| 0x17 | the map's environment set |
+| 9, 0x0A | 0xFE and the map's wall / floor ornaments |
+| 0x0B, 0x0E | the map's door ornaments and door types |
+| 0x0D | 0, 0x2F, 0x7E, 0x9F |
+| 0x16 | 0xFE, the recruited champions, and portrait actuators (0x7E) on the map |
+| 0x1A | 0x80, 0x81 |
+| 0x0F | creature types, see below |
+
+Creature types get a flag byte. Bit 0 (all of the type's keys) is set
+for types in the map's creature list, types whose attribute 6 is set,
+and types made by a creature generator (wall actuator 0x2E) on the map.
+Bit 1 is set for types that live on a map linked to this one by a
+map-edge actuator (0x27). A type with bit 0 registers everything; a type
+with only bit 1 registers just subs 0xFA–0xFD (its animation tables), so
+its sounds never play. Two option flags (0x803FA, 0x803FB) widen the
+lists; both are assumed clear.
+
+The remake builds the set in `audio/registry.rs`, taking categories
+0x0B and 0x0E whole rather than narrowing them to the map's door types.
+
+### Delayed playback (0x160DB, event 0x15)
+
+A request with mode 2 or more is stored in a free slot of an 8-entry
+table (category, index, sub, priority, volume, map, x, y) and timeline
+event 0x15 is scheduled for `mode − 1` ticks later, with the slot number
+in the event's x/y bytes. When the event runs, the slot is replayed as an
+ordinary mode-1 request if its map is still the party's map, and the slot
+is freed either way. With all 8 slots in use the request is dropped. The
+remake keeps the table on the game state (`sound_queue.rs`).
+
+**Thunder** (0x5A073) uses it: sound (0x17, map set, 0) at the party's
+square, volume 0x40, delayed by `0x4C − rain / pattern multiplier` ticks
+while it rains, or `random(10) + 5` with no rain, clamped to 1–15. The
+remake uses the rain formula but a fixed 9 for the no-rain case, without
+the random draw; that draw belongs with the rest of the game RNG's draw
+order.
+
+### End of the game
+
+Neither death of the last champion nor the end-game actuator changes the
+song. The ending routine (0x2005B) releases every registered sound, then
+0x10D29 shuts both the digital and the MIDI driver down (0x1043C) and
+leaves with an ending code for the launcher, which runs the ending
+movie. The remake stops the music and all effects once the game is over.
 
 ### Sound events (callers of 0x15CA9)
 
@@ -91,6 +184,11 @@ Behaviour of the play function:
 
 0x3F422/0x3F49D, listed earlier as sound functions, fetch and release
 images in the drawing code; they aren't sound calls.
+
+**Home-square signal (0x31348).** Whenever owed damage is applied to a
+creature whose type flag 0x01 is clear and whose AI class lacks flag
+0x04, a clear action is sent to the creature's home square (slot +0x0C)
+for the next tick (0x4BBE4), whether or not the creature survives.
 
 **Pain cry (0x31348).** When owed damage leaves a creature alive and its
 type flag 0x01 is clear and its AI class has flag 0x8000, the game draws
@@ -220,13 +318,21 @@ Not from the original (tentative):
   fade, counter as volume), driven once per game tick by the frontend and
   by `dm2 --replay --audio`. The title screen is silent, as in the
   original.
-- **Sound effects:** attenuation is linear with distance over an 8-square
-  range, and each level of map difference counts as 2 squares. A request's
-  volume scales its gain relative to 200 (`Effect::SoundAt` carries the
-  original's value where it differs, e.g. 0x80 for creature frames). Not
-  modelled: the per-map registration of playable keys and the
-  line-of-sight drop, so the remake can play sounds the original
-  wouldn't. At the outdoor spot map 1 (2,9), creature frame sounds made
-  the remake's track about 20 dB louder than the original's.
+- **Sound effects:** the play function's rules are ported: the map check,
+  per-map registration, the sound-distance grid with path stretching, the
+  driver's distance attenuation and the halved volume while asleep.
+  `Effect::SoundAt` carries the original's volume and mode where they
+  differ from 200 and 1. Not modelled: the pan table (a proportional pan
+  is used), the seam map 0x7F278, voice priority, and the no-rain random
+  draw in the thunder delay.
+- **Effects against music:** against the recordings of the original, the
+  remake's music-only segments (cave, inventory) are about 9 dB quieter,
+  while the outdoor segment, where creature sounds dominate, is about
+  16 dB louder (down from 23 dB once unreachable and unregistered sounds
+  were dropped). The sounds that remain there would play in the original
+  too, at the same relative gains, so what is left is the balance between
+  the digital and FM paths: the remake's effects sit roughly 20–25 dB too
+  high relative to its music. The original's mixer levels for the two
+  paths are not traced.
 - **Live check:** `DM2_AUDIO_DUMP=path.wav` writes everything the live
   game plays to a WAV file.
