@@ -195,6 +195,51 @@ pub fn script_condition(g: &GameState, n: u16) -> bool {
     }
 }
 
+/// Status bits refreshed from set selection's raw draw `r` (0x259CC):
+/// - bit 15: cleared on the party's map; elsewhere set (clearing bit 14)
+///   when `r` misses 0x70 with a program running, or 0x30 without one;
+/// - bit 14: toggled while bit 15 is clear, when `r` misses 0x380 (badly
+///   hurt) or 0xF80;
+/// - bit 5: cleared when `r % (16 - info word 0x16 bits 4-7)` is 0;
+/// - bit 13: set for classes with flag byte 1 bit 2, else cleared when `r`
+///   misses 0x38;
+/// - bits 4, 6 and 12: cleared when `r` misses 0x3000, 3 and 0x8008.
+fn refresh_status(g: &GameState, ctx: &Ctx, mut st: u16, r: u16) -> u16 {
+    if ctx.map == g.party.map {
+        st &= !0x8000;
+    } else {
+        let mask = if ctx.slot(g).program >= 0 { 0x70 } else { 0x30 };
+        if r & mask == 0 {
+            st = (st | 0x8000) & !0x4000;
+        }
+    }
+    if st & 0x8000 == 0 {
+        let mask = if st & 8 != 0 { 0x380 } else { 0xF80 };
+        if r & mask == 0 {
+            st ^= 0x4000;
+        }
+    }
+    let k = 16 - ((ctx.info.alertness_word() >> 4) & 0xF);
+    if r % k == 0 {
+        st &= !0x20;
+    }
+    if ctx.cflags & 0x400 != 0 {
+        st |= 0x2000;
+    } else if r & 0x38 == 0 {
+        st &= !0x2000;
+    }
+    if r & 0x3000 == 0 {
+        st &= !0x10;
+    }
+    if r & 3 == 0 {
+        st &= !0x40;
+    }
+    if r & 0x8008 == 0 {
+        st &= !0x1000;
+    }
+    st
+}
+
 /// Refresh status bit 3 ("badly hurt") and choose the behaviour set
 /// (0x25962 / 0x259CC). Returns the behaviour list address.
 fn select_set(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> u32 {
@@ -202,11 +247,12 @@ fn select_set(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> u32 {
     // Set selection loads the AI class index, even for the cheap wander
     // lists that skip the context setup.
     g.creature_class_loaded = true;
-    // 0x259CC starts with a raw draw whose value it doesn't use; it still
-    // advances the random stream.
-    g.rng.rnd();
+    // 0x259CC starts with a raw draw r that refreshes several status bits
+    // before the set is chosen (read from the disassembly; the decompile
+    // drops this block).
+    let r = (g.rng.rnd() & 0xFFFF) as u16;
     crate::rng::trace_tag("think", (c.0 & 0x3FF) as u32);
-    let mut st = status(g, c);
+    let mut st = refresh_status(g, ctx, status(g, c), r);
     let n = if ctx.cflags & 2 != 0 { 2 } else { (((c.0 & 3) + 1) * 2 - 1) * 2 };
     if g.rng.random(n) == 0 {
         let base = ctx.info.base_hp().max(1) as u32;
