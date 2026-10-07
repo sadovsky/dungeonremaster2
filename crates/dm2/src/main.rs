@@ -425,6 +425,13 @@ fn replay(args: &[String]) {
     let (cmds, end) = parse_replay(&script);
     let mut next = cmds.iter().peekable();
     let mut paused = false;
+    // Optional audio: the engine's mixer rendered for exactly one tick per
+    // frame (8/60 s), music following the party's map plus sound effects.
+    const RATE: u32 = 44100;
+    let mut audio = opt("--audio").map(|p| {
+        let a = dm2_engine::audio::Audio::load(&data_dir(None), RATE).expect("load audio data");
+        (std::path::PathBuf::from(p), a, Vec::<i16>::new(), vec![0.0f32; 0])
+    });
     for tick in 0..end {
         while let Some(&&(t, c)) = next.peek() {
             if t > tick {
@@ -444,13 +451,53 @@ fn replay(args: &[String]) {
         if !paused {
             g.advance();
         }
+        if let Some((_, a, pcm, buf)) = audio.as_mut() {
+            let reqs = dm2_engine::audio::sfx::drain_sounds(&mut g.effects);
+            a.set_map(g.party.map);
+            if !reqs.is_empty() {
+                a.play_sounds(&g.dungeon, &g.party, &reqs);
+            }
+            // Samples per tick: RATE * 8 / 60, carrying the remainder so the
+            // track length matches the frame count exactly over time.
+            let start = (tick as u64 * RATE as u64 * 8 / 60) as usize;
+            let stop = ((tick as u64 + 1) * RATE as u64 * 8 / 60) as usize;
+            buf.resize((stop - start) * 2, 0.0);
+            a.render(buf);
+            pcm.extend(buf.iter().map(|&v| (v.clamp(-1.0, 1.0) * 32767.0) as i16));
+        }
         let mut view = ui_view(&g, false);
         view.paused = paused;
         let frame = game_frame(&mut d, &g, &view);
         let png = png::encode_rgb(SCREEN_W as u32, SCREEN_H as u32, &to_rgb(&d.assets.palette, &frame));
         std::fs::write(dir.join(format!("{tick:05}.png")), png).expect("write frame");
     }
+    if let Some((path, _, pcm, _)) = audio {
+        std::fs::write(&path, wav_stereo16(RATE, &pcm)).expect("write audio");
+        println!("audio: {}", path.display());
+    }
     println!("{end} frames in {}", dir.display());
+}
+
+/// A 16-bit stereo PCM WAV file.
+fn wav_stereo16(rate: u32, pcm: &[i16]) -> Vec<u8> {
+    let data = pcm.len() as u32 * 2;
+    let mut w = Vec::with_capacity(44 + data as usize);
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes());
+    w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    w.extend_from_slice(&2u16.to_le_bytes()); // stereo
+    w.extend_from_slice(&rate.to_le_bytes());
+    w.extend_from_slice(&(rate * 4).to_le_bytes());
+    w.extend_from_slice(&4u16.to_le_bytes());
+    w.extend_from_slice(&16u16.to_le_bytes());
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&data.to_le_bytes());
+    for s in pcm {
+        w.extend_from_slice(&s.to_le_bytes());
+    }
+    w
 }
 
 /// BIOS scan code (plus modifier bits) for a macroquad key, as used by the

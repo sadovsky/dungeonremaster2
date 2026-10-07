@@ -40,6 +40,8 @@ SLOT_FILE = DATA / f'SKSAVE{SLOT}.DAT'
 TICK = 8 / 60                        # 133 ms (docs/05, measured in DOSBox)
 FPS = 30
 SCALE = 3
+PULSE_SOURCE = 'RDPSink.monitor'     # WSLg's output sink; DOSBox plays into it
+CHANGE_PX = 600                      # pixels that must change to count as a view change (pointer ~320)
 
 # Original input -> remake interface command (docs/10). The cursor-key
 # mapping follows the original's key table: Up forward, Down back, Left and
@@ -125,10 +127,13 @@ def record_segment(name, seg, work):
         xdo('mousemove', '--window', w, 300, 195)
         click(w, 160, 143)                 # OK on "Game loaded": the game runs from here
         t0 = time.monotonic()
-        rec = subprocess.Popen(['ffmpeg', '-y', '-loglevel', 'error', '-f', 'x11grab',
-                                '-window_id', str(int(w)), '-framerate', str(FPS), '-i', ':0',
-                                '-t', f'{duration:.2f}', '-c:v', 'libx264', '-qp', '0',
-                                str(work / f'{name}_orig.mkv')])
+        # Video and the DOSBox mix (PulseAudio monitor of the WSLg sink) in one
+        # process, so both share the recording's timebase.
+        rec = subprocess.Popen(['ffmpeg', '-y', '-loglevel', 'error', '-thread_queue_size', '512',
+                                '-f', 'x11grab', '-window_id', str(int(w)), '-framerate', str(FPS),
+                                '-i', ':0', '-thread_queue_size', '512', '-f', 'pulse',
+                                '-i', PULSE_SOURCE, '-t', f'{duration:.2f}', '-c:v', 'libx264',
+                                '-qp', '0', '-c:a', 'pcm_s16le', str(work / f'{name}_orig.mkv')])
         rec_start = time.monotonic() - t0
         log = []
         for item in route:
@@ -144,30 +149,92 @@ def record_segment(name, seg, work):
     finally:
         p.kill()
         p.wait()
-    ticks = int(duration / TICK) + 1
-    script = '\n'.join(f'{round(t / TICK)} {c:#x}' for t, c in log) + f'\nend {ticks}\n'
-    (work / f'{name}.replay').write_text(script)
+    orig = work / f'{name}_orig.mkv'
     frames = work / f'{name}_frames'
-    run(ROOT / 'target/release/dm2', '--replay', work / f'{name}.replay', '--frames', frames,
-        '--load', save, stdout=subprocess.DEVNULL)
-    json.dump({'log': log, 'rec_start': rec_start}, open(work / f'{name}.json', 'w'))
-    return work / f'{name}_orig.mkv', frames, rec_start
+    ticks = int(duration / TICK) + 1
+    changes = change_times(['-i', str(orig)], FPS)
+    # Each input is tied to the first view change the original showed after it
+    # (recording timebase); an input with no visible effect within 1 s was
+    # dropped by the original and is left out of the remake's script too.
+    matched = []
+    for t, c in log:
+        t_rec = t - rec_start
+        hit = next((ct for ct in changes if t_rec - 0.05 <= ct <= t_rec + 1.0), None)
+        if hit is not None:
+            matched.append((hit, c))
+    lag = 0
+    for _ in range(4):                     # converge the remake's reaction delay
+        script = '\n'.join(f'{max(0, round(ct / TICK) - lag)} {c:#x}' for ct, c in matched)
+        (work / f'{name}.replay').write_text(script + f'\nend {ticks}\n')
+        if frames.exists():
+            for f in frames.glob('*.png'):
+                f.unlink()
+        run(ROOT / 'target/release/dm2', '--replay', work / f'{name}.replay', '--frames', frames,
+            '--load', save, '--audio', work / f'{name}_remake.wav', stdout=subprocess.DEVNULL)
+        if not matched:
+            break
+        rchanges = change_times(['-framerate', str(1 / TICK), '-i', str(frames / '%05d.png')], 1 / TICK)
+        want = matched[0][0]
+        first_r = next((rc for rc in rchanges if rc >= want - 3 * TICK), None)
+        if first_r is None:
+            break
+        err = round((first_r - want) / TICK)
+        if err == 0:
+            break
+        lag += err
+    json.dump({'log': log, 'rec_start': rec_start, 'changes': changes, 'matched': matched,
+               'lag': lag}, open(work / f'{name}.json', 'w'))
+    return orig, frames, work / f'{name}_remake.wav'
 
 
-def compose(orig, remake_input, out, offset=0.0, test=False):
-    """Original | remake, 3x nearest neighbour, labelled, one MP4."""
+def change_times(inp, rate):
+    """Times (s) of frames whose 320x200 picture differs from the previous one
+    by more than CHANGE_PX pixels (mouse-pointer moves stay below that)."""
+    raw = subprocess.run(['ffmpeg', '-loglevel', 'error', *inp, '-vf', 'scale=320:200:flags=neighbor',
+                          '-f', 'rawvideo', '-pix_fmt', 'gray', '-'], capture_output=True, check=True).stdout
+    n = len(raw) // 64000
+    out, prev = [], None
+    for i in range(n):
+        f = raw[i * 64000:(i + 1) * 64000]
+        if prev is not None:
+            d = sum(1 for a, b in zip(f[::2], prev[::2]) if abs(a - b) > 12) * 2
+            if d > CHANGE_PX:
+                out.append(i / rate)
+        prev = f
+    return out
+
+
+def compose(orig, remake_input, out, remake_wav=None):
+    """Original | remake, 3x nearest neighbour, labelled, one MP4. Both start
+    at recording time 0. With audio: track 1 the original, track 2 the
+    remake; <out>_mixdown.mp4 gets one stereo track, original left, remake right."""
     w, h, gap, head = 320 * SCALE, 200 * SCALE, 12, 48
     label = ("drawtext=text='{t}':fontcolor=white:fontsize=28:x=(w-text_w)/2:y=10")
-    inputs = ['-itsoffset', f'{offset:.3f}', '-i', str(orig)]
-    inputs += remake_input
+    inputs = ['-i', str(orig), *remake_input]
     graph = (
         f"[0:v]fps={FPS},scale={w}:{h}:flags=neighbor,pad={w}:{h + head}:0:{head}:black,"
         f"{label.format(t='Original (DOSBox)')}[a];"
         f"[1:v]fps={FPS},scale={w}:{h}:flags=neighbor,pad={w + gap}:{h + head}:{gap}:{head}:black,"
         f"{label.format(t='Remake')}[b];"
         "[a][b]hstack=inputs=2,format=yuv420p[v]")
-    run('ffmpeg', '-y', '-loglevel', 'error', *inputs, '-filter_complex', graph, '-map', '[v]',
-        '-shortest', '-c:v', 'libx264', '-crf', '16', '-r', FPS, out)
+    venc = ['-c:v', 'libx264', '-crf', '16', '-r', str(FPS)]
+    if remake_wav is None:
+        run('ffmpeg', '-y', '-loglevel', 'error', *inputs, '-filter_complex', graph, '-map', '[v]',
+            '-shortest', *venc, out)
+        return
+    inputs += ['-i', str(remake_wav)]
+    aenc = ['-c:a', 'aac', '-b:a', '192k', '-ar', '44100']
+    run('ffmpeg', '-y', '-loglevel', 'error', *inputs, '-filter_complex',
+        graph + ';[0:a]aresample=44100,aformat=channel_layouts=stereo[oa];'
+        '[2:a]aformat=channel_layouts=stereo[ra]',
+        '-map', '[v]', '-map', '[oa]', '-map', '[ra]', '-shortest', *venc, *aenc,
+        '-metadata:s:a:0', 'title=Original (DOSBox)', '-metadata:s:a:1', 'title=Remake',
+        '-disposition:a:0', 'default', '-disposition:a:1', '0', out)
+    mix = out.with_name(out.stem + '_mixdown.mp4')
+    run('ffmpeg', '-y', '-loglevel', 'error', *inputs, '-filter_complex',
+        graph + ';[0:a]aresample=44100,pan=mono|c0=0.5*c0+0.5*c1[l];'
+        '[2:a]pan=mono|c0=0.5*c0+0.5*c1[r];[l][r]amerge=inputs=2[m]',
+        '-map', '[v]', '-map', '[m]', '-shortest', *venc, *aenc, mix)
 
 
 def concat(parts, out):
@@ -201,11 +268,11 @@ def main():
     parts = []
     try:
         for name in names:
-            orig, frames, rec_start = record_segment(name, SEGMENTS[name], work)
+            orig, frames, wav = record_segment(name, SEGMENTS[name], work)
             part = work / f'{name}.mp4'
-            # Remake frame N shows the state after tick N; both start at the OK click.
+            # Remake frame N shows the state after tick N, at N * 133 ms.
             compose(orig, ['-framerate', str(1 / TICK), '-i', str(frames / '%05d.png')], part,
-                    offset=rec_start)
+                    remake_wav=wav)
             parts.append(part)
             print(f'{name}: {part}')
     finally:
@@ -213,6 +280,7 @@ def main():
             SLOT_FILE.unlink()             # only the slot this script wrote
     out = OUT / 'side_by_side.mp4'
     concat(parts, out)
+    concat([p.with_name(p.stem + '_mixdown.mp4') for p in parts], OUT / 'side_by_side_mixdown.mp4')
     print(out)
 
 
