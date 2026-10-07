@@ -140,6 +140,13 @@ draw; list 0x73392 makes one draw r = rnd & 7 and then stands still
 creature list lacks the type (0x1F9FF). Only other lists run the context
 setup and its alertness roll.
 
+**Result (round 6).** With the frame-event results, quarter turns and
+the armed-byte reset ported (docs/08, "Frame events"), an idle new game
+matches the original's draw log draw for draw through tick 157, the whole
+recorded log: 6,255 draws on both sides, the same tick and creature for
+every one. `tools/rngcmp.py` compares the original's log with the
+remake's ordered draws from `examples/rngseq`.
+
 **Result (round 4).** Idle new game, original against remake: 663 against
 666 thinks over ticks 2-157, 36.2 against 35.9 draws per tick, and ticks 0-1
 draw 420 against 419.

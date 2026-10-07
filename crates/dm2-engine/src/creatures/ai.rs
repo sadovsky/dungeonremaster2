@@ -82,23 +82,25 @@ pub(super) fn set_action(g: &mut GameState, ctx: &Ctx, a: u8) {
 }
 
 /// Queue a turn toward `dir` (0x2C005). Returns false if already facing it.
+/// The turn is always one quarter: the target stored in slot +0x1D is the
+/// neighbouring facing on the turn's side (action 6 turns left, 7 right).
+/// For a full turn-around a random bit picks the side, and the creature
+/// turns the rest of the way on a later think.
 pub(super) fn queue_turn(g: &mut GameState, ctx: &Ctx, dir: u8) -> bool {
     let f = facing(g, ctx.thing);
     if dir == f {
         return false;
     }
-    let a = if dir == (f + 1) & 3 {
-        action::TURN_RIGHT
+    let right = if dir == (f + 1) & 3 {
+        true
     } else if dir == (f + 3) & 3 {
-        action::TURN_LEFT
-    } else if g.rng.bit() != 0 {
-        action::TURN_RIGHT
+        false
     } else {
-        action::TURN_LEFT
+        g.rng.bit() != 0
     };
     let s = ctx.slot_mut(g);
-    s.turn_to = dir;
-    s.action = a;
+    s.turn_to = if right { (f + 1) & 3 } else { (f + 3) & 3 };
+    s.action = if right { action::TURN_RIGHT } else { action::TURN_LEFT };
     true
 }
 
@@ -150,6 +152,15 @@ pub fn move_test(g: &mut GameState, ctx: &Ctx, dir: u8, mode: u8) -> bool {
 /// Start a new action on event 0x22 (0x25420): take the queued action, or
 /// think when none is queued.
 pub fn begin_action(g: &mut GameState, d: &CreatureData, ctx: &Ctx) {
+    // A new action restarts the turn-step phase counter (slot +0x1F) and
+    // clears the armed byte (+0x21) that a failed frame event set, so the
+    // new sequence fires its events again instead of chaining through. The
+    // draw log shows this: a creature whose move failed chains through the
+    // rest of that walk, but its next walk steps frame by frame. The store
+    // that clears the byte was not located in the code.
+    let s = ctx.slot_mut(g);
+    s.stage = 0;
+    s.armed = 0;
     let queued = ctx.slot(g).queued;
     if queued == NO_ACTION {
         set_action(g, ctx, NO_ACTION);
@@ -844,29 +855,61 @@ fn merchant_result(g: &mut GameState, ctx: &Ctx, o: merchant::Outcome) -> Res {
 // ---------------------------------------------------------------------------
 // Frame events (0x2B75E)
 
-/// Run the gameplay event of the current frame. Returns the "armed" bits.
+/// Run the gameplay event of the current frame (0x2B75E). Returns the
+/// handler's result as the original does: 0 on success (the action tick is
+/// then recorded when the action's flags ask for it), non-zero on failure.
+/// The caller ORs it into the slot's armed byte (+0x21), so a failed event
+/// lets the sequence chain on to its next frame.
 pub fn frame_event(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> u8 {
     let a = ctx.slot(g).action;
-    let handled = match a {
-        action::WALK | action::WALK_NEAR | action::BACK_OFF => move_frame(g, d, ctx),
+    let failed = match a {
+        // 0x29DE7: 1 when the movement test fails, else 0 (even if the
+        // move itself is then blocked).
+        action::WALK | action::WALK_NEAR | action::BACK_OFF => !move_frame(g, d, ctx),
+        // 0x29F39: a three-phase turn-step driven by slot +0x1F. Phase 0
+        // turns and succeeds, phase 1 moves, later phases return the
+        // target's y bits left in DX (non-zero unless y is 0).
         action::STEP_LEFT | action::STEP_RIGHT => {
-            let t = ctx.slot(g).turn_to;
-            set_facing(g, ctx.thing, t);
-            move_frame(g, d, ctx)
+            let stage = ctx.slot(g).stage;
+            let r = match stage {
+                0 => {
+                    let t = ctx.slot(g).turn_to;
+                    set_facing(g, ctx.thing, t);
+                    false
+                }
+                1 => !move_frame(g, d, ctx),
+                _ => ctx.slot(g).target.y() != 0,
+            };
+            if let Some(s) = g.creature_slots.get_mut(ctx.si).and_then(|s| s.as_mut()) {
+                s.stage = s.stage.wrapping_add(1);
+            }
+            r
         }
+        // 0x2A357 leaves CX at the dispatcher's 0: success.
         action::TURN_LEFT | action::TURN_RIGHT | action::LOOK_A | action::LOOK_B => {
             let t = ctx.slot(g).turn_to;
             set_facing(g, ctx.thing, t);
-            true
+            false
         }
-        action::ATTACK | action::MOVE_ATTACK => attack_frame(g, d, ctx),
-        action::TRANSFORM => transform(g, d, ctx),
-        _ => true,
+        // 0x2A3B9: 0 when a blow is attempted, 1 otherwise.
+        action::ATTACK | action::MOVE_ATTACK => !attack_frame(g, d, ctx),
+        // 0x2B35D preserves CX: success.
+        action::TRANSFORM => {
+            transform(g, d, ctx);
+            false
+        }
+        // 0x29F6B returns ESI, the caller's slot pointer: always non-zero.
+        5 => true,
+        // Actions without a handler leave CX at 0: success.
+        _ => false,
     };
-    if handled && d.action_flags(a) & 3 != 0 {
+    if g.creature_slots.get(ctx.si).and_then(|s| s.as_ref()).is_none() {
+        return 0;
+    }
+    if !failed && d.action_flags(a) & 3 != 0 {
         ctx.slot_mut(g).act_tick = g.tick as u8;
     }
-    0
+    u8::from(failed)
 }
 
 fn find_thing(g: &GameState, c: ThingRef) -> Option<(usize, i32, i32)> {
@@ -994,6 +1037,7 @@ pub fn frame_delay(g: &mut GameState, ctx: &Ctx, an: &Anim) -> u16 {
 pub fn frame_delay_ex(g: &mut GameState, ctx: &Ctx, an: &Anim, allow_off_map: bool) -> u16 {
     crate::rng::trace_tag("frame", (ctx.thing.0 & 0x3FF) as u32);
     let s = ctx.slot(g).clone();
+    crate::rng::trace_frame(s.action as u32, s.seq_start as u32, s.seq_off as u32);
     let off = if s.seq_off == NO_FRAME { 0 } else { s.seq_off };
     let f = an.frame(s.seq_start, off);
     let mut jit = s.jitter;
@@ -1075,3 +1119,4 @@ mod tests {
         let _ = hp;
     }
 }
+

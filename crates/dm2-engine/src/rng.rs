@@ -15,6 +15,21 @@ thread_local! {
     static SEQ: RefCell<Option<Vec<(u32, &'static str, u32, u32)>>> = const { RefCell::new(None) };
     /// Tick and creature the next draws belong to, for the ordered log.
     static CONTEXT: RefCell<(u32, u32)> = const { RefCell::new((0, 0)) };
+    /// Frame context per draw, parallel to SEQ: (action, sequence start,
+    /// sequence offset) of the creature being processed, as the original's
+    /// draw log records them.
+    static SEQ_FRAME: RefCell<Vec<(u32, u32, u32)>> = const { RefCell::new(Vec::new()) };
+    static FRAME: RefCell<(u32, u32, u32)> = const { RefCell::new((0xFF, 0xFFFF, 0xFFFF)) };
+}
+
+/// Set the frame context (action, sequence start, offset) of following draws.
+pub fn trace_frame(action: u32, start: u32, off: u32) {
+    FRAME.with(|f| *f.borrow_mut() = (action, start, off));
+}
+
+/// The frame context recorded with each draw of the ordered log.
+pub fn trace_seq_frames_take() -> Vec<(u32, u32, u32)> {
+    SEQ_FRAME.with(|f| std::mem::take(&mut *f.borrow_mut()))
 }
 
 /// Start an ordered log of every draw with its tick, call site and the
@@ -86,6 +101,8 @@ impl Rng {
             if let Some(v) = t.borrow_mut().as_mut() {
                 let (tick, cr) = CONTEXT.with(|c| *c.borrow());
                 v.push((tick, l.file(), l.line(), cr));
+                let fr = FRAME.with(|f| *f.borrow());
+                SEQ_FRAME.with(|f| f.borrow_mut().push(fr));
             }
         });
         self.state = self.state.wrapping_mul(0xBB40_E62D).wrapping_add(11);

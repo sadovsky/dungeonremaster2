@@ -24,8 +24,10 @@ fn main() {
     while g.tick < end {
         g.advance();
     }
-    for (tick, file, line, cr) in rng::trace_seq_take() {
+    let frames = rng::trace_seq_frames_take();
+    for (i, (tick, file, line, cr)) in rng::trace_seq_take().into_iter().enumerate() {
         let file = file.rsplit('/').next().unwrap_or(file);
-        println!("{tick} {cr:#06x} {file}:{line}");
+        let (a, st, off) = frames.get(i).copied().unwrap_or((0xFF, 0xFFFF, 0xFFFF));
+        println!("{tick} {cr:#06x} {file}:{line} a={a:x} seq={st:x}/{off:x}");
     }
 }

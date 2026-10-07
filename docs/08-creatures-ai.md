@@ -426,14 +426,14 @@ The frame's gameplay event depends on the current action:
 | Action | Handler | Effect |
 |--------|---------|--------|
 | 1, 2, 9 | 0x29DE7 | Move to the target square: re-run the movement test, then move the group through the shared move routine 0x4B108 (sensors, pits, teleporters). With info +1 bit 0 it attacks instead (action 0x26). |
-| 3, 4 | 0x29F39 | Turn-step |
-| 5 | 0x29F6B | TODO |
-| 6, 7 | 0x2A357 | Turn: facing becomes +0x1D (when that is a full turn-around, a random side is picked) |
+| 3, 4 | 0x29F39 | Turn-step in phases counted by slot +0x1F: phase 0 turns (0x2A357), phase 1 moves (0x29DE7), later phases do nothing and fail |
+| 5 | 0x29F6B | TODO (its result is the caller's slot pointer, so it always reports failure) |
+| 6, 7 | 0x2A357 | Turn: facing becomes +0x1D. If +0x1D is opposite the current facing, a raw draw picks a quarter turn to a random side instead; 0x2C005 never queues such a target, so in practice this branch does not run |
 | 8, 0x26 | 0x2A3B9 | Melee attack on the target square (below) |
 | 0x0A-0x0F, 0x15-0x18 | various | Item, actuator and possession handling (TODO) |
 | 0x13 | 0x2ADB8 | Death or disappearance |
 | 0x1A, 0x2B, 0x2C | 0x2ADE1 | TODO |
-| 0x27, 0x28 | 0x2A835 | Look around |
+| 0x27, 0x28 | 0x2A835 | Ranged attack: launches a missile through 0x16457 (not a look-around, as earlier notes said). The remake still treats these as turns |
 | 0x19, 0x29, 0x2A, 0x2D, 0x2E | 0x2ACBC | Put possessions down on the target square |
 | 0x2F-0x31 | 0x2B23B | TODO |
 | 0x35-0x3A | 0x2A088 | TODO |
@@ -442,8 +442,30 @@ The frame's gameplay event depends on the current action:
 | 0x55 | 0x2B724 | Give up (used by think) |
 
 Actions 0x1B-0x25 have no frame event; the merchant and "emote" actions
-are animation only. After an event, actions with flag bits 0x03 in the
-table at 0x75136 record the tick in slot +4.
+are animation only.
+
+**Event results.** Each handler reports in CX: 0 for success, non-zero for
+failure. Handlers that return nothing (turn, death, transform, give-up) and
+actions with no handler leave CX at the 0 the dispatcher loads before the
+switch, so they count as successes. On success, actions with flag bits 0x03
+in the table at 0x75136 record the tick in slot +4; on failure the
+dispatcher clears the byte at 0x7F7D5 instead. The dispatcher returns the
+result, and 0x25420 ORs it into the slot's armed byte (+0x21). While that
+byte is set, frames flagged 0x40 in the sequence chain on in zero time
+without running their events, so a failed move skips the rest of its walk.
+The armed byte is clear again when the creature's next action starts: the
+draw log shows the following walk stepping frame by frame, though the store
+that clears it was not found. Results per handler: the move (0x29DE7) fails
+only when the movement test rejects the target or the action lacks flag
+bit 4, and succeeds even if the move itself is then blocked; the melee
+attack (0x2A3B9) succeeds when a blow is attempted; the ranged attack
+(0x2A835) succeeds when it launches.
+
+**Queued turns (0x2C005).** A queued turn is always a quarter turn: +0x1D
+becomes the neighbouring facing and the action 6 (left) or 7 (right). When
+the wanted facing is behind the creature, a random bit picks the side
+(0 left, 1 right) and the creature turns the rest of the way on a later
+think. Already facing the target queues no turn.
 
 **Movement test outcome (0x2D792 tail).** When a step is legal the test
 itself chooses the action: 1 to walk straight on (2 when the goal is

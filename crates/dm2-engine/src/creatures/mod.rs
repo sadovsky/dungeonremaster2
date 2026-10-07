@@ -109,6 +109,7 @@ impl Ctx {
     pub fn load(g: &GameState, d: &CreatureData, si: usize) -> Option<Ctx> {
         let s = g.creature_slots.get(si)?.as_ref()?;
         crate::rng::trace_context(None, Some((s.thing.0 & 0x3FFF) as u32));
+        crate::rng::trace_frame(s.action as u32, s.seq_start as u32, s.seq_off as u32);
         let ty = creature_type(g, s.thing);
         let (info, class) = type_info(g, d, ty)?;
         Some(Ctx {

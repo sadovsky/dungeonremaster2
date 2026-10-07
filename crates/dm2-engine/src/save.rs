@@ -428,6 +428,14 @@ fn adopt_loaded(g: &mut GameState, bytes: &[u8]) -> Result<(), SaveError> {
     g.champions = l.champions;
     g.hand.held = l.hand.held;
     g.timeline = l.timeline;
+    // The original runs the per-map creature pass right after saving
+    // (0x3502B) and at game start after loading, in both cases before the
+    // next tick's timeline. Take the loaded state's flags so the pass runs at
+    // the start of the next tick here too, ahead of any event that comes due:
+    // otherwise a due event can free its timeline slot first and the
+    // reactivated creatures' events land in different slots.
+    g.play_start_pending = l.play_start_pending;
+    g.creature_map_seen = l.creature_map_seen;
     Ok(())
 }
 
