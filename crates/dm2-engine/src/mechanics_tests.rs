@@ -86,10 +86,11 @@ fn walking_into_a_pit_drops_the_party_a_layer() {
     let depth = g.dungeon.maps[m].depth;
     place(&mut g, m, px, py + 1, 0); // floor square south of it, facing north
     g.push_command(Command::Move(Move::Forward));
-    g.advance(); // the move: the fall is resolved and the new map is pending
-    assert!(g.pending_map.is_some());
+    // The move: the fall is resolved and, as in the original's walking pass,
+    // the party enters the lower map before the tick ends.
+    g.advance();
+    assert!(g.pending_map.is_none());
     assert!(g.effects.iter().any(|e| matches!(e, Effect::PartyFell { falls: 1 })));
-    g.advance(); // arrival
     assert_eq!(g.dungeon.maps[g.party.map].depth, depth + 1);
     let (gx, gy) = (
         g.party.x + g.dungeon.maps[g.party.map].origin_x as i32,

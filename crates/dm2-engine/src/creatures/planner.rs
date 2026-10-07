@@ -53,6 +53,14 @@ pub struct Searcher {
     pub mask: u16,
     pub size: u16,
     pub group: ThingRef,
+    /// Info word +0x0E: the attack and capability mask (0x7F574).
+    pub attack_mask: u16,
+    /// Info word +0x14 bits 12-15: reach in squares.
+    pub range: u16,
+    /// Info byte 0 (flag 0x20: non-material).
+    pub info0: u8,
+    /// AI class flags (word at 0x7507A).
+    pub cflags: u32,
 }
 
 fn party_at(g: &GameState, map: usize, x: i32, y: i32) -> bool {
@@ -73,7 +81,7 @@ fn manhattan(ax: i32, ay: i32, bx: i32, by: i32) -> i32 {
 /// Does square (x, y) on `map` satisfy goal `goal` (final switch of
 /// 0x3188A)? `start_dist` is the start square's distance from the party,
 /// for the flee goal.
-pub fn satisfies_on(g: &GameState, s: &Searcher, goal: &Goal, map: usize, x: i32, y: i32, distance: u8, start_dist: i32) -> bool {
+pub fn satisfies_on(g: &mut GameState, s: &Searcher, goal: &Goal, map: usize, x: i32, y: i32, distance: u8, start_dist: i32) -> bool {
     let party_map = g.party.map == map && !g.champions.is_empty();
     let to_party = manhattan(x, y, g.party.x, g.party.y);
     match goal.kind {
@@ -106,8 +114,9 @@ pub fn satisfies_on(g: &GameState, s: &Searcher, goal: &Goal, map: usize, x: i32
         // Flee: a square farther from the party than where we stand (the
         // original keeps the farthest square found; tentative).
         5 => party_map && to_party > start_dist + 1,
-        // Next to the party, to close in (0x2C404 path test, simplified).
-        6 | 7 => party_map && to_party == 1,
+        // A way to reach the party from here (0x2C404 with move flags 1 for
+        // kind 6 and 0 for kind 7; both evaluate alike when not committing).
+        6 | 7 => party_map && path_to_party(g, s, goal.value, map, x, y),
         8 | 9 => g.dungeon.things_at(map, x, y).iter().any(|t| {
             matches!(
                 t.kind(),
@@ -124,18 +133,144 @@ pub fn satisfies_on(g: &GameState, s: &Searcher, goal: &Goal, map: usize, x: i32
 }
 
 /// Does square (x, y) on the searcher's map satisfy goal `goal`?
-pub fn satisfies(g: &GameState, s: &Searcher, goal: &Goal, x: i32, y: i32, distance: u8) -> bool {
+pub fn satisfies(g: &mut GameState, s: &Searcher, goal: &Goal, x: i32, y: i32, distance: u8) -> bool {
     let start = manhattan(s.x, s.y, g.party.x, g.party.y);
     satisfies_on(g, s, goal, s.map, x, y, distance, start)
 }
 
-pub fn search(g: &GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> {
+/// Per-kind goal flags (0x752EA, read from the user's SKULL.EXE): bit 0 the
+/// goal is tested on each square, bit 1 adds a square to the search radius,
+/// bit 2 keeps a matched goal active, 0x10 leaves the goal's target alone,
+/// 0x20 targets the party's square, 0x40 keeps the other limits on a match.
+const GOAL_FLAGS: u32 = 0x752EA;
+
+/// Search state for the planner's priority rules (0x3188A).
+struct Priority {
+    flags: Vec<u8>,
+    limit: Vec<i32>,
+    met: Vec<bool>,
+    active: usize,
+    max_limit: i32,
+    best: Option<Found>,
+}
+
+impl Priority {
+    fn new(g: &GameState, s: &Searcher, goals: &[Goal]) -> Priority {
+        let table: Vec<u8> = g
+            .creature_data
+            .as_ref()
+            .and_then(|d| d.bytes_at(GOAL_FLAGS, 0x1C).map(|b| b.to_vec()))
+            .unwrap_or_default();
+        let party = !g.champions.is_empty();
+        let flags = goals
+            .iter()
+            .map(|gl| {
+                let f = table.get(gl.kind as usize).copied().unwrap_or(1);
+                // A home goal whose home is the party's square swaps bits 0-1.
+                let home_at_party = gl.kind == 3
+                    && party
+                    && super::home_of(g, s.group)
+                        .is_some_and(|h| h.map() == g.party.map && (h.x(), h.y()) == (g.party.x, g.party.y));
+                if home_at_party { f ^ 3 } else { f }
+            })
+            .collect::<Vec<u8>>();
+        let limit: Vec<i32> = goals.iter().map(|gl| gl.limit as i32).collect();
+        let mut p = Priority { flags, limit, met: vec![false; goals.len()], active: goals.len(), max_limit: 0, best: None };
+        p.max_limit = p.radius();
+        p
+    }
+
+    /// Search radius over the active goals not yet met (goal 0 always counts).
+    fn radius(&self) -> i32 {
+        (0..self.active)
+            .filter(|&k| k == 0 || !self.met[k])
+            .map(|k| self.limit[k] + i32::from(self.flags[k] & 2 != 0))
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn testable(&self, i: usize, d: i32) -> bool {
+        i < self.active && self.flags[i] & 1 != 0 && d <= self.limit[i]
+    }
+
+    /// Goal `i` met at distance `d`: record it, narrow the active goals and
+    /// tighten their limits. Returns true when the search is over.
+    fn met(&mut self, goals: &[Goal], i: usize, d: i32, at: Found) -> bool {
+        self.met[i] = true;
+        self.best = Some(at);
+        if i == 0 && (self.flags[0] & 4 == 0 || self.limit[0] <= d) {
+            return true;
+        }
+        // Goals just before the match with a negative argument drop out.
+        let mut j = i;
+        while j > 0 && goals[j - 1].arg < 0 {
+            j -= 1;
+            if j == 0 {
+                return true;
+            }
+        }
+        self.active = if self.flags[i] & 4 != 0 { i + 1 } else { j };
+        if self.flags[i] & 0x40 == 0 {
+            let mut sum = 0i32;
+            for k in (0..j).rev() {
+                if goals[k].arg > 0 {
+                    sum += goals[k].arg as i32;
+                }
+                if sum + d < self.limit[k] {
+                    self.limit[k] = d + sum;
+                }
+            }
+        }
+        if self.flags[..self.active].iter().fold(0u8, |a, &f| a | f) & 1 == 0 {
+            return true;
+        }
+        self.max_limit = self.radius();
+        false
+    }
+}
+
+/// Test the active goals on one square; true when the search is over.
+#[allow(clippy::too_many_arguments)]
+fn test_square(
+    g: &mut GameState,
+    s: &Searcher,
+    goals: &[Goal],
+    pr: &mut Priority,
+    start_dist: i32,
+    map: usize,
+    x: i32,
+    y: i32,
+    d: u8,
+    via: Option<(i32, i32)>,
+) -> bool {
+    for i in 0..goals.len() {
+        if !pr.testable(i, d as i32) {
+            continue;
+        }
+        if satisfies_on(g, s, &goals[i], map, x, y, d, start_dist) {
+            // The goal's target: the party's square for kinds flagged 0x20.
+            let at = if pr.flags[i] & 0x30 == 0x20 && g.party.map == map {
+                Found { goal: i, map, x: g.party.x, y: g.party.y, distance: d, via }
+            } else {
+                Found { goal: i, map, x, y, distance: d, via }
+            };
+            return pr.met(goals, i, d as i32, at);
+        }
+    }
+    false
+}
+
+/// The planner's search (0x3188A): breadth-first from the creature's square.
+/// Goals are ranked by list order, not distance: goal 0 ends the search, while
+/// a later goal is kept as the best so far and the search goes on for the
+/// goals before it, within limits tightened by the goals' arguments.
+pub fn search(g: &mut GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> {
     if goals.is_empty() {
         return None;
     }
-    let max_limit = goals.iter().map(|gl| gl.limit).max().unwrap_or(0);
+    let mut pr = Priority::new(g, s, goals);
     let start_dist = (s.x - g.party.x).abs() + (s.y - g.party.y).abs();
-    let inside = |map: usize, x: i32, y: i32| {
+    let inside = |g: &GameState, map: usize, x: i32, y: i32| {
         let m = &g.dungeon.maps[map];
         x >= 0 && y >= 0 && x < m.width as i32 && y < m.height as i32
     };
@@ -143,20 +278,23 @@ pub fn search(g: &GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> {
     let mut q: VecDeque<(usize, i32, i32, u8, Option<(i32, i32)>)> = VecDeque::new();
     q.push_back((s.map, s.x, s.y, 0, None));
     seen.insert((s.map, s.x, s.y));
-    let found = |i: usize, map: usize, x: i32, y: i32, d: u8, via: Option<(i32, i32)>| Found { goal: i, map, x, y, distance: d, via };
     while let Some((map, x, y, d, via)) = q.pop_front() {
-        for (i, gl) in goals.iter().enumerate() {
-            if d <= gl.limit && satisfies_on(g, s, gl, map, x, y, d, start_dist) {
-                return Some(found(i, map, x, y, d, via));
-            }
+        if d as i32 > pr.max_limit {
+            continue;
         }
-        if d >= max_limit {
+        if test_square(g, s, goals, &mut pr, start_dist, map, x, y, d, via) {
+            return pr.best;
+        }
+        if d as i32 >= pr.max_limit {
             continue;
         }
         // Stairs lead to the square at the same world position on the
         // adjacent layer (bit 2 of the stairs square: clear = down).
-        if d > 0 && g.dungeon.square(map, x, y).element() == Element::Stairs {
-            let delta = if g.dungeon.square(map, x, y).0 & 4 == 0 { 1 } else { -1 };
+        // An open pit (bit 3 set, not imaginary) leads one layer down.
+        let sq = g.dungeon.square(map, x, y);
+        let pit = sq.element() == Element::Pit && sq.0 & 8 != 0 && sq.0 & 1 == 0;
+        if d > 0 && (sq.element() == Element::Stairs || pit) {
+            let delta = if pit || sq.0 & 4 == 0 { 1 } else { -1 };
             if let Some((nm, nx, ny)) = crate::world::layer_map(&g.dungeon, map, delta, x, y) {
                 if seen.insert((nm, nx, ny)) {
                     let v = if map == s.map { Some((x, y)) } else { via };
@@ -166,16 +304,14 @@ pub fn search(g: &GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> {
         }
         for dir in 0..4 {
             let (nx, ny) = (x + DX[dir], y + DY[dir]);
-            if !inside(map, nx, ny) || !seen.insert((map, nx, ny)) {
+            if !inside(g, map, nx, ny) || !seen.insert((map, nx, ny)) {
                 continue;
             }
             // The party's square and other groups are goals, not paths.
             let target_only = party_at(g, map, nx, ny) || creature_at(g, map, nx, ny, s.group).is_some();
             if target_only {
-                for (i, gl) in goals.iter().enumerate() {
-                    if d < gl.limit && satisfies_on(g, s, gl, map, nx, ny, d + 1, start_dist) {
-                        return Some(found(i, map, nx, ny, d + 1, via));
-                    }
+                if test_square(g, s, goals, &mut pr, start_dist, map, nx, ny, d + 1, via) {
+                    return pr.best;
                 }
                 continue;
             }
@@ -184,7 +320,7 @@ pub fn search(g: &GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> {
             }
         }
     }
-    None
+    pr.best
 }
 
 /// First step from (x, y) toward (tx, ty) along a shortest open path, or
@@ -228,4 +364,109 @@ pub fn first_step(g: &GameState, s: &Searcher, tx: i32, ty: i32, limit: u8) -> O
         }
     }
     None
+}
+
+/// Straight-line sight from (x, y) to (tx, ty) for squares in one row or
+/// column (0x2BBAD with the blocking test 0x2B9FC): walking from the target
+/// toward (x, y), each square stepped into is tested until the walk is one
+/// square from (x, y); neither end square is tested.
+fn clear_line(g: &mut GameState, map: usize, x: i32, y: i32, tx: i32, ty: i32) -> bool {
+    let (sx, sy) = ((x - tx).signum(), (y - ty).signum());
+    let (mut cx, mut cy) = (tx, ty);
+    loop {
+        cx += sx;
+        cy += sy;
+        if (cx - x).abs() + (cy - y).abs() < 1 {
+            return true;
+        }
+        if super::ai::blocks_scan(g, map, cx, cy) {
+            return false;
+        }
+        if (cx - x).abs() + (cy - y).abs() < 2 {
+            return true;
+        }
+    }
+}
+
+/// The path test (0x2C404) as the planner uses it for goal kinds 6 and 7,
+/// without committing an action: can the creature act on the party from
+/// (x, y)? `value` is the goal's value word, ANDed into the creature's attack
+/// mask for the call. The party must be in line; a reach of 0 needs bits 0-2
+/// of the mask, 2 or more needs bits 3-11 and a clear line, and the reach must
+/// not exceed the creature's. Bit 2 needs a champion within one square
+/// holding an item of the creature's kind set 0x0B; class flag 0x200 drops
+/// the ranged bits when a kind-0xE cloud is on the party's square; class flag
+/// 0x4000 refuses, three times in four, a door square next to the party
+/// other than the creature's own.
+fn path_to_party(g: &mut GameState, s: &Searcher, value: u16, map: usize, x: i32, y: i32) -> bool {
+    let (tx, ty) = (g.party.x, g.party.y);
+    let mut mask = s.attack_mask & value;
+    if mask == 0 || (x != tx && y != ty) {
+        return false;
+    }
+    let d = manhattan(x, y, tx, ty);
+    if d > 1 {
+        mask &= 0xFF8;
+        if mask == 0 {
+            return false;
+        }
+    } else if d == 0 {
+        mask &= 7;
+        if mask == 0 {
+            return false;
+        }
+    }
+    if (s.range as i32) < d {
+        return false;
+    }
+    if d == 0 {
+        // Standing on the party's square: refused if any neighbour can be
+        // entered (0x2D792 in mode 0; approximated by the terrain test).
+        for dir in 0..4 {
+            if terrain::can_enter(g, map, x + DX[dir], y + DY[dir], s.mask, s.size) {
+                return false;
+            }
+        }
+    }
+    if d > 1 && !clear_line(g, map, x, y, tx, ty) {
+        return false;
+    }
+    if mask & 4 != 0 {
+        let near = d < 2;
+        let dir = super::ai::direction_toward(tx, ty, x, y);
+        let mut found = false;
+        for start in 0..4u8 {
+            let Some(c) = (if near { crate::movement::champion_toward(g, dir, start) } else { None }) else { continue };
+            let holds = [1usize, 0].iter().any(|&slot| {
+                let item = g.champions[c].inventory(slot);
+                item != crate::champions::EMPTY && super::kinds::matches(g, s.group, ThingRef(item), 0x0B)
+            });
+            if holds && (!found || g.rng.bit() != 0) {
+                found = true;
+            }
+        }
+        if !found {
+            mask &= !4;
+            if mask == 0 {
+                return false;
+            }
+        }
+    }
+    if s.cflags & 0x200 != 0 {
+        let cloud = g.dungeon.things_at(map, tx, ty).into_iter().any(|t| {
+            t.kind() == ThingType::Cloud && g.dungeon.record_word(t, 1).unwrap_or(0) & 0x7F == 0x0E
+        });
+        if cloud {
+            mask &= 7;
+            if mask == 0 {
+                return false;
+            }
+        }
+    }
+    if s.cflags & 0x4000 != 0 && s.info0 & 0x20 == 0 && (map, x, y) != (s.map, s.x, s.y)
+        && g.dungeon.square(map, x, y).element() == Element::Door && d < 2 && g.rng.rand4() != 0
+    {
+        return false;
+    }
+    true
 }

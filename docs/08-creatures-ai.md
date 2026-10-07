@@ -724,19 +724,51 @@ opcode `T` and by two other AI helpers.
 | 3 | The square is the slot's home (+0x0C), or its map-edge alias |
 | 4 | Two squares from the party |
 | 5 | Flee: keeps the square farthest from the party (distances on other layers doubled), optionally gated by a 16-bit LFSR at 0x752E8 |
-| 6, 7 | A path toward the party exists (0x2C404, move flags 1 and 0), filtered by the item mask. This can hold on the start square itself, so a creature on the party's map with the party in reach picks this goal ahead of a type-0 fallback later in the list. The remake still approximates it as "next to the party" (0x2C404 is not ported), so such a creature idles instead of setting off; this is where a draw stream recorded with the party near creatures first parts from the original |
+| 6, 7 | The path test 0x2C404 passes from the square (move flags 1 and 0; both alike when not committing), on the party's map: see "Path test" below. It can hold on the start square, and since goals are ranked by list order a creature with the party in reach picks this goal ahead of a later fallback |
 | 8, 9 | A thing search (0x2C0A2) finds a matching item or object at the square, filtered by the item mask at 0x7F574; it also records where |
 | 0x0A | On the party's map, when the current action allows it: a path in the creature's own facing (0x2C404) |
 | 0x0B | A square remembered in the search's scratch record, or its map-edge alias |
 | 0x0C-0x10, 0x14, 0x15, 0x17-0x19, 0x1B | Further branches of the same switch, not yet described |
-| 0x11-0x13, 0x16, 0x1A | Not handled (never match) |
+| 0x11-0x13, 0x16, 0x1A | Not handled (never match); kind 0x1A's flags (0x02) also leave it untested per square |
 
-- **Scoring:** there is no separate score. Since the search is
-  breadth-first, the first match is the nearest one. Ties are broken by
-  the order of the goal list and the order squares are visited. The
-  planner also draws random numbers (0x1C6A1, 0x1C6B7), probably to vary
-  that order; not confirmed. The flags at 0x7F572 (0x100 / 0x110 /
-  0x108) change which passes run.
+- **Ranking (round 7, from the disassembly):** goals are ranked by list
+  order, not distance. Before the search each goal's flags (record +0x10)
+  are set from a per-kind table at 0x752EA (read from SKULL.EXE at
+  runtime); a kind 3 goal whose home is the party's square has bits 0 and 1
+  swapped. Bit 0 means the goal is tested on each square, bit 1 adds one
+  square to the search radius, bit 2 keeps a matched goal active, 0x10
+  leaves the goal's target alone, 0x20 makes the party's square the
+  target, and 0x40 leaves the other limits alone on a match. A square is
+  tested against each active goal in order while it is within the goal's
+  limit. A match on goal 0 ends the search. A match on a later goal is kept
+  as the best so far: goals just before it with a negative argument (record
+  byte +1) drop out, only the goals before it stay active (the matched one
+  too with flag 4), and unless flag 0x40 is set each remaining goal's limit
+  is cut to the current distance plus the running sum of the positive
+  arguments, working back from the match. The search radius is then the
+  largest remaining limit (plus one for flag 2) and the search goes on; it
+  returns the best goal when the radius runs out. So a creature with a
+  "stay here" fallback at the end of its list still sets off for an earlier
+  goal several squares away.
+- **Other maps:** the search follows stairs to the adjacent layer and open
+  pits (bit 3 set, bit 0 clear) one layer down.
+
+**Path test (0x2C404, as the planner uses it).** From a square on the
+party's map, with the creature's attack mask (info word +0x0E, loaded into
+0x7F574 at context setup) ANDed with the goal's value word: the party must
+be in the same row or column; at a Manhattan distance of 2 or more the mask
+keeps bits 3-11 and the line must be clear (0x2BBAD with the blocking test
+0x2B9FC, which walks from the party toward the square testing each square
+stepped into, neither end square included); at distance 0 it keeps bits
+0-2 and fails if the creature could step anywhere; the distance must not
+exceed the creature's reach (info word +0x14 bits 12-15). With mask bit 2
+a champion within one square must hold an item of the creature's kind set
+0x0B in a hand (several such champions are chosen between on a random
+bit), else the bit is dropped. Class flag 0x200 drops the ranged bits when
+a kind-0xE cloud is on the party's square; class flag 0x4000 refuses a door
+square next to the party other than the creature's own on `rand4() != 0`.
+An empty mask at any point fails the test. Called with bit 0x80 the test
+also commits an attack action to the slot; that half is not ported yet.
 
 ## Implementation status (crates/dm2-engine/src/creatures)
 

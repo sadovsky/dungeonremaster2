@@ -281,6 +281,9 @@ pub fn arrive(g: &mut GameState, p: PartyPos) {
     g.party = PartyPos { map: p.map, x: p.x, y: p.y, dir: p.dir };
     if p.map != old {
         crate::map_entry::run(g, p.map, true);
+        // Loading the new map's resources (0x3AB31) ends with one weather
+        // step for the new map, with its random draws.
+        crate::weather::tick(g);
     }
     place_party(g, p.map, p.x, p.y, false);
 }
@@ -480,7 +483,7 @@ fn cell_order(g: &GameState, dir: u8, start: u8) -> Option<[u8; 4]> {
 
 /// The champion nearest an adjacent square, searching the party cells from
 /// `start` (0x45938 with 0x458F4: first living champion in the ordered cells).
-fn champion_toward(g: &GameState, dir: u8, start: u8) -> Option<usize> {
+pub(crate) fn champion_toward(g: &GameState, dir: u8, start: u8) -> Option<usize> {
     let order = cell_order(g, dir, start)?;
     order.iter().find_map(|&cell| g.champions.iter().position(|c| c.cell() & 3 == cell && c.is_alive()))
 }

@@ -158,6 +158,23 @@ pit probe's save, the draw stream then matches the original's for the
 whole first tick (90 draws) and parts at tick 1702, where the planner
 chooses differently (docs/08, goal kinds 6 and 7).
 
+**Round 7: map changes inside the tick.** The main loop's world phase
+(0x24691) applies a pending map change (0x24629, whose map entry 0x3AB31
+ends with one weather step), drains the due events, repeats while the
+events leave another change pending, then runs the regular weather step.
+Its walking pass carries out a step after the mid-step frame and, when the
+step leaves a map change pending (a pit fall, stairs), runs the world phase
+again before the tick ends. The original's draw log of a pit fall shows
+exactly that: the fall damage, then the new map's entry weather draw, then
+a second regular weather draw, all on the same tick. The remake now does
+the same, so a command that changes the map enters the new map that tick.
+With the planner's path test and goal ranking ported (docs/08), the pit run
+matches the original draw for draw from the load through tick 1709 (656
+draws; it parted at tick 1702 before); the idle run still matches through
+tick 157. At tick 1710 the original restarts a creature's running program
+(program 1, action 3) after its planner finds nothing within the quartered
+off-map limit, which the remake doesn't yet do.
+
 **Result (round 4).** Idle new game, original against remake: 663 against
 666 thinks over ticks 2-157, 36.2 against 35.9 draws per tick, and ticks 0-1
 draw 420 against 419.

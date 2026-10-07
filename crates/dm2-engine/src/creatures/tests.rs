@@ -454,3 +454,33 @@ fn transforming_plays_its_sound() {
     assert!(ai::transform(&mut g, &d, &ctx));
     assert!(g.effects.iter().any(|e| matches!(e, Effect::Sound { cat: 3, idx: 0, sub: 0x81, .. })));
 }
+
+#[test]
+fn planner_prefers_earlier_goals_over_nearer_ones() {
+    // The planner ranks goals by list order (0x3188A): a later goal met at
+    // the start square is only kept as the best so far, and the search goes
+    // on for the goals before it.
+    let Some((mut g, _)) = load() else { return };
+    let (map, px, py) = (g.party.map, g.party.x, g.party.y);
+    assert_eq!(map, 0, "the new game starts on map 0");
+    let s = super::planner::Searcher {
+        map,
+        x: px,
+        y: py - 3,
+        mask: 0xFFFF,
+        size: 1,
+        group: ThingRef(0x3FFE),
+        attack_mask: 0,
+        range: 0,
+        info0: 0,
+        cflags: 0,
+    };
+    let goal = |kind: u8, arg: i8, program: u8, limit: u8| super::planner::Goal { kind, arg, program, limit, data: 0, mode: 0, value: 0 };
+    // Goal 0: the party's square, three steps up the start corridor; goal 1:
+    // stay put. The party's square wins although the fallback is nearer.
+    let found = super::planner::search(&mut g, &s, &[goal(2, 0, 7, 10), goal(0, -1, 9, 0)]).unwrap();
+    assert_eq!((found.goal, found.distance), (0, 3));
+    // Out of the first goal's reach, the fallback is what remains.
+    let found = super::planner::search(&mut g, &s, &[goal(2, 0, 7, 2), goal(0, -1, 9, 0)]).unwrap();
+    assert_eq!((found.goal, found.distance), (1, 0));
+}

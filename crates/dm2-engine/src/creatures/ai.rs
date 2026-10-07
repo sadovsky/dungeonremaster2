@@ -74,6 +74,10 @@ pub(super) fn searcher(ctx: &Ctx) -> Searcher {
         mask: ctx.info.terrain(),
         size: ctx.info.door_size().max(1),
         group: ctx.thing,
+        attack_mask: u16::from_le_bytes([ctx.info.raw[0x0E], ctx.info.raw[0x0F]]),
+        range: u16::from_le_bytes([ctx.info.raw[0x14], ctx.info.raw[0x15]]) >> 12,
+        info0: ctx.info.raw[0],
+        cflags: ctx.cflags,
     }
 }
 
@@ -310,7 +314,7 @@ pub fn context_roll(g: &mut GameState, ctx: &Ctx) {
 /// Does the scan stop at (x, y) (0x2B9FC)? Walls, closing or closed doors
 /// (a door type that passes missiles lets it through on a random bit),
 /// closed trick walls, kind-0xE clouds and solid creature groups block.
-fn blocks_scan(g: &mut GameState, map: usize, x: i32, y: i32) -> bool {
+pub(super) fn blocks_scan(g: &mut GameState, map: usize, x: i32, y: i32) -> bool {
     let sq = g.dungeon.square(map, x, y);
     let e = sq.0 >> 5;
     if e == 0 {

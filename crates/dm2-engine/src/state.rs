@@ -216,22 +216,42 @@ impl GameState {
             crate::creatures::pass_all_maps(self);
         }
         self.walk = self.walk.and_then(|(p, n)| (n > 1).then_some((p, n - 1)));
-        if let Some(p) = self.pending_map.take() {
-            movement::arrive(self, p);
-        }
-        while self.timeline.due(self.tick) {
-            let Some(ev) = self.timeline.pop() else { break };
-            events::dispatch(self, ev);
-        }
-        crate::weather::tick(self);
-        crate::weather::update_storm_flag(self);
+        self.world_phase();
         crate::creatures::update(self);
         champions::tick(self);
         while let Some(c) = self.commands.pop_front() {
             self.execute(c);
         }
+        // A command that takes the party to another map (a pit fall, stairs)
+        // enters it before the tick ends: the main loop's walking pass repeats
+        // the world phase when the move leaves a map change pending, so the
+        // new map's entry and a second weather step fall on the same tick.
+        if self.pending_map.is_some() {
+            self.world_phase();
+        }
         crate::apply::apply_effects(self);
         self.tick = self.tick.wrapping_add(1);
+    }
+
+    /// The main loop's world phase (0x24691): apply a pending map change
+    /// (0x24629, whose map entry runs a weather step), drain the due events,
+    /// and repeat while the events leave another map change pending; then
+    /// one regular weather step.
+    fn world_phase(&mut self) {
+        loop {
+            if let Some(p) = self.pending_map.take() {
+                movement::arrive(self, p);
+            }
+            while self.timeline.due(self.tick) {
+                let Some(ev) = self.timeline.pop() else { break };
+                events::dispatch(self, ev);
+            }
+            if self.pending_map.is_none() {
+                break;
+            }
+        }
+        crate::weather::tick(self);
+        crate::weather::update_storm_flag(self);
     }
 
     /// Set the party's facing (0x45869). Every champion's facing (+0x1C)
