@@ -333,15 +333,54 @@ flag table at 0x75136 is indexed by creature type); goal word +0x0C, which
 sends kinds 5 and 0x0D to the kind 0x0B test, belongs to the planner's own
 goal record and is still not modelled.
 
-Next divergence, tick 97: in the original a missile is in flight on map 22
-and its flight event alerts creature 0x109B through the hit handler (only
-the final `random(100)`, since no damage is owed and no turn is asked
-for). The start save holds no missile event (only two ornament events and
-the weather step) and no creature on the map was in a ranged action, so
-something launches it silently between ticks 57 and 97; in the remake
-nothing does. A wall shooter set off by a creature or the party is the
-likeliest source; it needs the hooked build with the missile launch
-routines (0x16457, 0x47773, 0x47813) logged to settle.
+**Round 12: the tick-97 alert was an area actuator.** The hit-handler draw
+at tick 97 is not a missile alert. A hooked run (hit handler, area routine,
+activation, scheduling and step entry logged with their return addresses)
+shows the hit coming from 0x56CE7 inside the area routine 0x56BA5, two ticks
+after the melee blow: the blow makes the hurt creature signal its home square
+(docs/08), and that square's floor actuator of type 0x28 walks its rectangle
+and hits every matching group with flags 0x8002, chance 100 and no damage.
+The routine is ported as `creatures::area_effect` in place of the old
+activation-only stub. Three more corrections came out of the same trace:
+
+- The hit handler's guard for a group without a slot is the reverse of what
+  the remake had (0x24EFD): a dormant type (info bit 0 set) is woken through
+  activation, while an awake type without a slot is left alone.
+- Activation always loads the group's context (0x306A8 calls 0x24A88
+  unconditionally), so a woken dormant group becomes the current creature.
+- A woken dormant group's step never runs the driver (0x258F9). Bits 0x4000
+  and 0x2000 of its frame-cycle word (record +10) select one of two cycle
+  steps (0x25204, 0x252C3) that may move its event to the end of the cycle;
+  if nothing reschedules it, the slot is freed (0x3085A) and it sleeps again.
+  None of this draws random numbers.
+
+**Opcode `R` commits through the path test.** At tick 180 the original runs
+the path test's committing half (from 0x2C898) for creature 0x109C through
+opcode `R` (0x27E28), which passes move flags 2 for goal type 8, 3 for goal
+type 9 and 0 for every other type. With flags 0 the target must be the
+party's square (0x2C5B4; with flags 2 it must hold a creature group). The
+committing half faces the target (a queued quarter turn counts as
+committed), flips a coin, takes the melee branch at distance 1 or less when
+the mask has melee bits (a second coin decides when ranged bits are present
+too), finds the struck champion's cell through 0x45938 and the random cell
+order of 0x1869A (two more coins), then draws random(popcount(mask)) + 1 and
+uses that set bit of the mask to choose the action and missile. All of this
+is ported.
+
+**Creature against creature.** The hit at 0x3127B passes the constant flags
+0x0002 with chance 60, not flags taken from a register.
+
+**Result (round 12).** The combat probe now matches the original draw for
+draw through draw 5581 (tick 187), past the second melee round at tick 172;
+the idle run stays identical through tick 156 (6,151 draws each) and the pit
+run through tick 1711. At tick 188 the original's 0x109C thinks, its program
+5 ends without any committing draws and the creature goes idle, while the
+remake commits a second attack. A hooked run shows every call to `R` that
+the original makes during this fight succeeding, the next attempt always at
+least 13 ticks after the previous commit, so the tick-188 think most likely
+takes a different goal or opcode; not yet traced. The distance analysis
+0x26A67, which can clear mask bit value 8 before `R` commits, is still not
+modelled.
 
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
@@ -736,7 +775,7 @@ leave the variable unchanged.
 
 | Type | Behaviour |
 |------|-----------|
-| 0x0B, 0x28 | 0x56BA5 with word-1 bits 7-10 and 11-15, the event square, the target square and the action. Tentative: creature-affecting trap. |
+| 0x0B, 0x28 | Area effect on creatures (0x56BA5, called from 0x57917). It walks the rectangle centred on the event square whose half-sizes are the distances to the actuator's target square (word 3 bits 6-10 and 11-15), rows from the highest y down and squares from the highest x down, and acts on each group whose record word +8 equals word 1 bits 11-15 (0x301DC). The data value is word 1 bits 7-10. Type 0x28 calls the hit handler with the data value as flags (bit 15 added when the event's action is non-zero), chance 100 and no damage. Type 0x0B with data 2 queues the dying action with an interrupt (0x24DB5); data 0 or 1 skips the group and larger values end the walk. |
 | 0x20, 0x45 | Timers as on walls |
 | 0x27 | Marks a teleporter square as an edge link that is currently disabled (see Map edges). It has no effect of its own when triggered. |
 | 0x2C | 0x56F11 (variant 0) |

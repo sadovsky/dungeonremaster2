@@ -386,7 +386,7 @@ Opcodes (dispatch at 0x27CD2, index = letter − 0x3F):
 | `O` | default (0x29C0F) | Queue the action given by arg 3 (or the global default) |
 | `P` | 0x2911C | Creature flag word (active record +0x0A): arg 4 low nibble 0 clears bit arg 3, 1 sets it, other values test it; modes 3 and 4 copy bits from the global switch list at 0x7F7DE (entries of type 0x13 or 0x14). A change queues action 0x33 unless arg 4 has bit 0x10. Done when the bit already had the wanted state. |
 | `Q` | 0x2923E | Move one step toward the target square. Returns "done" on arrival. Info+0x16 bits 12-15 give a chance of breaking off (quartered while the creature is afraid). |
-| `R` | 0x27E28 | Path toward the planner's target (0x2C404 with move flags 2 or 3 for goal types 8 and 9) |
+| `R` | 0x27E28 | Commit to acting on the slot's target: the path test 0x2C404 in committing mode with move flags 2 for goal type 8, 3 for type 9 and 0 otherwise, the goal's mode byte as the slot argument and the attack mask ANDed with the goal's value word. Returns 0xFC once committed, 0xFD when a filter refuses (docs/05, round 12) |
 | `S` | 0x28017 | Same handler as `B`, after clearing the arguments |
 | `T` | 0x293A4 | Runs the planner again (0x3188A) |
 | `U` | 0x29448 | When on the party's map: work out the direction toward the party (0x1863D) and, if the next square that way isn't a wall, turn or step that way (0x2C005). |

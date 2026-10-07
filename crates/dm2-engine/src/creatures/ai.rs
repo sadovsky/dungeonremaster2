@@ -1090,7 +1090,8 @@ fn attack_frame(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> bool {
     if let Some(o) = group_at(g, ctx.map, tx, ty) {
         if let Some((oi, _)) = type_info(g, d, creature_type(g, o)) {
             if let Some(dmg) = fight::creature_vs_creature(&ctx.info, &oi, &mut g.rng) {
-                super::damage(g, o, ctx.map, tx, ty, dmg);
+                let (f, ch) = super::hit_flags::CREATURE;
+                super::hit(g, o, ctx.map, tx, ty, f, ch, dmg);
             }
             return true;
         }
@@ -1201,6 +1202,17 @@ pub fn frame_delay_ex(g: &mut GameState, ctx: &Ctx, an: &Anim, allow_off_map: bo
 
 #[cfg(test)]
 mod tests {
+
+    /// 0x2FD7B: the n-th set bit of the mask, counting from 1.
+    #[test]
+    fn nth_bit_counts_set_bits_from_one() {
+        assert_eq!(super::nth_bit(0b1011_0010, 1), 0b10);
+        assert_eq!(super::nth_bit(0b1011_0010, 2), 0b1_0000);
+        assert_eq!(super::nth_bit(0b1011_0010, 4), 0b1000_0000);
+        assert_eq!(super::nth_bit(0b1011_0010, 5), 0);
+        assert_eq!(super::nth_bit(0, 1), 0);
+    }
+
     use super::*;
 
     #[test]
@@ -1256,7 +1268,7 @@ fn act_on_target(g: &mut GameState, ctx: &Ctx) -> Res {
     ctx.slot_mut(g).arg = mode as u8;
     let sr = searcher(ctx);
     let (tx, ty) = (t.x(), t.y());
-    let Some(ok) = planner::path_filter(g, &sr, sr.attack_mask & value, ctx.map, ctx.x, ctx.y, tx, ty) else {
+    let Some(ok) = planner::path_filter(g, &sr, sr.attack_mask & value, flags, ctx.map, ctx.x, ctx.y, tx, ty) else {
         return Res::Failed;
     };
     commit_attack(g, ctx, flags, tx, ty, ok, None)

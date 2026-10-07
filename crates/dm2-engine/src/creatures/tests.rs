@@ -511,3 +511,59 @@ fn path_test_reads_the_search_square_on_the_partys_map() {
     let goal = super::planner::Goal { kind: 7, arg: 0, program: 1, limit: 4, data: 0, mode: 0, value: 0xFFF };
     assert!(super::planner::satisfies_on(&mut g, &s, &goal, 4, 5, 13, 1, 3));
 }
+
+/// 0x56BA5's visiting order: the rectangle centred on the event square, rows
+/// from the highest y down, squares from the highest x down, clipped to the
+/// map. Data-free.
+#[test]
+fn area_squares_visit_rows_from_the_bottom_right() {
+    // Event (2,2), target (3,1): half-sizes 1 and 1.
+    let sq = area_squares(2, 2, 3, 1, 10, 10);
+    assert_eq!(sq, vec![(3, 3), (2, 3), (1, 3), (3, 2), (2, 2), (1, 2), (3, 1), (2, 1), (1, 1)]);
+    // Clipped at the map's top-left corner.
+    let sq = area_squares(0, 0, 1, 1, 10, 10);
+    assert_eq!(sq, vec![(1, 1), (0, 1), (1, 0), (0, 0)]);
+    // Target on the event square: just that square.
+    assert_eq!(area_squares(4, 5, 4, 5, 10, 10), vec![(4, 5)]);
+}
+
+/// The hit handler's guard for a group without a slot (0x24EFD): a dormant
+/// type is woken, an awake type is left alone.
+#[test]
+fn a_hit_wakes_dormant_groups_only() {
+    let Some((mut g, d)) = load() else { return };
+    let all = groups(&g);
+    let dormant = |g: &GameState, c| type_info(g, &d, creature_type(g, c)).is_some_and(|(i, _)| i.inanimate());
+    let awake = all.iter().find(|t| slot_of(&g, t.3).is_none() && !dormant(&g, t.3)).copied();
+    let sleeping = all.iter().find(|t| slot_of(&g, t.3).is_none() && dormant(&g, t.3)).copied();
+    if let Some((m, x, y, c)) = awake {
+        hit(&mut g, c, m, x, y, 0x0002, 60, 0);
+        assert!(slot_of(&g, c).is_none(), "an awake group without a slot is left alone");
+    }
+    if let Some((m, x, y, c)) = sleeping {
+        hit(&mut g, c, m, x, y, 0x0002, 60, 0);
+        assert!(slot_of(&g, c).is_some(), "a dormant group is woken by a hit");
+    }
+}
+
+/// `?` and `@` pass flag 0x80 to the movement test (0x27F54, 0x27FC8): with
+/// the party on the square ahead the test just fails, leaving the slot's
+/// actions alone, while the plain movement test commits to the party.
+#[test]
+fn step_tests_fail_on_the_party_square() {
+    let Some((mut g, d)) = load() else { return };
+    let Some((m, x, y, c)) = groups(&g).into_iter().find(|t| {
+        type_info(&g, &d, creature_type(&g, t.3)).is_some_and(|(i, _)| !i.inanimate())
+    }) else {
+        return;
+    };
+    let Some(si) = activate(&mut g, &d, c, m, x, y) else { return };
+    let f = facing(&g, c);
+    let (ax, ay) = (x + crate::viewport::DX[f as usize], y + crate::viewport::DY[f as usize]);
+    g.party = crate::world::PartyPos { map: m, x: ax, y: ay, dir: 0 };
+    let Some(ctx) = Ctx::load(&g, &d, si) else { return };
+    let (act, queued) = (ctx.slot(&g).action, ctx.slot(&g).queued);
+    assert!(!ai::move_test_step(&mut g, &ctx, f, 5), "the step test fails on the party's square");
+    assert_eq!((ctx.slot(&g).action, ctx.slot(&g).queued), (act, queued), "and leaves the slot alone");
+    assert!(ai::move_test(&mut g, &ctx, f, 5), "the plain test commits to the party");
+}

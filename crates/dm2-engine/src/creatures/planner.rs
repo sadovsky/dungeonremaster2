@@ -473,7 +473,7 @@ fn clear_line(g: &mut GameState, map: usize, x: i32, y: i32, tx: i32, ty: i32) -
 /// other than the creature's own.
 fn path_to_party(g: &mut GameState, s: &Searcher, value: u16, map: usize, x: i32, y: i32) -> bool {
     let (tx, ty) = (g.party.x, g.party.y);
-    path_filter(g, s, s.attack_mask & value, map, x, y, tx, ty).is_some()
+    path_filter(g, s, s.attack_mask & value, 0, map, x, y, tx, ty).is_some()
 }
 
 /// What the path test's filters leave (0x2C404 up to 0x2C88C).
@@ -489,7 +489,7 @@ pub(super) struct PathOk {
 /// The path test's filters from (x, y) to the target (tx, ty) with attack
 /// mask `mask`; None when it fails. See `path_to_party`.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn path_filter(g: &mut GameState, s: &Searcher, mask: u16, map: usize, x: i32, y: i32, tx: i32, ty: i32) -> Option<PathOk> {
+pub(super) fn path_filter(g: &mut GameState, s: &Searcher, mask: u16, flags: u8, map: usize, x: i32, y: i32, tx: i32, ty: i32) -> Option<PathOk> {
     let mut mask = mask;
     let mut steal_cell = 0u8;
     if mask == 0 || (x != tx && y != ty) {
@@ -518,6 +518,16 @@ pub(super) fn path_filter(g: &mut GameState, s: &Searcher, mask: u16, map: usize
                 return None;
             }
         }
+    }
+    // The target by move flags (0x2C5B4): with flags 0 or 1 it must be the
+    // party's square on this map (0x7F8D0-0x7F8D4); with flags 2 it must hold
+    // a creature group (0x2BEAF / 0x2BFAE). No random numbers are drawn.
+    if flags <= 1 {
+        if g.party.map != map || (tx, ty) != (g.party.x, g.party.y) {
+            return None;
+        }
+    } else if flags == 2 && !g.dungeon.things_at(map, tx, ty).iter().any(|t| t.kind() == ThingType::Creature) {
+        return None;
     }
     if d > 1 && !clear_line(g, map, x, y, tx, ty) {
         return None;

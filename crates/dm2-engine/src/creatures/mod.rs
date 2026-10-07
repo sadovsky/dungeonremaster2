@@ -184,6 +184,9 @@ pub mod hit_flags {
     pub const FALL: (u16, i16) = (0x2000, 0);
     /// A missile passing the group (0x17A7B): alert with no damage; chance 100.
     pub const ALERT: (u16, i16) = (0x2006, 100);
+    /// One creature group striking another (0x31113 at 0x3127B): status
+    /// bit 2, no turn and no interrupt flag; chance 60.
+    pub const CREATURE: (u16, i16) = (0x0002, 60);
 }
 
 /// Damage a creature group with the missile/effect flags; see `hit`.
@@ -372,16 +375,10 @@ pub fn area_effect(g: &mut GameState, map: usize, ex: i32, ey: i32, kind: u16, w
     let data = (w1 >> 7) & 0x0F;
     let filter = (w1 >> 11) & 0x1F;
     let (tx, ty) = (((w3 >> 6) & 0x1F) as i32, ((w3 >> 11) & 0x1F) as i32);
-    let (dx, dy) = ((ex - tx).abs(), (ey - ty).abs());
     let Some(m) = g.dungeon.maps.get(map) else { return };
     let (w, h) = (m.width as i32, m.height as i32);
-    for j in (0..=2 * dy).rev() {
-        let y = ey - dy + j;
-        for i in (0..=2 * dx).rev() {
-            let x = ex - dx + i;
-            if x < 0 || x >= w || y < 0 || y >= h {
-                continue;
-            }
+    for (x, y) in area_squares(ex, ey, tx, ty, w, h) {
+        {
             let Some(c) = group_at(g, map, x, y) else { continue };
             if rec_u16(g, c, 8) != filter {
                 continue;
@@ -400,6 +397,24 @@ pub fn area_effect(g: &mut GameState, map: usize, ex: i32, ey: i32, kind: u16, w
             }
         }
     }
+}
+
+/// The squares 0x56BA5 visits, in order: the rectangle centred on (ex, ey)
+/// whose half-sizes are the distances to (tx, ty), rows from the highest y
+/// down and squares from the highest x down, skipping squares off a w × h map.
+pub fn area_squares(ex: i32, ey: i32, tx: i32, ty: i32, w: i32, h: i32) -> Vec<(i32, i32)> {
+    let (dx, dy) = ((ex - tx).abs(), (ey - ty).abs());
+    let mut out = Vec::new();
+    for j in (0..=2 * dy).rev() {
+        let y = ey - dy + j;
+        for i in (0..=2 * dx).rev() {
+            let x = ex - dx + i;
+            if x >= 0 && x < w && y >= 0 && y < h {
+                out.push((x, y));
+            }
+        }
+    }
+    out
 }
 
 /// Queue an action and interrupt the group's current step (0x24DB5 with
