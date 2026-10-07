@@ -676,7 +676,7 @@ fn replay(args: &[String]) {
         }
         if let Some((_, a, pcm, buf)) = audio.as_mut() {
             let reqs = dm2_engine::audio::sfx::drain_sounds(&mut g.effects);
-            a.set_map(g.party.map);
+            a.music_tick(g.party.map);
             if !reqs.is_empty() {
                 a.play_sounds(&g.dungeon, &g.party, &reqs);
             }
@@ -836,11 +836,17 @@ async fn play(args: Vec<String>) {
                 (Screen::Title, 0xE0) => std::process::exit(0),
                 (Screen::Title, 0xD7) => {
                     game = new_game(&d);
+                    if let Some(s) = sound.as_mut() {
+                        s.reset();
+                    }
                     screen = Screen::Game;
                 }
                 (Screen::Title, 0xD9) => match resume(&d) {
                     Ok(g) => {
                         game = g;
+                        if let Some(s) = sound.as_mut() {
+                            s.reset();
+                        }
                         screen = Screen::Game;
                     }
                     Err(e) => eprintln!("resume: {e}"),

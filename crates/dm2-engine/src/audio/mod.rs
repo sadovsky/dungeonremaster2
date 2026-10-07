@@ -23,7 +23,7 @@ use crate::world::PartyPos;
 use bnk::Bank;
 use hmp::Song;
 use midi::Driver;
-use music::{Sequencer, SongList, FADE_SECS};
+use music::{Sequencer, SongList, FADE_START};
 use sfx::{Sfx, SoundRequest};
 
 /// Music is mixed below the effects; 18 FM voices can sum well above 1.
@@ -37,10 +37,13 @@ pub struct Audio {
     driver: Driver,
     /// Playing song number and its sequencer.
     current: Option<(u8, Sequencer)>,
-    /// Song to start once the fade-out ends (Some(0) = silence).
+    /// Song to start when the fade-out ends (0x7EF86; 0 = silence).
     pending: Option<u8>,
-    /// Seconds of fade-out left.
-    fade_left: f64,
+    /// Fade counter (0x704C6): 0 = none, else the music volume out of 127,
+    /// stepped down once per game tick by `music_tick`.
+    fade: u8,
+    /// Song most recently chosen for the party's map (0x7050E).
+    map_song: Option<u8>,
     sfx: Sfx,
     pub music_volume: f32,
     pub sfx_volume: f32,
@@ -88,7 +91,8 @@ impl Audio {
             driver: Driver::new(melodic, drums),
             current: None,
             pending: None,
-            fade_left: 0.0,
+            fade: 0,
+            map_song: None,
             sfx: Sfx::new(has_header),
             music_volume: 1.0,
             sfx_volume: 1.0,
@@ -111,25 +115,49 @@ impl Audio {
         self.current = if n == 0 { None } else { self.song(n).map(|s| (n, Sequencer::new(s))) };
     }
 
-    /// Play song `n` now, or after fading out the current one.
+    /// Start song `n` at once, with no fade (0 = silence). Used for
+    /// listening checks; gameplay goes through `music_tick`.
     pub fn play_song(&mut self, n: u8) {
-        let playing = self.current.as_ref().map(|c| c.0);
-        if playing == Some(n) || (playing.is_none() && n == 0) || self.pending == Some(n) {
+        self.pending = None;
+        self.fade = 0;
+        self.map_song = Some(n);
+        self.start(n);
+    }
+
+    /// One game tick of the original's music update (0x10AF6), run by the
+    /// main loop once per tick with the party's map. A different song for
+    /// the map starts at once if nothing is playing or a fade is already
+    /// under way; otherwise the current song fades out over 126 ticks (the
+    /// counter starts at 127 and is the music volume) and the new song then
+    /// starts at full volume.
+    pub fn music_tick(&mut self, map: usize) {
+        if self.fade == 1 {
+            let n = self.pending.take().unwrap_or(0);
+            self.fade = 0;
+            self.start(n);
             return;
         }
-        if playing.is_some() {
-            self.pending = Some(n);
-            self.fade_left = FADE_SECS;
-        } else {
+        if self.fade >= 2 {
+            self.fade -= 1;
+        }
+        let Some(n) = self.songlist.song_for_map(map) else { return };
+        if self.map_song == Some(n) {
+            return;
+        }
+        self.map_song = Some(n);
+        if self.current.is_none() || self.fade != 0 {
+            self.pending = None;
+            self.fade = 0;
             self.start(n);
+        } else {
+            self.pending = Some(n);
+            self.fade = FADE_START;
         }
     }
 
-    /// The party is on `map`: switch to its song from SONGLIST.DAT.
+    /// Follow the party's map for one tick (kept for older callers).
     pub fn set_map(&mut self, map: usize) {
-        if let Some(n) = self.songlist.song_for_map(map) {
-            self.play_song(n);
-        }
+        self.music_tick(map);
     }
 
     pub fn current_song(&self) -> Option<u8> {
@@ -147,29 +175,17 @@ impl Audio {
         out.fill(0.0);
         let sr = self.sample_rate as f64;
         if self.current.is_some() {
-            let vol = MUSIC_GAIN * self.music_volume;
+            let mut gain = MUSIC_GAIN * self.music_volume;
+            if self.fade >= 2 {
+                gain *= self.fade as f32 / 127.0;
+            }
             for frame in out.chunks_exact_mut(2) {
-                let mut gain = vol;
-                if self.pending.is_some() {
-                    self.fade_left -= 1.0 / sr;
-                    if self.fade_left <= 0.0 {
-                        let n = self.pending.take().unwrap_or(0);
-                        self.start(n);
-                        if self.current.is_none() {
-                            break;
-                        }
-                    } else {
-                        gain *= (self.fade_left / FADE_SECS) as f32;
-                    }
-                }
                 let Some((_, seq)) = self.current.as_mut() else { break };
                 seq.step(&mut self.driver, sr);
                 let (l, r) = self.driver.frame(sr);
                 frame[0] = l as f32 * gain;
                 frame[1] = r as f32 * gain;
             }
-        } else if let Some(n) = self.pending.take() {
-            self.start(n);
         }
         self.sfx.volume = 0.8 * self.sfx_volume;
         self.sfx.mix(out, self.sample_rate);
@@ -212,13 +228,36 @@ mod tests {
             a.songlist.0.iter().copied().enumerate().filter(|&(_, s)| s != 0 && s != 0xFF).collect();
         let (m1, s1) = songs[0];
         let Some(&(m2, s2)) = songs.iter().find(|&&(_, s)| s != s1) else { return };
-        a.set_map(m1);
-        assert_eq!(a.current_song(), Some(s1));
-        a.set_map(m2);
+        a.music_tick(m1);
+        assert_eq!(a.current_song(), Some(s1), "first song starts at once");
+        a.music_tick(m2);
         assert_eq!(a.current_song(), Some(s1), "old song keeps playing during the fade");
-        let mut buf = vec![0f32; (8000.0 * (FADE_SECS + 0.1)) as usize * 2];
-        a.render(&mut buf);
+        // 126 more ticks step the counter from 127 down to 1; the next tick
+        // starts the new song.
+        for _ in 0..126 {
+            a.music_tick(m2);
+            assert_eq!(a.current_song(), Some(s1));
+        }
+        a.music_tick(m2);
         assert_eq!(a.current_song(), Some(s2));
+        assert_eq!(a.fade, 0);
+    }
+
+    #[test]
+    fn second_change_during_a_fade_starts_at_once() {
+        let Some(mut a) = real(8000) else { return };
+        let mut seen: Vec<(usize, u8)> = Vec::new();
+        for (m, s) in a.songlist.0.iter().copied().enumerate() {
+            if s != 0 && s != 0xFF && !seen.iter().any(|&(_, t)| t == s) {
+                seen.push((m, s));
+            }
+        }
+        let [(m1, _), (m2, _), (m3, s3), ..] = seen[..] else { return };
+        a.music_tick(m1);
+        a.music_tick(m2);
+        a.music_tick(m2);
+        a.music_tick(m3);
+        assert_eq!(a.current_song(), Some(s3));
     }
 
     #[test]

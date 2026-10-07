@@ -245,3 +245,76 @@ fn open_bracket_rolls_are_deterministic() {
     };
     assert_eq!(run(77), run(77));
 }
+
+/// Groups whose type can cry out when hurt (type flag 0x01 clear, AI class
+/// flag 0x8000), activated: (map, x, y, slot index).
+fn criers(g: &mut GameState, d: &Rc<CreatureData>) -> Vec<(usize, i32, i32, usize)> {
+    let mut out = Vec::new();
+    for (m, x, y, c) in groups(g) {
+        let Some((info, class)) = type_info(g, d, creature_type(g, c)) else { continue };
+        if info.raw[0] & 1 != 0 || info.raw[1] == 0xFF || d.class_flags(class) & 0x8000 == 0 {
+            continue;
+        }
+        if let Some(si) = activate(g, d, c, m, x, y) {
+            out.push((m, x, y, si));
+        }
+    }
+    out
+}
+
+#[test]
+fn hurt_creatures_cry_out_sometimes() {
+    let Some((mut g, d)) = load() else { return };
+    let all = criers(&mut g, &d);
+    let Some(&(_, _, _, si)) = all.first() else { return };
+    let ctx = Ctx::load(&g, &d, si).unwrap();
+    set_rec_u16(&mut g, ctx.thing, 6, 1000);
+    let mut cries = 0;
+    for seed in 0..64u32 {
+        let mut h = g.clone();
+        h.rng.state = seed.wrapping_mul(0x9E37_79B9);
+        h.effects.clear();
+        let before = h.rng.state;
+        assert!(!apply_damage(&mut h, &ctx, 1));
+        assert_ne!(h.rng.state, before, "the cry roll draws a random number");
+        cries += h.effects.iter().filter(|e| matches!(e, Effect::Sound { cat: 15, sub: 9 | 10, .. })).count();
+    }
+    // One time in eight at least, so 64 seeds almost surely produce some.
+    assert!(cries > 0, "no pain cry in 64 rolls");
+}
+
+#[test]
+fn a_landed_blow_plays_the_hit_sound() {
+    let Some((mut g, _)) = load() else { return };
+    let (dx, dy) = (crate::viewport::DX, crate::viewport::DY);
+    for (m, x, y, _) in groups(&g) {
+        for dir in 0..4u8 {
+            let (px, py) = (x - dx[dir as usize], y - dy[dir as usize]);
+            if crate::world::blocks(&g.dungeon, m, px, py) || group_at(&g, m, px, py).is_some() {
+                continue;
+            }
+            g.party = crate::world::PartyPos { map: m, x: px, y: py, dir };
+            g.effects.clear();
+            crate::apply::apply_action(&mut g, 0, &[crate::combat::Effect::DamageCreature { amount: 3, attack_type: 0 }]);
+            assert!(
+                g.effects
+                    .iter()
+                    .any(|e| matches!(e, Effect::Sound { cat: 15, sub: 0x8D, x: sx, y: sy, .. } if *sx == x && *sy == y)),
+                "no hit sound at the creature's square"
+            );
+            return;
+        }
+    }
+}
+
+#[test]
+fn transforming_plays_its_sound() {
+    let Some((mut g, d)) = load() else { return };
+    let Some((m, x, y, c)) = groups(&g).into_iter().next() else { return };
+    let si = activate(&mut g, &d, c, m, x, y).unwrap();
+    let ctx = Ctx::load(&g, &d, si).unwrap();
+    ctx.slot_mut(&mut g).arg = creature_type(&g, c);
+    g.effects.clear();
+    assert!(ai::transform(&mut g, &d, &ctx));
+    assert!(g.effects.iter().any(|e| matches!(e, Effect::Sound { cat: 3, idx: 0, sub: 0x81, .. })));
+}

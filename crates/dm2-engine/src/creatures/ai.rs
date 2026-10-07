@@ -712,14 +712,23 @@ fn attack_frame(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> bool {
 }
 
 /// Transform into the creature type in slot +0x1E (0x2B35D).
-fn transform(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> bool {
+pub(super) fn transform(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> bool {
     let to = ctx.slot(g).arg;
-    let Some((info, _)) = type_info(g, d, to) else { return false };
+    // The original ends with sound (3, 0, 0x81) when the change happens and
+    // (3, 0, 0x8B) when it doesn't, at the creature's square.
+    let sound = |g: &mut GameState, sub: u8| {
+        g.effects.push(Effect::Sound { cat: 3, idx: 0, sub, map: ctx.map, x: ctx.x, y: ctx.y });
+    };
+    let Some((info, _)) = type_info(g, d, to) else {
+        sound(g, 0x8B);
+        return false;
+    };
     let base = info.base_hp();
     let h = base + g.rng.random(base / 8 + 1);
     super::set_rec_u8(g, ctx.thing, 4, to);
     set_rec_u16(g, ctx.thing, 6, h.max(1));
     ctx.slot_mut(g).queued = action::TRANSFORM_END;
+    sound(g, 0x81);
     true
 }
 
