@@ -260,6 +260,35 @@ shortened the combat match to tick 58, so kinds 0x0A and 0x0D are documented
 here but not yet ported; they need the picker's "keep" result and the
 think's continuation path traced first. Combat itself has not been compared.
 
+**Round 10: comparing from a save; `?`, `@` and the planner.** The tick-60
+divergence above was a measurement artifact, not a held program. The combat
+probe's start save was written by the remake, and its trailer carries the
+full 32-bit random state, while the original ignores the trailer and keeps
+only the low 16 bits from the DOS stream. Both runs then make the same
+draws at the same places with different values, which the (tick, creature)
+comparison cannot see until a value changes a decision. The comparison
+examples now load saves as the original does (`save::read_as_original`,
+`KEEP_TRAILER=1` to opt out), and with that the round 9 explanation of tick
+60 is withdrawn: the path cache is per creature (copied in and out of the
+creature's own block by the context setup at 0x24D4A/0x25788), so a
+just-loaded creature has none and the picker plans normally.
+
+With the probe compared correctly, three fixes followed (docs/08): `?`
+reports done, not failed, when blocked; `@` always takes the other jump;
+and goal kinds 5 and 0x0D are gated by the planner's shift register, with
+occupied squares tested only for the kinds flagged 0x20. The combat probe
+now matches the original draw for draw through tick 94 and through the
+first 12 draws of the tick-95 attack; the idle run stays identical through
+tick 155 and the pit run through tick 1711. `rngseq` files replayed
+interface commands under the tick they precede, as the original's command
+drain does.
+
+Next divergence: in the tick-95 melee, the original's setup makes nine
+draws before the strength roll at 0x18BA6 (the executor at 0x4161F, the
+melee core at 0x18B14 and 0x18B59, dexterity at 0x4698A/0x469EA/0x46A05,
+luck at 0x46793 plus random(0x25), strength at 0x46A42); the remake makes
+six, so its blow comes out weak and misses where the original's lands.
+
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
 (5,13), from the pit probe's save), the original reached its game-over

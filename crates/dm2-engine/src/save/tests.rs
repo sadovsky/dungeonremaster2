@@ -244,3 +244,19 @@ fn original_saves_have_no_load_hazard() {
         assert!(original_load_hazard(&g).is_empty(), "{}", path.display());
     }
 }
+
+#[test]
+fn without_trailer_keeps_exactly_the_dos_stream() {
+    let Some((g, _, _)) = new_game() else { return };
+    let bytes = to_bytes(&g, "TRAILER TEST").expect("save");
+    let dos = without_trailer(&bytes);
+    // The remake appends trailer + u32 length + "DM2R"; the original reads
+    // only what comes before it.
+    assert!(dos.len() < bytes.len());
+    assert_eq!(&bytes[bytes.len() - 4..], TRAILER_MAGIC);
+    let len = u32::from_le_bytes(bytes[bytes.len() - 8..bytes.len() - 4].try_into().unwrap()) as usize;
+    assert_eq!(dos.len(), bytes.len() - 8 - len);
+    assert_eq!(&bytes[dos.len()..dos.len() + 4], TRAILER_MAGIC);
+    // A stream without a trailer is returned unchanged.
+    assert_eq!(without_trailer(dos).len(), dos.len());
+}

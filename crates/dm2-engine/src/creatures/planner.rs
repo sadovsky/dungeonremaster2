@@ -112,8 +112,10 @@ pub fn satisfies_on(g: &mut GameState, s: &Searcher, goal: &Goal, map: usize, x:
         // Two squares from the party.
         4 => party_map && to_party == 2,
         // Flee: a square farther from the party than where we stand (the
-        // original keeps the farthest square found; tentative).
-        5 => party_map && to_party > start_dist + 1,
+        // original keeps the farthest square found; tentative). With a
+        // positive argument a square is first let through only one time in
+        // eight by the planner's shift register (0x32A7D).
+        5 => (goal.arg <= 0 || lfsr_gate(g)) && party_map && to_party > start_dist + 1,
         // A way to reach the party from here (0x2C404 with move flags 1 for
         // kind 6 and 0 for kind 7; both evaluate alike when not committing).
         // The original runs the test with the party's map selected, whatever
@@ -133,8 +135,22 @@ pub fn satisfies_on(g: &mut GameState, s: &Searcher, goal: &Goal, map: usize, x:
         0x12 => creature_at(g, map, x, y, s.group).is_some_and(|c| {
             goal.mode == 0xFFFF || g.dungeon.record(c).is_some_and(|r| r[4] as u16 == goal.mode)
         }),
+        // Any square other than the start (0x32DBF). With a positive
+        // argument only one square in eight passes, chosen by the planner's
+        // shift register; with none every square passes. (When goal word
+        // +0x0C is set the original tests it as kind 0x0B instead; the
+        // remake's goals don't carry that word, which is normally unset.)
+        0x0D => distance > 0 && (goal.arg <= 0 || lfsr_gate(g)),
         _ => false,
     }
+}
+
+/// Step the planner's shift register (shift right, XOR 0xB400 when the
+/// outgoing bit was set) and report whether its low three bits are 0.
+fn lfsr_gate(g: &mut GameState) -> bool {
+    let r = g.planner_lfsr;
+    g.planner_lfsr = if r & 1 != 0 { (r >> 1) ^ 0xB400 } else { r >> 1 };
+    g.planner_lfsr & 7 == 0
 }
 
 /// Does square (x, y) on the searcher's map satisfy goal `goal`?
@@ -247,9 +263,18 @@ fn test_square(
     y: i32,
     d: u8,
     via: Option<(i32, i32)>,
+    occupied: bool,
 ) -> bool {
     for i in 0..goals.len() {
         if !pr.testable(i, d as i32) {
+            continue;
+        }
+        // A square held by the party or another group is only a target for
+        // the kinds flagged 0x20 (0x752EA: kinds 2-4, 6, 7 and 0x0A); the
+        // others are never met there. Inferred from the draw log: creature
+        // 0x109C's kind 0x0D goal (flags 0x45) never took the party's
+        // square in the original.
+        if occupied && pr.flags[i] & 0x20 == 0 {
             continue;
         }
         if satisfies_on(g, s, &goals[i], map, x, y, d, start_dist) {
@@ -281,8 +306,8 @@ pub fn search(g: &mut GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> 
     static DBG: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
     let dbg = *DBG.get_or_init(|| std::env::var("DM2_PLANDBG").ok().and_then(|v| v.parse().ok())) == Some(g.tick);
     if dbg {
-        eprintln!("PLAN tick {} searcher map {} ({},{}) group {:#x} goals {:?}", g.tick, s.map, s.x, s.y, s.group.0,
-            goals.iter().map(|gl| (gl.kind, gl.limit, gl.program)).collect::<Vec<_>>());
+        eprintln!("PLAN tick {} searcher map {} ({},{}) group {:#x} lfsr {:#06x} goals {:?}", g.tick, s.map, s.x, s.y, s.group.0,
+            g.planner_lfsr, goals.iter().map(|gl| (gl.kind, gl.limit, gl.program)).collect::<Vec<_>>());
     }
     let mut last_map = s.map;
     let inside = |g: &GameState, map: usize, x: i32, y: i32| {
@@ -301,7 +326,7 @@ pub fn search(g: &mut GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> 
         if d as i32 > pr.max_limit {
             continue;
         }
-        if test_square(g, s, goals, &mut pr, start_dist, map, x, y, d, via) {
+        if test_square(g, s, goals, &mut pr, start_dist, map, x, y, d, via, false) {
             if dbg {
                 eprintln!("PLAN   found {:?}", pr.best);
             }
@@ -332,7 +357,7 @@ pub fn search(g: &mut GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> 
             // The party's square and other groups are goals, not paths.
             let target_only = party_at(g, map, nx, ny) || creature_at(g, map, nx, ny, s.group).is_some();
             if target_only {
-                if test_square(g, s, goals, &mut pr, start_dist, map, nx, ny, d + 1, via) {
+                if test_square(g, s, goals, &mut pr, start_dist, map, nx, ny, d + 1, via, true) {
                     return pr.best;
                 }
                 continue;
@@ -494,4 +519,33 @@ fn path_to_party(g: &mut GameState, s: &Searcher, value: u16, map: usize, x: i32
         return false;
     }
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The register's step rule (0x32DBF): shift right, XOR 0xB400 when the
+    /// outgoing bit was set; a goal passes when the low three bits are 0.
+    #[test]
+    fn planner_register_follows_the_original_step_rule() {
+        let mut r: u16 = 1;
+        let mut expect = Vec::new();
+        for _ in 0..40 {
+            r = if r & 1 != 0 { (r >> 1) ^ 0xB400 } else { r >> 1 };
+            expect.push((r, r & 7 == 0));
+        }
+        let Some(dg) = std::fs::read(crate::assets::default_data_dir().join("DUNGEON.DAT"))
+            .ok()
+            .and_then(|b| dm2_formats::dungeon::Dungeon::parse(&b).ok())
+        else {
+            return;
+        };
+        let mut g = GameState::new_game(&dg);
+        assert_eq!(g.planner_lfsr, 1, "the register starts at 1");
+        for (want, pass) in expect {
+            assert_eq!(lfsr_gate(&mut g), pass);
+            assert_eq!(g.planner_lfsr, want);
+        }
+    }
 }

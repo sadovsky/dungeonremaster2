@@ -23,7 +23,7 @@ fn main() {
     let cd = Rc::new(CreatureData::load(gdat, &exe).expect("creature data"));
     // LOAD=SAVE follows the creature from a save instead of a new game.
     let mut g = match std::env::var("LOAD") {
-        Ok(path) => dm2_engine::save::read(std::path::Path::new(&path), gd, Some(cd)).expect("load"),
+        Ok(path) => load_save(std::path::Path::new(&path), gd, Some(cd)).expect("load"),
         Err(_) => GameState::new_game_full(&a.dungeon, gd, Some(cd)),
     };
     let mut last = String::new();
@@ -47,5 +47,20 @@ fn main() {
             println!("tick {tick:3}: {line}");
             last = line;
         }
+    }
+}
+
+/// Load a save as the original would (no remake trailer), unless
+/// KEEP_TRAILER=1: comparisons against the original's draw log must start
+/// from the state the original loads (docs/05, "Comparing from a save").
+fn load_save(
+    path: &std::path::Path,
+    gd: std::rc::Rc<dm2_engine::data::GameData>,
+    cd: Option<std::rc::Rc<dm2_engine::creatures::data::CreatureData>>,
+) -> Result<dm2_engine::state::GameState, dm2_engine::save::SaveError> {
+    if std::env::var_os("KEEP_TRAILER").is_some() {
+        dm2_engine::save::read(path, gd, cd)
+    } else {
+        dm2_engine::save::read_as_original(path, gd, cd)
     }
 }

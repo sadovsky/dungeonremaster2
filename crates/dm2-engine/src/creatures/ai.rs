@@ -693,18 +693,26 @@ fn opcode(g: &mut GameState, d: &CreatureData, ctx: &Ctx, row: &Row) -> Res {
     let mode: u8 = if ctx.cflags & 0x40 != 0 { 0 } else if ctx.cflags & 0x20 == 0 { 5 } else { 4 };
     match op {
         b'?' => {
+            // Step ahead (0x27F28): in progress if the move starts; when the
+            // way is blocked the original reports "done" (−2), not "failed",
+            // so the program takes its done jump (usually the next row).
             let f = facing(g, ctx.thing);
-            if move_test(g, ctx, f, mode) { Res::InProgress } else { Res::Failed }
+            if move_test(g, ctx, f, mode) { Res::InProgress } else { Res::Done }
         }
         b'@' => {
+            // Step to a side, else turn toward one (0x27F6E). The handler
+            // hands back the raw value of the move or turn routine, never
+            // the in-progress code 0xFC, so the program always takes the
+            // row's "other" jump while the queued move or turn carries on.
             let f = facing(g, ctx.thing);
             let first = if g.rng.bit() != 0 { 1 } else { 3 };
             for t in [first, 4 - first] {
                 if move_test(g, ctx, (f + t) & 3, mode) {
-                    return Res::InProgress;
+                    return Res::Failed;
                 }
             }
-            if queue_turn(g, ctx, (f + first) & 3) { Res::InProgress } else { Res::Failed }
+            queue_turn(g, ctx, (f + first) & 3);
+            Res::Failed
         }
         b'A' => {
             set_action(g, ctx, ACTION_DIE);

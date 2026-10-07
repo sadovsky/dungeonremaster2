@@ -994,6 +994,25 @@ pub fn read(path: &Path, data: Rc<GameData>, creatures: Option<Rc<CreatureData>>
     from_bytes(&std::fs::read(path)?, data, creatures)
 }
 
+/// The save stream as the original reads it: without the remake's trailer.
+/// The DOS game reads a fixed amount and keeps only the low 16 bits of the
+/// random state, so a remake save loaded this way starts from the same
+/// state the original starts from (docs/05, "Comparing from a save").
+pub fn without_trailer(bytes: &[u8]) -> &[u8] {
+    match trailer_slice(bytes) {
+        Some(t) => &bytes[..bytes.len() - 8 - t.len()],
+        None => bytes,
+    }
+}
+
+/// Load a save the way the original would, ignoring the remake's trailer.
+/// Use this whenever the remake is compared against the original from the
+/// same save file.
+pub fn read_as_original(path: &Path, data: Rc<GameData>, creatures: Option<Rc<CreatureData>>) -> Result<GameState, SaveError> {
+    let bytes = std::fs::read(path)?;
+    from_bytes(without_trailer(&bytes), data, creatures)
+}
+
 /// Load with the original fallback order (0x370D2): SKSAVEn.DAT, then
 /// SKSAVEn.BAK.
 pub fn load_slot(dir: &Path, slot: u8, data: Rc<GameData>, creatures: Option<Rc<CreatureData>>) -> Result<GameState, SaveError> {

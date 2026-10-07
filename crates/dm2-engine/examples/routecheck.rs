@@ -79,7 +79,7 @@ fn main() {
     // LOAD=SAVE starts from a save (e.g. one state_probe.py --load started
     // the original from); ticks in the route and END_TICK stay absolute.
     let mut g = match std::env::var_os("LOAD") {
-        Some(p) => dm2_engine::save::read(std::path::Path::new(&p), gd, Some(cd)).expect("load save"),
+        Some(p) => load_save(std::path::Path::new(&p), gd, Some(cd)).expect("load save"),
         None => GameState::new_game_full(&assets.dungeon, gd, Some(cd)),
     };
     let mut steps = route.into_iter().peekable();
@@ -122,5 +122,20 @@ fn main() {
             c.name(), c.health(), c.max_health(), c.stamina(), c.max_stamina(),
             c.mana(), c.max_mana(), c.food(), c.water(), c.wounds()
         );
+    }
+}
+
+/// Load a save as the original would (no remake trailer), unless
+/// KEEP_TRAILER=1: comparisons against the original's draw log must start
+/// from the state the original loads (docs/05, "Comparing from a save").
+fn load_save(
+    path: &std::path::Path,
+    gd: std::rc::Rc<dm2_engine::data::GameData>,
+    cd: Option<std::rc::Rc<dm2_engine::creatures::data::CreatureData>>,
+) -> Result<dm2_engine::state::GameState, dm2_engine::save::SaveError> {
+    if std::env::var_os("KEEP_TRAILER").is_some() {
+        dm2_engine::save::read(path, gd, cd)
+    } else {
+        dm2_engine::save::read_as_original(path, gd, cd)
     }
 }

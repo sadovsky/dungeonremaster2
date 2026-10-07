@@ -80,6 +80,10 @@ pub struct GameState {
     pub creature_data: Option<std::rc::Rc<crate::creatures::data::CreatureData>>,
     /// Map whose creatures were last activated for the party.
     pub creature_map_seen: Option<usize>,
+    /// The planner's private 16-bit shift register (0x752E8): starts at 1,
+    /// is never saved, and gates goal kinds 5 and 0x0D one time in eight
+    /// (docs/08). It is separate from the game's random generator.
+    pub planner_lfsr: u16,
     /// Set by a load: the next tick first runs the per-map creature pass
     /// (0x34236), as the original does when play resumes.
     pub play_start_pending: bool,
@@ -134,6 +138,7 @@ impl GameState {
             creature_slots: Vec::new(),
             creature_data: None,
             creature_map_seen: None,
+            planner_lfsr: 1,
             play_start_pending: false,
             creature_ctx_rolled: false,
             creature_class_loaded: false,

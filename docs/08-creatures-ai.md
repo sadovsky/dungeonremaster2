@@ -368,8 +368,8 @@ Opcodes (dispatch at 0x27CD2, index = letter − 0x3F):
 
 | Letter | Handler | Behaviour |
 |--------|---------|-----------|
-| `?` | 0x27F28 | Try to step forward (movement test with the current facing) |
-| `@` | 0x27F6E | Try turning left or right at random, then the other way; otherwise turn |
+| `?` | 0x27F28 | Step forward (movement test with the current facing). In progress (−4) if the move starts; when the way is blocked the result is −2 (done), not −3, so the program takes its done jump |
+| `@` | 0x27F6E | A random bit picks a side (+1 or −1): try stepping that way, then the other way, otherwise queue a quarter turn toward the first side (0x2C005). The handler returns the move or turn routine's raw value, never −4, so the program always takes the row's other jump while the move or turn carries on |
 | `A` | inline | Queue action 0x13 |
 | `B` | 0x28017 | Approach or interact with the target square (0x2EA68); with argument 4, first check possessions through 0x2FF1E |
 | `C` | inline | Clear the action (0) |
@@ -825,3 +825,23 @@ also commits an attack action to the slot; that half is not ported yet.
 - What the AI class flag bits mean beyond 0x01, 0x08, 0x10, 0x20, 0x40,
   0x80 and 0x410.
 - What the frame events in 0x2B75E do.
+
+### Planner details checked in round 10
+
+- **Shift register (0x752E8).** A private 16-bit register, separate from
+  the game's random generator, starting at 1 and never saved. One step is
+  shift right, XOR 0xB400 when the outgoing bit was set. Goal kinds 5 and
+  0x0D with a positive argument step it once per candidate square and let
+  the square through only when its low three bits are 0 (one time in
+  eight). Kind 0x0D otherwise matches any square at distance 1 or more;
+  kind 5 then applies its flee test. When goal word +0x0C is set, both
+  kinds are tested as kind 0x0B instead (the remake's goals do not carry
+  that word, which is normally unset).
+- **Search order.** The search setup (0x321B8) also steps the register,
+  taking a sign (+1 or −1) from its low bit and a starting direction from
+  its low two bits, which set the order in which a square's neighbours are
+  visited. Not ported: the remake still visits directions 0-3 in order.
+- **Occupied squares.** Squares held by the party or another group are
+  tested only for the kinds whose 0x752EA flags include 0x20 (kinds 2-4, 6,
+  7 and 0x0A). Inferred from the draw log, where a kind 0x0D goal (flags
+  0x45) never took the party's square.
