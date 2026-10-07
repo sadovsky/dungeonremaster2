@@ -84,9 +84,11 @@ Tests that need the original data skip themselves when it is absent.
 
 All of the game's systems are implemented; remaining approximations are
 listed in each doc's open-questions or implementation-status section.
-Still to be confirmed against the original game: the real-time tick
-length, compatibility with save files written by the DOS game, and the
-music driver's exact voice allocation and volume curve.
+Checked against the original running in DOSBox: the tick length
+(133 ms), save files in both directions (DOS saves load in the remake and
+remake saves load in the original), and pixel-exact title, start,
+inventory, action-menu, paused and eye-panel screens. Still to be
+confirmed: the music driver's exact voice allocation and volume curve.
 
 ## License
 
