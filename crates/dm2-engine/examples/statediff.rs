@@ -54,10 +54,17 @@ fn main() {
         }
     }
     // Pending events as a multiset (record numbers can legitimately differ).
+    // The weather event's bytes 6-11 are left as stack leftovers by its
+    // scheduler (0x59F12 writes only the tick, type and priority) and nothing
+    // reads them, so they are not compared.
     let events = |g: &GameState| {
         let mut m: BTreeMap<[u8; 12], u32> = BTreeMap::new();
         for (_, e) in g.timeline.iter() {
-            *m.entry(e.to_bytes()).or_default() += 1;
+            let mut b = e.to_bytes();
+            if b[4] == dm2_engine::weather::EV_WEATHER {
+                b[6..12].fill(0);
+            }
+            *m.entry(b).or_default() += 1;
         }
         m
     };

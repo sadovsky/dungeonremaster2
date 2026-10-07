@@ -130,6 +130,120 @@ pub fn container_contents(g: &GameState, cont: ThingRef) -> Vec<ThingRef> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// Reloading a hand when its action ends (0x40B09)
+
+/// Shooting (command 0x20) and throw-type actions (command 0x2A).
+const CMD_SHOOT: u8 = 0x20;
+const CMD_THROW: u8 = 0x2A;
+
+/// The original's reload when a hand's action ends (0x40B09, inside
+/// 0x40AA6). After shooting with the other hand empty, that hand is refilled
+/// with ammunition the launcher in `hand` accepts (0x408A8); after action
+/// 0x2A with `hand` itself empty, `hand` is refilled with an item offering
+/// the same command (0x40930), and failing that with whatever is in slot 12.
+/// The search order is the item in slot 12, then that item's contents if it
+/// is a container, then slots 7-9; the first match moves into the hand.
+pub(crate) fn reload_after_action(g: &mut GameState, champion: usize, hand: usize, action: u8) {
+    if champion >= g.champions.len() || hand > 1 {
+        return;
+    }
+    let target = match action {
+        CMD_SHOOT => hand ^ 1,
+        CMD_THROW => hand,
+        _ => return,
+    };
+    if g.champions[champion].inventory(target) != EMPTY {
+        return;
+    }
+    let fits = |g: &GameState, t: u16| match action {
+        CMD_SHOOT => ammo_fits(g, champion, hand, t),
+        _ => offers_command(g, t, CMD_THROW),
+    };
+    let found = find_reload(g, champion, &fits);
+    let item = match found {
+        Some(f) => Some(take_reload(g, champion, f)),
+        // 0x40D14: after action 0x2A the slot 12 item is used regardless.
+        None if action == CMD_THROW && g.champions[champion].inventory(12) != EMPTY => {
+            Some(take_reload(g, champion, Reload::Slot(12)))
+        }
+        None => None,
+    };
+    if let Some(t) = item {
+        g.champions[champion].set_inventory(target, t);
+        crate::party::refresh_load(g, champion);
+    }
+}
+
+/// Where a reload item was found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Reload {
+    Slot(usize),
+    InContainer(ThingRef, ThingRef),
+}
+
+fn find_reload(g: &GameState, champion: usize, fits: &dyn Fn(&GameState, u16) -> bool) -> Option<Reload> {
+    let c = &g.champions[champion];
+    let s12 = c.inventory(12);
+    if fits(g, s12) {
+        return Some(Reload::Slot(12));
+    }
+    if s12 != EMPTY && ThingRef(s12).kind() == ThingType::Container {
+        let cont = ThingRef(s12);
+        if let Some(&t) = container_contents(g, cont).iter().find(|t| fits(g, t.0)) {
+            return Some(Reload::InContainer(cont, t));
+        }
+    }
+    (7..10).find(|&s| fits(g, c.inventory(s))).map(Reload::Slot)
+}
+
+/// Remove the found item from its slot or container and return it.
+fn take_reload(g: &mut GameState, champion: usize, at: Reload) -> u16 {
+    match at {
+        Reload::Slot(s) => {
+            let t = g.champions[champion].inventory(s);
+            g.champions[champion].set_inventory(s, EMPTY);
+            t
+        }
+        Reload::InContainer(cont, t) => {
+            let rest: Vec<ThingRef> = container_contents(g, cont).into_iter().filter(|&x| x.0 & 0x3FFF != t.0 & 0x3FFF).collect();
+            set_container_contents(g, cont, &rest);
+            g.dungeon.set_record_word(t, 0, ThingRef::END.0);
+            t.0 & 0x3FFF
+        }
+    }
+}
+
+/// 0x408A8: `t` is ammunition for the launcher held in `hand`. The launcher's
+/// attribute 5 has bit 15 set, the item's has it clear, and the item's
+/// class bits (0-14) share a bit with the launcher's value.
+fn ammo_fits(g: &GameState, champion: usize, hand: usize, t: u16) -> bool {
+    let launcher = g.champions[champion].inventory(hand);
+    if t == EMPTY || launcher == EMPTY {
+        return false;
+    }
+    let Some(data) = g.data.as_ref() else { return false };
+    let db = data.item_db(&g.dungeon);
+    let la = db.attr(ThingRef(launcher), 5);
+    let aa = db.attr(ThingRef(t), 5);
+    la & 0x8000 != 0 && aa & 0x8000 == 0 && aa & 0x7FFF & la != 0
+}
+
+/// 0x40930: one of `t`'s actions has command `cmd`. The original builds the
+/// item's action menu (0x3F9F5, no particular hand) and compares each entry's
+/// CM code; this checks the item's action strings for the command without
+/// the menu's hand, skill and charge filters.
+fn offers_command(g: &GameState, t: u16, cmd: u8) -> bool {
+    if t == EMPTY {
+        return false;
+    }
+    let (Some(data), Some((cat, idx))) = (g.data.as_ref(), item_key(g, ThingRef(t))) else { return false };
+    (0..4u8).any(|n| {
+        combat::action_spec(&data.gdat, &data.tables, cat, idx, n)
+            .is_some_and(|a| !a.name.is_empty() && a.codes.get(2).copied().unwrap_or(0) == cmd as i16)
+    })
+}
+
 fn set_container_contents(g: &mut GameState, cont: ThingRef, items: &[ThingRef]) {
     let mut next = ThingRef::END.0;
     for &t in items.iter().rev() {

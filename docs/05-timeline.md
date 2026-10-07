@@ -601,9 +601,43 @@ the field-by-field combat comparison is still open.
   the remake while the original clears it, although that creature makes no
   random draws in either run; two square bytes (map data 1954 and 6891); and
   the leftover stack bytes of the weather event, which nothing reads.
-- **Not ported:** the reload that ends actions 0x20 and 0x2A (0x40B09), and
-  the per-square sound position quirk of 0x5964E (it indexes the direction
-  tables with the event's byte 9).
+- **Not ported:** the per-square sound position quirk of 0x5964E (it
+  indexes the direction tables with the event's byte 9). The reload that
+  ends actions 0x20 and 0x2A (0x40B09) was ported in round 18.
+
+**Round 18 (c5 save, no new DOSBox runs).** Field by field at c5's save the
+remake now differs from the original in two places, down from four:
+
+- **Weather event bytes: excluded from the comparison.** 0x59F12 builds the
+  event on the stack and writes only the due tick, the type and priority 0,
+  so bytes 6-11 are whatever the caller's stack held (x 25 and byte 8 going
+  from 2 to 8 over this run). Nothing reads them, so `examples/statediff`
+  no longer compares them for event 0x54, and the remake doesn't try to
+  reproduce stack contents.
+- **Action-end reload (0x40B09): ported** (docs/06). None of the comparison
+  runs shoots or throws, and their draw streams are unchanged.
+- **Creature record 155 (thing 0x109B), still open.** It is a dormant group
+  on map 22 at (1,6), two squares from the party. The start save holds 0x9001
+  in its status word and the remake keeps it all run; the original's save at
+  352 has 0x8001. Ruled out: the save masks (the dormant-type mask at 0x7548B
+  keeps the whole word), the play-start merge at 0x341A6 (with old 0x9001 and
+  0x14E42's new value `count | 0x9000` it gives 0x9001 in both games), the
+  party's blow at 191 (it misses, so the damage step 0x31348, guarded by
+  owed > 0 at 0x258DB, never sends the home-square signal), and the
+  missile self-damage call at 0x2A97E (it draws a bit, and the draw streams
+  match). 0x8001 is exactly what the woken group's first cycle step (0x25204)
+  writes for a one-frame sequence, and the type 0x28 area trap at (3,3)
+  (data 2, filter 0, reaching three squares each way) covers (1,6) and wakes
+  a dormant group with no draws. What fires it during c5 is unknown; c5's
+  log predates the timeline lines, so a hooked run with timeline logging is
+  needed.
+- **Map bytes 1954 and 6891, still open.** 1954 is map 5's teleporter at
+  (7,17) and 6891 is map 23's pit at (12,10). In the original both gain bit 3
+  (teleporter on, pit open) during the run; in the remake neither changes.
+  Each square holds a creature at the save (0x102D since the start save,
+  0x10A1 arriving during the run in both games). No actuator on either map
+  targets these squares, and the creature movement test (0x2D792-0x2E700)
+  never sets a square's bit 3, so the writer is elsewhere and untraced.
 
 
 **Combat probe (round 7).** With the party moved next to the awake

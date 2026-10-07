@@ -894,13 +894,22 @@ pub fn add_busy(c: &mut Champion, hand: i16, busy: u16, haste: bool) {
 /// the hand's action byte (+0x20) returns to 0xFF and its defence bonus
 /// (+0x42) to 0.
 pub fn count_down_busy(g: &mut GameState) {
-    for c in g.champions.iter_mut() {
-        count_down_hands(c);
+    let mut finished = Vec::new();
+    for (ci, c) in g.champions.iter_mut().enumerate() {
+        for (hand, action) in count_down_hands(c) {
+            finished.push((ci, hand, action));
+        }
+    }
+    // Finishing a shot or a throw-type action reloads a hand (0x40B09).
+    for (ci, hand, action) in finished {
+        crate::hand::reload_after_action(g, ci, hand, action);
     }
 }
 
-/// One champion's part of `count_down_busy`.
-pub fn count_down_hands(c: &mut Champion) {
+/// One champion's part of `count_down_busy`. Returns the hands whose
+/// action finished this tick, with the action that ended.
+pub fn count_down_hands(c: &mut Champion) -> Vec<(usize, u8)> {
+    let mut finished = Vec::new();
     for h in 0..3 {
         let b = c.raw[0x2A + h];
         if b == 0 {
@@ -908,12 +917,12 @@ pub fn count_down_hands(c: &mut Champion) {
         }
         c.raw[0x2A + h] = b - 1;
         if b == 1 && c.is_alive() && h < 2 {
-            // TODO(0x40B09): finishing actions 0x20 and 0x2A also reloads
-            // the hand from the quiver or a container.
+            finished.push((h, c.raw[0x20 + h]));
             c.raw[0x20 + h] = 0xFF;
             c.raw[0x42 + h] = 0;
         }
     }
+    finished
 }
 
 pub fn tick(g: &mut GameState) {
