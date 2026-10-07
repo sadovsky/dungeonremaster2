@@ -226,7 +226,10 @@ impl Voice {
     /// Scale output level: `level` 0..=1 raises the total level of the
     /// audible operators the way AdLib drivers do (TL' = 63 − (63 − TL)·level).
     pub fn set_level(&mut self, level: f64) {
-        let scale = |tl: u8| (63.0 - (63.0 - tl as f64) * level.clamp(0.0, 1.0)).round() as u8;
+        // Amplitude-proportional: a level of L adds -20*log10(L) dB of
+        // attenuation, in total-level steps of 0.75 dB.
+        let extra = if level <= 0.0 { 63.0 } else { (-20.0 * level.min(1.0).log10() / 0.75).round() };
+        let scale = |tl: u8| (tl as f64 + extra).min(63.0) as u8;
         self.c.tl = scale(self.patch.carrier.total_level);
         self.m.tl = if self.patch.additive() { scale(self.patch.modulator.total_level) } else { self.patch.modulator.total_level };
     }

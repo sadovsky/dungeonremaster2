@@ -243,6 +243,10 @@ pub fn eat_held(g: &mut GameState) -> bool {
     } else {
         return false;
     }
+    // Eating and drinking play (9, 0x5B, 0xFB) at volume 200 on the
+    // interface queue (mode 0), as the original's eat routine does.
+    let p = g.party;
+    g.effects.push(crate::effects::Effect::SoundAt { cat: 9, idx: 0x5B, sub: 0xFB, map: p.map, x: p.x, y: p.y, vol: 200, mode: 0 });
     refresh_load(g, idx);
     true
 }
