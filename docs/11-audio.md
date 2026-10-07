@@ -77,8 +77,13 @@ The driver turns a queued request into a voice (0x10877):
 - volume out of 255 = (volume × 256 / (right² + forward² + 8)) / 32, so a
   sound at the party's square plays at its volume byte and falls off with
   the square of the distance (one third at 4 squares, one ninth at 8);
-- the pan comes from a 16-step table indexed by the angle of the offsets
-  (not ported; the remake uses a simple proportional pan);
+- the pan word (0x8000 = centre) comes from two tables: a sound straight
+  ahead or behind is centred and one exactly to the side takes the end
+  entries; otherwise r = (|right| << 11) / |forward| is compared against
+  eight descending thresholds (0x704DE, the last 0) and the first one not
+  above r gives index *i*, which picks entry *i* of the sixteen-word pan
+  table (0x704EE) for sounds to the left and entry 15 − *i* for the right.
+  The remake reads both tables from the user's SKULL.EXE;
 - when voices run short, higher priority (the play function's fourth
   argument) and then louder voices win (0x1084D).
 
@@ -307,8 +312,9 @@ disables it. `cargo run --release -p dm2-engine --example songwav -- N`
 renders song N to `re/audio/` for listening checks.
 
 Not from the original (tentative):
-- **Voice allocation, volume curve and pan:** HMI's driver isn't reversed.
-  Pan routes a voice left, right or to both sides, as OPL3 does.
+- **Voice allocation and volume curve:** HMI's driver isn't reversed. The
+  FM volume curve is fitted to the recordings (see "Mixer levels").
+  Music pan routes a voice left, right or to both sides, as OPL3 does.
 - **Drum pitch:** channel 9 plays DRUM.BNK patch *note* at that note's pitch.
 - **Loop controllers:** 110/111 are treated as loop start/end, with the
   110 value as a repeat count (0 or 127 means forever). Finished songs restart.
@@ -322,17 +328,74 @@ Not from the original (tentative):
   per-map registration, the sound-distance grid with path stretching, the
   driver's distance attenuation and the halved volume while asleep.
   `Effect::SoundAt` carries the original's volume and mode where they
-  differ from 200 and 1. Not modelled: the pan table (a proportional pan
-  is used), the seam map 0x7F278, voice priority, and the no-rain random
-  draw in the thunder delay.
-- **Effects against music:** against the recordings of the original, the
-  remake's music-only segments (cave, inventory) are about 9 dB quieter,
-  while the outdoor segment, where creature sounds dominate, is about
-  16 dB louder (down from 23 dB once unreachable and unregistered sounds
-  were dropped). The sounds that remain there would play in the original
-  too, at the same relative gains, so what is left is the balance between
-  the digital and FM paths: the remake's effects sit roughly 20–25 dB too
-  high relative to its music. The original's mixer levels for the two
-  paths are not traced.
+  differ from 200 and 1. The pan table is ported. Not modelled: the seam
+  map 0x7F278, voice priority, and the no-rain random draw in the thunder
+  delay.
+- **Mixer levels:** see "Mixer levels" below.
 - **Live check:** `DM2_AUDIO_DUMP=path.wav` writes everything the live
   game plays to a WAV file.
+
+## Mixer levels
+
+**Traced (code):**
+- **Options levels** (0x10736): the volume control holds a level 0-7 per
+  path. Digital: level *l* becomes the 15-bit master volume
+  `l<<12 | l<<9 | l<<6 | l<<3 | l` (0x7FFF at 7), handed to the HMI digital
+  driver. Music: level *l* becomes the MIDI master byte `l*2 | l<<4`
+  (90 at 5, 126 at 7); level 0 stops the music and raising it restarts the
+  last song.
+- **Defaults:** digital level 7 (the high word of 0x7169A, applied when the
+  digital driver starts) and music level 5 (set at 0x1041D), so effects
+  play at full scale and music at master 90.
+- **Song start:** each song starts at song volume 0x7F (0x62012); the fade
+  then lowers that volume one step per tick (see "Music update").
+- **Request volume:** the driver turns a request's volume byte into a
+  0-255 voice volume with the distance law above; the remake plays samples
+  at voice volume / 255 times the digital master.
+
+**Fitted to the original's recordings (DOSBox, SB16 + OPL3):**
+- **FM loudness law:** a note's amplitude goes as
+  `(velocity / 127)^1.0 x (volume x expression / 127^2)^1.4`, applied as
+  extra operator attenuation of −20 log10(amplitude) in 0.75 dB total-level
+  steps. The previous linear total-level scaling crushed softly played
+  songs: map 0's song (lead channel velocity about 66) came out 9 dB too
+  quiet while a louder song matched.
+- **Fade law:** during a fade the song volume scales amplitude as
+  `(volume / 127)^2.5`, which reproduces the original's 8 dB drop over the
+  first six seconds of the stairs segment.
+- **Overall music level:** scaled so map 0's song matches the original
+  (cave and inventory segments within 0.5 dB). A different options level
+  scales music relative to level 5 with the same exponent as the fade;
+  this is an assumption.
+- **Voice count:** limiting the synth to 9 voices made no measurable
+  difference, so 18 are kept.
+
+**Comparison** (remake replay against the original's recordings, RMS over
+the windows where the original has signal; before = linear total-level
+curve, linear fade, effects at 0.8):
+
+| Segment | Before | After |
+|---|---|---|
+| cave (map 0) | −9.2 dB | +0.4 dB |
+| inventory (map 0) | −9.4 dB | +0.3 dB |
+| door (map 2) | −16.4 dB | +3.1 dB |
+| stairs (map 8) | −0.6 dB | +4.9 dB |
+| outdoor (map 1) | +15.8 dB | +17.7 dB |
+
+**Open:**
+- **No effects in the recordings:** none of the five DOSBox recordings
+  contains a sound-effect transient (the routes include walking, turning,
+  a door, stairs and a creature in view), so the original's digital output
+  apparently did not reach them, most likely because the digital path did
+  not start under that DOSBox configuration. The effects level therefore
+  comes from the traced driver levels (unity at level 7), not from the
+  recordings, and the outdoor segment, where creature sounds dominate the
+  remake, cannot be compared until the original is recorded with working
+  digital sound.
+- **Stairs offset:** before its fade the stairs segment stays about 4.7 dB
+  louder than the original under every curve tried and with 9 or 18
+  voices, so it is not the loudness law. Candidates: the music state the
+  original restores after loading a save, or song 15's patches.
+- **Assumed, not verified:** that DOSBox mixes the SB digital and OPL
+  outputs at equal level (so digital full scale equals the calibrated FM
+  scale), and that HMI's digital master volume scales samples linearly.

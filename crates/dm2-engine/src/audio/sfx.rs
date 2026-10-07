@@ -199,8 +199,47 @@ pub fn attenuate(vol: u8, right: i32, forward: i32) -> f32 {
     out.min(255) as f32 / 255.0
 }
 
-/// Pan (-1 left .. 1 right) for a relative position. Tentative curve.
-pub fn pan(right: i32, forward: i32) -> f32 {
+/// The original's pan tables (0x10877), read from the user's SKULL.EXE: eight
+/// descending thresholds for (|right| << 11) / |forward| (0x704DE) and
+/// sixteen pan words from left to right (0x704EE), 0x8000 being centre.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PanTable {
+    pub thresholds: [u16; 8],
+    pub pans: [u16; 16],
+}
+
+impl PanTable {
+    pub fn from_exe(exe: &crate::exe::Exe) -> Option<PanTable> {
+        let mut t = PanTable { thresholds: [0; 8], pans: [0; 16] };
+        for (i, v) in t.thresholds.iter_mut().enumerate() {
+            *v = exe.u16_at(0x704DE + 2 * i as u32)?;
+        }
+        for (i, v) in t.pans.iter_mut().enumerate() {
+            *v = exe.u16_at(0x704EE + 2 * i as u32)?;
+        }
+        Some(t)
+    }
+
+    /// Pan word for a sound `right` squares to the side and `forward` ahead.
+    pub fn word(&self, right: i32, forward: i32) -> u16 {
+        if right == 0 {
+            return 0x8000;
+        }
+        if forward == 0 {
+            return if right < 0 { self.pans[0] } else { self.pans[15] };
+        }
+        let ratio = ((right.unsigned_abs() << 11) / forward.unsigned_abs()) as u16;
+        let i = self.thresholds.iter().position(|&t| t <= ratio).unwrap_or(7);
+        if right < 0 { self.pans[i] } else { self.pans[15 - i] }
+    }
+}
+
+/// Pan (-1 left .. 1 right) for a relative position: the original's table
+/// when available, otherwise a proportional curve.
+pub fn pan(table: Option<&PanTable>, right: i32, forward: i32) -> f32 {
+    if let Some(t) = table {
+        return (t.word(right, forward) as f32 - 32768.0) / 32768.0;
+    }
     if right == 0 {
         return 0.0;
     }
@@ -219,11 +258,13 @@ pub struct Sfx {
     playing: Vec<Playing>,
     has_header: bool,
     pub volume: f32,
+    /// The original's pan table, if SKULL.EXE was available.
+    pub pan_table: Option<PanTable>,
 }
 
 impl Sfx {
     pub fn new(has_header: bool) -> Sfx {
-        Sfx { cache: HashMap::new(), playing: Vec::new(), has_header, volume: 0.8 }
+        Sfx { cache: HashMap::new(), playing: Vec::new(), has_header, volume: 1.0, pan_table: None }
     }
 
     fn sample(&mut self, g: &Gdat, cat: u8, idx: u8, sub: u8) -> Option<Arc<Sample>> {
@@ -267,7 +308,7 @@ impl Sfx {
                 self.playing.remove(0);
             }
             let gain = attenuate(vol, right, forward) * self.volume;
-            let p = pan(right, forward);
+            let p = pan(self.pan_table.as_ref(), right, forward);
             self.playing.push(Playing {
                 sample,
                 pos: 0.0,
@@ -308,6 +349,36 @@ impl Sfx {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn table() -> PanTable {
+        // Synthetic values in the original's shape: descending thresholds
+        // ending at 0, pan words from left to right.
+        PanTable { thresholds: [800, 400, 200, 100, 50, 20, 10, 0], pans: std::array::from_fn(|i| 0x0400 + 0x1000 * i as u16) }
+    }
+
+    #[test]
+    fn pan_table_follows_the_original_rules() {
+        let t = table();
+        assert_eq!(t.word(0, 3), 0x8000, "straight ahead is centred");
+        assert_eq!(t.word(-2, 0), t.pans[0], "directly left");
+        assert_eq!(t.word(2, 0), t.pans[15], "directly right");
+        // (1 << 11) / 4 = 512 >= 400 -> index 1; left uses pans[1], right pans[14].
+        assert_eq!(t.word(-1, 4), t.pans[1]);
+        assert_eq!(t.word(1, 4), t.pans[14]);
+        // A far, nearly centred sound only passes the last threshold.
+        assert_eq!(t.word(1, 255), t.pans[8]);
+        assert!(pan(Some(&t), -1, 4) < 0.0 && pan(Some(&t), 1, 4) > 0.0);
+        assert_eq!(pan(Some(&t), 0, 2), 0.0);
+    }
+
+    #[test]
+    fn pan_table_loads_from_the_executable() {
+        let Some(exe) = crate::exe::Exe::open(&crate::exe_tables::default_exe_path()) else { return };
+        let t = PanTable::from_exe(&exe).expect("pan tables");
+        assert!(t.thresholds.windows(2).all(|w| w[0] > w[1]) && t.thresholds[7] == 0);
+        assert!(t.pans.windows(2).all(|w| w[0] < w[1]));
+        assert!(t.pans[7] < 0x8000 && t.pans[8] > 0x8000, "centre lies between the two middle entries");
+    }
 
     #[test]
     fn decodes_unsigned_pcm() {

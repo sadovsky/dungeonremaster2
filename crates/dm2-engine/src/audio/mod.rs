@@ -28,8 +28,27 @@ use music::{Sequencer, SongList, FADE_START};
 use registry::Registry;
 use sfx::{Sfx, SoundRequest};
 
-/// Music is mixed below the effects; 18 FM voices can sum well above 1.
+/// FM output scale at the default music level, calibrated so map 0's song
+/// matches the original's level in DOSBox (docs/11, "Mixer levels").
 const MUSIC_GAIN: f32 = 0.18;
+/// Loudness exponent of the song volume during a fade (amplitude goes as
+/// (volume / 127)^FADE_EXP); fitted to the original's stairs fade.
+pub const FADE_EXP: f32 = 2.5;
+/// Default options levels (0-7): music 5 and digital 7 at startup (0x103D7, 0x1169A).
+pub const DEFAULT_MUSIC_LEVEL: u8 = 5;
+pub const DEFAULT_DIGITAL_LEVEL: u8 = 7;
+
+/// MIDI master volume byte for an options music level (0x10736): l*2 | l<<4.
+pub fn midi_master(level: u8) -> u8 {
+    let l = level.min(7);
+    l * 2 | l << 4
+}
+
+/// Digital master volume (0-0x7FFF) for an options level (0x10736).
+pub fn digital_master(level: u8) -> u16 {
+    let l = level.min(7) as u16;
+    l << 12 | l << 9 | l << 6 | l << 3 | l
+}
 
 pub struct Audio {
     sample_rate: u32,
@@ -52,6 +71,9 @@ pub struct Audio {
     registry: Option<(Registry, Vec<u8>)>,
     pub music_volume: f32,
     pub sfx_volume: f32,
+    /// Options volume levels 0-7 (music 0 stops the music).
+    pub music_level: u8,
+    pub digital_level: u8,
 }
 
 #[derive(Debug)]
@@ -84,7 +106,11 @@ impl Audio {
         let (melodic, drums) = (bank("MELODIC.BNK")?, bank("DRUM.BNK")?);
         // Archive flag 0x20: samples carry the 6-byte header (docs/11).
         let has_header = gdat.lookup(Key::new(0, 0, 11, 0)).unwrap_or(0) & 0x20 != 0;
-        Ok(Audio::from_parts(gdat, songlist, melodic, drums, has_header, sample_rate))
+        let mut audio = Audio::from_parts(gdat, songlist, melodic, drums, has_header, sample_rate);
+        // The pan table lives in the executable; without it a proportional pan is used.
+        audio.sfx.pan_table =
+            crate::exe::Exe::open(&data_dir.join("../SKULL.EXE")).and_then(|e| sfx::PanTable::from_exe(&e));
+        Ok(audio)
     }
 
     pub fn from_parts(gdat: Gdat, songlist: SongList, melodic: Bank, drums: Bank, has_header: bool, sample_rate: u32) -> Audio {
@@ -102,6 +128,8 @@ impl Audio {
             registry: None,
             music_volume: 1.0,
             sfx_volume: 1.0,
+            music_level: DEFAULT_MUSIC_LEVEL,
+            digital_level: DEFAULT_DIGITAL_LEVEL,
         }
     }
 
@@ -205,9 +233,12 @@ impl Audio {
         out.fill(0.0);
         let sr = self.sample_rate as f64;
         if self.current.is_some() {
-            let mut gain = MUSIC_GAIN * self.music_volume;
+            // The options level scales like the song volume, relative to the
+            // calibrated default.
+            let master = midi_master(self.music_level) as f32 / midi_master(DEFAULT_MUSIC_LEVEL) as f32;
+            let mut gain = MUSIC_GAIN * master.powf(FADE_EXP) * self.music_volume;
             if self.fade >= 2 {
-                gain *= self.fade as f32 / 127.0;
+                gain *= (self.fade as f32 / 127.0).powf(FADE_EXP);
             }
             for frame in out.chunks_exact_mut(2) {
                 let Some((_, seq)) = self.current.as_mut() else { break };
@@ -217,7 +248,8 @@ impl Audio {
                 frame[1] = r as f32 * gain;
             }
         }
-        self.sfx.volume = 0.8 * self.sfx_volume;
+        // Samples play at the digital master volume (0x7FFF = full scale).
+        self.sfx.volume = digital_master(self.digital_level) as f32 / 32767.0 * self.sfx_volume;
         self.sfx.mix(out, self.sample_rate);
         for s in out.iter_mut() {
             *s = s.clamp(-1.0, 1.0);
@@ -228,6 +260,17 @@ impl Audio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn options_levels_map_to_driver_volumes() {
+        assert_eq!(midi_master(0), 0);
+        assert_eq!(midi_master(DEFAULT_MUSIC_LEVEL), 90);
+        assert_eq!(midi_master(7), 126);
+        assert_eq!(midi_master(9), 126, "levels clamp to 7");
+        assert_eq!(digital_master(DEFAULT_DIGITAL_LEVEL), 0x7FFF);
+        assert_eq!(digital_master(0), 0);
+        assert_eq!(digital_master(4), 4 << 12 | 4 << 9 | 4 << 6 | 4 << 3 | 4);
+    }
 
     fn real(sr: u32) -> Option<Audio> {
         Audio::load(&crate::assets::default_data_dir(), sr).ok()

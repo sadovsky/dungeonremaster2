@@ -172,3 +172,26 @@ fn throw_stamina_cost_follows_weight() {
     // h = 60: 10 + 25 + 20 + 15 + 10 + 5 = 85.
     assert_eq!(c(120), 85);
 }
+
+#[test]
+fn eating_plays_the_eating_sound() {
+    let Some(mut g) = game() else { return };
+    let data = g.data.clone().unwrap();
+    // Some misc item with a food value (misc item numbers are 256-383).
+    let food = (256..384u16).find_map(|n| {
+        let t = crate::actuators::create_item(&mut g, n)?;
+        if data.item_db(&g.dungeon).attr(t, crate::items::ATTR_FOOD) > 0 {
+            Some(t)
+        } else {
+            g.dungeon.free_thing(t);
+            None
+        }
+    });
+    let Some(t) = food else { return };
+    g.hand.held = t.0 & 0x3FFF;
+    g.hand.inventory_open = Some(0);
+    g.effects.clear();
+    assert!(eat_held(&mut g));
+    assert!(g.effects.iter().any(|e| matches!(e,
+        crate::effects::Effect::SoundAt { cat: 9, idx: 0x5B, sub: 0xFB, vol: 200, mode: 0, .. })));
+}

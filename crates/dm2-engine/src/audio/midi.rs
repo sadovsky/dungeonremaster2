@@ -12,6 +12,9 @@ use super::hmp::Msg;
 use super::opl::{Lfo, LfoGen, Voice};
 
 pub const VOICES: usize = 18;
+/// Loudness exponents for note velocity and channel volume x expression.
+pub const VEL_EXP: f64 = 1.0;
+pub const VOL_EXP: f64 = 1.4;
 pub const DRUM_CHANNEL: u8 = 9;
 
 #[derive(Clone, Copy, Debug)]
@@ -86,7 +89,9 @@ impl Driver {
 
     fn level(&self, ch: u8, vel: u8) -> f64 {
         let c = &self.channels[ch as usize];
-        (vel as f64 / 127.0) * (c.volume as f64 / 127.0) * (c.expression as f64 / 127.0)
+        // Amplitude = velocity^VEL_EXP * (volume * expression)^VOL_EXP,
+        // fitted to the original's recordings (docs/11, "Mixer levels").
+        (vel as f64 / 127.0).powf(VEL_EXP) * ((c.volume as f64 / 127.0) * (c.expression as f64 / 127.0)).powf(VOL_EXP)
     }
 
     fn pitch(&self, ch: u8, note: u8) -> f64 {
@@ -99,8 +104,8 @@ impl Driver {
         if let Some(i) = free {
             return i;
         }
-        let released = (0..VOICES).filter(|&i| !self.slots[i].on && !self.slots[i].held).min_by_key(|&i| self.slots[i].age);
-        released.unwrap_or_else(|| (0..VOICES).min_by_key(|&i| self.slots[i].age).unwrap())
+        let released = (0..self.slots.len()).filter(|&i| !self.slots[i].on && !self.slots[i].held).min_by_key(|&i| self.slots[i].age);
+        released.unwrap_or_else(|| (0..self.slots.len()).min_by_key(|&i| self.slots[i].age).unwrap())
     }
 
     fn note_on(&mut self, ch: u8, note: u8, vel: u8) {
@@ -132,7 +137,7 @@ impl Driver {
     }
 
     fn refresh_channel(&mut self, ch: u8) {
-        for i in 0..VOICES {
+        for i in 0..self.slots.len() {
             let s = &self.slots[i];
             if s.active && s.ch == ch && (s.on || s.held) {
                 let (hz, level) = (self.pitch(ch, s.note), self.level(ch, s.vel));
