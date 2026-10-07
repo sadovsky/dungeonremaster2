@@ -511,7 +511,12 @@ separate visual generator to keep the simulation deterministic. Sound (24, 0, 2,
   indexed the same way, a digit giving frames 0-9 and a letter `char −
   0x4B`. The frame keeps 6 bits (bits 10-15 of the face word) and adds
   4·frame to the image sub. The phase is 0 for wall ornaments; some
-  actuators supply one from their record.
+  actuators supply one from their record. Not every face animates: the
+  wall summary (0x1E4EE) asks for a frame only in some cases. For a mode-1
+  text thing the type in word 1 bits 11-15 decides: type 2 always
+  animates; types 4, 5, 7, 8 and 0x0D animate only when word 1 bit 0 is
+  set; the others show frame 0. (Map 3's type-5 wall texts with bit 0
+  clear show ornament 74's grey frame 0, not its cyan frames 1-3.)
 - **Wall writing**: text things in mode 0, or in mode 1 with bits 11-15 =
   14, shown when bit 0 is set. This dungeon uses only the mode-1 form,
   whose text is GRAPHICS.DAT message (3, 0, 5, bits 3-10). The map set's
