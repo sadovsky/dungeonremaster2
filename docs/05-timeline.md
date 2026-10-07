@@ -171,9 +171,15 @@ the same, so a command that changes the map enters the new map that tick.
 With the planner's path test and goal ranking ported (docs/08), the pit run
 matches the original draw for draw from the load through tick 1709 (656
 draws; it parted at tick 1702 before); the idle run still matches through
-tick 157. At tick 1710 the original restarts a creature's running program
-(program 1, action 3) after its planner finds nothing within the quartered
-off-map limit, which the remake doesn't yet do.
+tick 157. At tick 1710 the original's planner still finds the creature's kind-7
+goal (program 1, action 3) although the party has fallen to the map
+below; the remake finds nothing within the off-map limit and falls back.
+The likely cause is "the party" the planner uses: the projected party
+(0x7F8D2-0x7F8D6), which 0x2FE35 refreshes only when the creature's map
+differs from the current map and otherwise leaves as it was, so after the
+fall it may still name the pit square on the upper map. The remake uses
+the live party position. Confirming this needs the projected values read
+from the running original.
 
 **Result (round 4).** Idle new game, original against remake: 663 against
 666 thinks over ticks 2-157, 36.2 against 35.9 draws per tick, and ticks 0-1
