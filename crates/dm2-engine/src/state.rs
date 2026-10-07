@@ -174,10 +174,28 @@ impl GameState {
         self.tick = self.tick.wrapping_add(1);
     }
 
+    /// Set the party's facing (0x45869). Every champion's facing (+0x1C)
+    /// and cell (+0x1D) turn with the party, so the formation keeps its
+    /// shape relative to the facing. Applies to a pending map change too.
+    pub fn set_party_facing(&mut self, dir: u8) {
+        let current = self.pending_map.map_or(self.party.dir, |p| p.dir);
+        let delta = (dir & 3).wrapping_sub(current) & 3;
+        if delta != 0 {
+            for c in &mut self.champions {
+                c.raw[0x1C] = (c.raw[0x1C] + delta) & 3;
+                c.raw[0x1D] = (c.raw[0x1D] + delta) & 3;
+            }
+        }
+        match &mut self.pending_map {
+            Some(p) => p.dir = dir & 3,
+            None => self.party.dir = dir & 3,
+        }
+    }
+
     fn execute(&mut self, c: Command) {
         match c {
-            Command::TurnLeft => self.party.turn_left(),
-            Command::TurnRight => self.party.turn_right(),
+            Command::TurnLeft => self.set_party_facing((self.party.dir + 3) & 3),
+            Command::TurnRight => self.set_party_facing((self.party.dir + 1) & 3),
             Command::Ui(n) => {
                 crate::hand::dispatch(self, n);
             }
