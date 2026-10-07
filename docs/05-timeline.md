@@ -317,13 +317,16 @@ and re-adds it for the next tick (0x3059D), as a continue while record word
 +8 is unset, else as a step; the remake had rescheduled for the same tick,
 so the hit creature ran twice on tick 95 and skipped tick 96.
 
-With these the combat probe matches the original draw for draw through
-draw 1897 (tick 96), past the whole first melee round; the idle run stays
-identical through tick 155 and the pit run through tick 1711. At tick 96
-the hit creature's `Q` step finds its target behind it in the original and
-turns around, while the remake's walks: the two hold different targets,
-most likely because the planner's search order is not yet randomised the
-way the original's search setup (0x321B8) does it.
+With these, and with `?` and `@` treating the party's square as a plain
+failure (their movement tests pass flag 0x80; docs/08), the combat probe
+matches the original draw for draw through draw 1957 (tick 97), past the
+whole first melee round; the idle run stays
+identical through tick 155 and the pit run through tick 1711. The planner's search setup (0x321B8) is now ported too: each expanded
+square steps the planner register once, bit 0 picking the turning sense
+and the low two bits the first of the four neighbours, with the layer
+moves after them. At tick 97 the original runs the hit handler (only its
+final `random(100)`) while creature 0x109B is processed, and the remake
+does not hit anything there.
 
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at

@@ -335,22 +335,18 @@ pub fn search(g: &mut GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> 
         if d as i32 >= pr.max_limit {
             continue;
         }
-        // Stairs lead to the square at the same world position on the
-        // adjacent layer (bit 2 of the stairs square: clear = down).
-        // An open pit (bit 3 set, not imaginary) leads one layer down.
-        let sq = g.dungeon.square(map, x, y);
-        let pit = sq.element() == Element::Pit && sq.0 & 8 != 0 && sq.0 & 1 == 0;
-        if d > 0 && (sq.element() == Element::Stairs || pit) {
-            let delta = if pit || sq.0 & 4 == 0 { 1 } else { -1 };
-            if let Some((nm, nx, ny)) = crate::world::layer_map(&g.dungeon, map, delta, x, y) {
-                if seen.insert((nm, nx, ny)) {
-                    let v = if map == s.map { Some((x, y)) } else { via };
-                    q.push_back((nm, nx, ny, d + 1, v));
-                }
-            }
-        }
-        for dir in 0..4 {
-            let (nx, ny) = (x + DX[dir], y + DY[dir]);
+        // Expanding a square (0x321B8): bit 0 of the planner register picks
+        // the turning sense (+1 or -1), the register steps once, and its low
+        // two bits give the first direction; the four neighbours are then
+        // visited round that way.
+        let rot = if g.planner_lfsr & 1 != 0 { 1 } else { 3 };
+        let r = g.planner_lfsr;
+        g.planner_lfsr = if r & 1 != 0 { (r >> 1) ^ 0xB400 } else { r >> 1 };
+        let mut dir = (g.planner_lfsr & 3) as usize;
+        for _ in 0..4 {
+            let this = dir;
+            dir = (dir + rot) & 3;
+            let (nx, ny) = (x + DX[this], y + DY[this]);
             if !inside(g, map, nx, ny) || !seen.insert((map, nx, ny)) {
                 continue;
             }
@@ -364,6 +360,21 @@ pub fn search(g: &mut GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> 
             }
             if terrain::can_enter(g, map, nx, ny, s.mask, s.size) {
                 q.push_back((map, nx, ny, d + 1, via));
+            }
+        }
+        // After the four neighbours come the layer moves: stairs lead to the
+        // square at the same world position on the adjacent layer (bit 2 of
+        // the stairs square: clear = down), and an open pit (bit 3 set, not
+        // imaginary) one layer down.
+        let sq = g.dungeon.square(map, x, y);
+        let pit = sq.element() == Element::Pit && sq.0 & 8 != 0 && sq.0 & 1 == 0;
+        if d > 0 && (sq.element() == Element::Stairs || pit) {
+            let delta = if pit || sq.0 & 4 == 0 { 1 } else { -1 };
+            if let Some((nm, nx, ny)) = crate::world::layer_map(&g.dungeon, map, delta, x, y) {
+                if seen.insert((nm, nx, ny)) {
+                    let v = if map == s.map { Some((x, y)) } else { via };
+                    q.push_back((nm, nx, ny, d + 1, v));
+                }
             }
         }
     }

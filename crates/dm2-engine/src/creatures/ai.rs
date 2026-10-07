@@ -136,9 +136,23 @@ pub(super) fn queue_turn(g: &mut GameState, ctx: &Ctx, dir: u8) -> bool {
 /// turn-step, turn or attack toward `dir`. Returns true if an action was
 /// queued.
 pub fn move_test(g: &mut GameState, ctx: &Ctx, dir: u8, mode: u8) -> bool {
+    move_test_flags(g, ctx, dir, mode, false)
+}
+
+/// The movement test with the opcode flag 0x80 that `?` and `@` pass
+/// (0x27F54, 0x27FC8): the party's square then only fails the test,
+/// without turning toward the party or attacking it.
+pub fn move_test_step(g: &mut GameState, ctx: &Ctx, dir: u8, mode: u8) -> bool {
+    move_test_flags(g, ctx, dir, mode, true)
+}
+
+fn move_test_flags(g: &mut GameState, ctx: &Ctx, dir: u8, mode: u8, step_only: bool) -> bool {
     let (nx, ny) = (ctx.x + DX[dir as usize], ctx.y + DY[dir as usize]);
     let f = facing(g, ctx.thing);
     if party_here(g, ctx.map, nx, ny) {
+        if step_only {
+            return false;
+        }
         if f != dir {
             return queue_turn(g, ctx, dir);
         }
@@ -721,7 +735,7 @@ fn opcode(g: &mut GameState, d: &CreatureData, ctx: &Ctx, row: &Row) -> Res {
             // way is blocked the original reports "done" (−2), not "failed",
             // so the program takes its done jump (usually the next row).
             let f = facing(g, ctx.thing);
-            if move_test(g, ctx, f, mode) { Res::InProgress } else { Res::Done }
+            if move_test_step(g, ctx, f, mode) { Res::InProgress } else { Res::Done }
         }
         b'@' => {
             // Step to a side, else turn toward one (0x27F6E). The handler
@@ -731,7 +745,7 @@ fn opcode(g: &mut GameState, d: &CreatureData, ctx: &Ctx, row: &Row) -> Res {
             let f = facing(g, ctx.thing);
             let first = if g.rng.bit() != 0 { 1 } else { 3 };
             for t in [first, 4 - first] {
-                if move_test(g, ctx, (f + t) & 3, mode) {
+                if move_test_step(g, ctx, (f + t) & 3, mode) {
                     return Res::Failed;
                 }
             }

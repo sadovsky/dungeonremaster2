@@ -368,8 +368,8 @@ Opcodes (dispatch at 0x27CD2, index = letter − 0x3F):
 
 | Letter | Handler | Behaviour |
 |--------|---------|-----------|
-| `?` | 0x27F28 | Step forward (movement test with the current facing). In progress (−4) if the move starts; when the way is blocked the result is −2 (done), not −3, so the program takes its done jump |
-| `@` | 0x27F6E | A random bit picks a side (+1 or −1): try stepping that way, then the other way, otherwise queue a quarter turn toward the first side (0x2C005). The handler returns the move or turn routine's raw value, never −4, so the program always takes the row's other jump while the move or turn carries on |
+| `?` | 0x27F28 | Step forward (movement test with the current facing, flag 0x80: a party on the square only fails the test, without a turn toward it or an attack). In progress (−4) if the move starts; when the way is blocked the result is −2 (done), not −3, so the program takes its done jump |
+| `@` | 0x27F6E | A random bit picks a side (+1 or −1): try stepping that way, then the other way (both with flag 0x80, so the party's square just fails), otherwise queue a quarter turn toward the first side (0x2C005). The handler returns the move or turn routine's raw value, never −4, so the program always takes the row's other jump while the move or turn carries on |
 | `A` | inline | Queue action 0x13 |
 | `B` | 0x28017 | Approach or interact with the target square (0x2EA68); with argument 4, first check possessions through 0x2FF1E |
 | `C` | inline | Clear the action (0) |

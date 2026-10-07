@@ -25,6 +25,14 @@ fn main() {
         Ok(path) => load_save(std::path::Path::new(&path), gd, Some(cd.clone())).expect("load"),
         Err(_) => GameState::new_game_full(&a.dungeon, gd, Some(cd.clone())),
     };
+    // RNGSTATE=HEX replaces the random state after loading (experiments on
+    // what the original keeps across a load); RNGSHOW=1 prints it.
+    if let Some(v) = std::env::var("RNGSTATE").ok().and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()) {
+        g.rng.state = v;
+    }
+    if std::env::var_os("RNGSHOW").is_some() {
+        eprintln!("rng state after load {:#010x}", g.rng.state);
+    }
     let step: Option<u32> = std::env::var("STEP").ok().and_then(|s| s.strip_prefix("F@").and_then(|t| t.parse().ok()));
     // CMDS=TICK:CODE,... dispatches interface commands (hex codes, as the
     // original's click zones produce) at those ticks, before the tick runs.
