@@ -908,6 +908,9 @@ fn draw_stairs(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c: u
         return;
     }
     let k = c * 2 + ((cell.sq >> 2) & 1) as usize;
+    // Stair art is keyed with the map set's default colour (attribute 100),
+    // like the walls; without it the background shows as a solid box.
+    let key = Some(attr(a, 8, cx.set, 100) as u8);
     if cell.vt == vt::STAIRS_FRONT {
         if k >= 32 || STAIR_FRONT_SUB[k] < 0 {
             return;
@@ -917,10 +920,10 @@ fn draw_stairs(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c: u
         } else {
             (STAIR_FRONT_ALT[k], 1)
         };
-        let r = Req { flip, ..Req::new(8, cx.set, sub as u8, STAIR_FRONT_LAYOUT[k] as u16) };
+        let r = Req { flip, key, depth: Some(DEPTH[c]), ..Req::new(8, cx.set, sub as u8, STAIR_FRONT_LAYOUT[k] as u16) };
         draw(a, buf, cx, r);
     } else if k < 18 && STAIR_SIDE_SUB[k] >= 0 && STAIR_SIDE_LAYOUT[k] >= 0 {
-        draw(a, buf, cx, Req::new(8, cx.set, STAIR_SIDE_SUB[k] as u8, STAIR_SIDE_LAYOUT[k] as u16));
+        draw(a, buf, cx, Req { key, depth: Some(DEPTH[c]), ..Req::new(8, cx.set, STAIR_SIDE_SUB[k] as u8, STAIR_SIDE_LAYOUT[k] as u16) });
     }
 }
 

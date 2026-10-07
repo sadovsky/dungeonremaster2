@@ -52,7 +52,9 @@ fn pinned_views() {
         ((6, 8, 8, 1), 0x53566c2c295f1b8f),
         // A depth-4 front-face ornament is now drawn (cells 16-20 show ornaments).
         ((4, 6, 11, 2), 0x50fac760491539ff),
-        ((8, 12, 3, 0), 0x34eaa6dde0fdba81),
+        // Stairs ahead: keyed with the set's default colour and lit by depth,
+        // verified pixel-exact against the original at (8, 12, 2, N).
+        ((8, 12, 3, 0), 0x66acb89dc0519ff1),
         ((7, 12, 11, 1), 0x8a9dbdd9e46d85e9),
         // Ornament attribute 10 is a kind (1 alcove, 3 portrait mirror), not
         // a flag: the starting map's mirror now shows its champion and no
