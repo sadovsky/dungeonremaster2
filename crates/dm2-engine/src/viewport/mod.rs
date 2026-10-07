@@ -862,7 +862,9 @@ fn draw_floor_ornament(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Ce
     } else {
         u8::from(side > 0)
     };
-    let key = key_attr(a, 10, orn, None, true);
+    // 0x50081 reads attribute 0x11 and hands it to the drawer (0x4E620)
+    // as the colour key; attribute 4 is not used for floor ornaments.
+    let key = a.gdat.lookup(Key::new(10, orn, 11, 0x11)).and_then(|k| u8::try_from(k).ok());
     let slot = match attr(a, 10, orn, 5) {
         0 => 12u16,
         v => (v & 0xFF).saturating_sub(1),

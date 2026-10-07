@@ -114,7 +114,23 @@ The 60-byte globals record:
 | 0x20 | u16 | 0x7F25A | Movement state |
 | 0x22 | u16 | 0x7F270 | Unknown |
 | 0x28 | u16 | 0x7169C / 0x7169E | Two 4-bit values, packed |
-| 0x2A-0x3B | | 0x80470-0x80480, 0x80430 | Environment state (weather or sky, category 23); see `04-rendering.md` when written |
+| 0x2A | u32 | 0x8047B | Outdoor-light flag (weather) |
+| 0x2E | u8 | 0x8047C | Storm darkening flag |
+| 0x2F | u8 | 0x8047F | Wind direction (picks the rain overlay's slant) |
+| 0x30 | u8 | 0x8047E | Raining level (0 = dry) |
+| 0x31 | u8 | 0x8047A | Cloud backdrop level |
+| 0x32 | u8 | 0x80479 | Cloud build-up counter |
+| 0x33 | u8 | 0x80480 | Rain curve multiplier |
+| 0x34 | u16 | 0x80470 | Rain intensity |
+| 0x36 | u8 | 0x80477 | Rain curve step |
+| 0x37 | u8 | 0x80474 | Rain curve pattern |
+| 0x38 | u32 | 0x80430 | Tick of the next hour change |
+
+The weather block (0x2A-0x3B) is written by 0x3502B and restored on load,
+so a game saved mid-storm resumes mid-storm. The remake reads and writes
+it through `weather::read_globals` / `write_globals`; earlier remake
+saves copied these bytes unchanged from whatever save they started from,
+which is why the original showed rain where the remake showed none.
 
 The mask leaves gaps, so the stream is much shorter than 60 bytes. As read
 from the table:
