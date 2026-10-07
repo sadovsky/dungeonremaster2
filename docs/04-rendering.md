@@ -952,16 +952,51 @@ Simplifications, still TODO:
     is the rain overlay itself, not a separate floor image.
   Remaining outdoor differences are mostly rain-streak placement (the
   remake's offsets come from a visual-only random source).
-- Floor ornaments take their colour key from attribute 0x11 (0x50081
-  passes it to the drawer through 0x4E620), not attribute 4. Using
-  attribute 4 left a solid box around ornaments whose 4-bit key nibble
-  differs from their mapped key colour.
-- Open: at map 3 (13,8) facing south the floor itself still differs from
-  the original over most of its area, with all feature layers off. It is
-  not a flip of the floor image, a vertical shift, or the 'p'/'q' fill
-  colours (map set 3 has neither attribute). Not yet traced.
-- Open: the door panel two squares ahead at map 2 (19,12) is about 23%
-  too bright; the panel's per-depth lighting is not yet traced.
+- Floor ornaments take their colour key from attribute 4, falling back to
+  the map set's key (attribute (8, set, 11, 100), via 0x75BFA) when it is
+  0 (0x50081). Attribute 0x11 is not the key: it is the extra argument the
+  map-edge-link path passes to the composing drawer 0x4E620 (below). An
+  earlier reading of 0x11 as the key left floor ornaments without the
+  fallback unkeyed (solid brown floor bands at map 3 (13,8)).
+- Floor ornaments from actuators (0x1E908): any actuator on a floor, pit
+  or teleporter square supplies its ornament nibble through 0x1FC82 (an
+  index into the map's byte lists after the creature types and wall
+  ornaments, i.e. the floor list), except type 0x27, which supplies one
+  only when bits 7+ of word 1, less one, name the current map.
+- Open: map-edge-link floor ornaments. At map 3 (13,8) facing south the
+  square two ahead, (13,10), is a map-edge link (a teleporter square with a
+  type 0x27 switch naming map 3). For such squares, and for ornaments with
+  attribute 99, 0x50081 takes a second path for depths above 0: it draws
+  the ornament, then composes it through 0x4E620 with attribute 0x11
+  (here colour 14) after drawing the linked map's squares beyond the link
+  (0x52BF6 / 0x52518 over the cells behind it). Floor ornament 34 is such a
+  portal frame: 41% of its depth-2 image is colour 14, which the original
+  fills with the view across the link and the remake shows as a brown
+  blob. Not implemented; this accounts for most of the remaining
+  difference at that view (11,057 differing pixels, the floor bands now
+  matching).
+- (Resolved.) The door view at map 2 (19,12) differed in the panel and
+  around it. Two causes, both in the door-across path:
+  - **Panel light.** 0x5346E passes the lit drawer (0x4E502) a light
+    depth of 0 whenever a per-depth panel image (14, type, 1, depth - 1)
+    exists, because that art is already drawn for its distance; only the
+    scaled fallback image is passed its real depth. The remake had used the
+    real depth for both, so the panel came out too dark.
+  - **Missing frame.** 0x539CB hands 0x5346E two frame masks per view
+    cell, drawn before and after the panel by 0x531EC (bit 0 lintel, bit 1
+    left post, bit 2 right post; drawn even when the door is open):
+    cell 0 (6, 0); 3 and 6 (7, 0); 4 and 7 (1, 4); 5 and 8 (1, 2);
+    11 (6, 0); 12 (2, 4); 13 (4, 2); the rest none. The lintel is a map-set
+    image (8, set, 1, sub) through the ambient-only drawer, with its sub
+    and layout id per cell from tables at 0x75EF9 and 0x75F07. The posts
+    are map-set images through the lit drawer at depth 0, scale 64, placed
+    on the cell's 5×5 grid at slot 10 (left, anchor 4) and slot 14 (right,
+    mirrored, anchor 3). Their subs come in pairs from 0x75EDD, indexed by
+    the cell when the ambient level is 0 and by its left/right partner
+    (0x75B28) otherwise, which swaps the two images when the view is lit.
+    A door type with attribute 0x40 set draws no frame here. The remake
+    reads all four tables from the user's SKULL.EXE at runtime.
+  With both, the door view matches the original with 0 differing pixels.
 - (Resolved.) Remake saves with the party moved onto map 2 or 3 stopped
   the original with system error 71. The cause was the skipped map-entry
   pass, not rendering; see `12-savegame.md`, "Loading sequence".

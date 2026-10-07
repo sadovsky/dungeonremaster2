@@ -557,7 +557,10 @@ cooldown added is the larger of half the move time and the countdown flag.
 **Stamina.** Every attempted step charges each living champion a stamina
 cost derived from their load (0x47707).
 
-**Turning.** 0x45869 sets the party's facing. Rotation from teleporters and
+**Turning.** 0x45869 sets the party's facing. It also turns every
+recruited champion's facing (+0x1C) and cell (+0x1D) by the same amount,
+so the formation keeps its shape relative to the party and the interface
+shows the same arrangement after a turn. Rotation from teleporters and
 actuator 0x2E goes through the same routine.
 
 ## Moving things (0x4B108, code)

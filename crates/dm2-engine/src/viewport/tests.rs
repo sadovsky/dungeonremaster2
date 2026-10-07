@@ -49,7 +49,12 @@ fn pinned_views() {
     // checked against the original's start view in DOSBox.
     let views: [((usize, i32, i32, u8), u64); 8] = [
         ((3, 10, 9, 0), 0x8cea3120aed4479b),
-        ((6, 8, 8, 1), 0x53566c2c295f1b8f),
+        // A door panel drawn from its per-depth image is now lit at depth 0
+        // (ambient only), as 0x5346E passes it to 0x4E502; the changed
+        // pixels are confined to the centre door panel. Verified against the
+        // original in DOSBox at map 2 (19,12,N): the door view went from
+        // 3,413 differing pixels to 0 with this and the door frame.
+        ((6, 8, 8, 1), 0xd50ccd4aa6e11435),
         // A depth-4 front-face ornament is now drawn (cells 16-20 show ornaments).
         // two open pits in view: pits are now keyed and lit by depth (pit view verified
         // pixel-exact against the original at (4, 5, 6, N)).
@@ -74,7 +79,11 @@ fn pinned_views() {
         ((1, 2, 9, 0), 0xe3ec12f8202fd6b9),
         // four open pits in view: pits are now keyed and lit by depth (pit view verified
         // pixel-exact against the original at (4, 5, 6, N)).
-        ((5, 12, 23, 0), 0x3c7b5b0bdb0b5a81),
+        // Floor ornaments take their colour key from attribute 4 with the
+        // map set's key as fallback (0x50081), not from attribute 0x11; the
+        // 263 changed pixels are exactly floor ornament 12's sprite at
+        // (168,74), whose background is now transparent.
+        ((5, 12, 23, 0), 0xec26d00bbbb11ba3),
     ];
     let mut bad = Vec::new();
     for ((m, x, y, d), want) in views {

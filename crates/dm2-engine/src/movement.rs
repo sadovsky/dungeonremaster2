@@ -135,7 +135,7 @@ pub fn resolve(g: &mut GameState, mover: Mover, map: usize, x: i32, y: i32) -> D
                             g.effects.push(Effect::Sound { cat: 0x18, idx: 0, sub: 0x89, map, x, y });
                         }
                         let base = if absolute { 0 } else { g.party.dir };
-                        g.party.dir = (base + rot) & 3;
+                        g.set_party_facing((base + rot) & 3);
                     }
                     Some(ThingType::Creature) | Some(ThingType::Missile) => {
                         // TODO(0x49EF8 / 0x49F7C): rotate creature groups and missiles.
@@ -356,10 +356,7 @@ pub fn teleport_party(g: &mut GameState, x: i32, y: i32, map: usize, dir: u8) {
         return;
     }
     move_party(g, Some((x, y)));
-    match &mut g.pending_map {
-        Some(p) => p.dir = dir & 3,
-        None => g.party.dir = dir & 3,
-    }
+    g.set_party_facing(dir & 3);
 }
 
 /// Take the stairs at the party's square (0x232DD).

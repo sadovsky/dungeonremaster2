@@ -160,6 +160,40 @@ pub struct ViewExtras {
     /// into the nudge offsets, read from the user's SKULL.EXE by the
     /// frontend. None: piled items are not fanned out.
     pub stack_nudges: Option<[u8; 32]>,
+    /// Door-frame tables read from the user's SKULL.EXE by the frontend.
+    /// None: door frames (lintel and posts) are not drawn.
+    pub door_frame: Option<DoorFrameTables>,
+}
+
+/// Door-frame drawing tables used by 0x531EC, read at runtime from the
+/// user's own SKULL.EXE (never stored in this source).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DoorFrameTables {
+    /// Lintel image sub per view cell (0x75EF9); 0xFF = none.
+    pub lintel_sub: [u8; 16],
+    /// Lintel layout id per view cell (word at 0x75F07 + 2·cell).
+    pub lintel_rid: [u16; 16],
+    /// Post image subs, two per index (0x75EDD); 0xFF = none.
+    pub post_sub: [u8; 32],
+    /// Left/right partner of each cell (0x75B28), used when the ambient
+    /// level is non-zero.
+    pub cell_index: [u8; 16],
+}
+
+impl DoorFrameTables {
+    /// Build from the four executable slices, in the order above.
+    pub fn from_slices(lintel_sub: &[u8], lintel_rid: &[u8], post_sub: &[u8], cell_index: &[u8]) -> Option<Self> {
+        let mut rid = [0u16; 16];
+        for (i, r) in rid.iter_mut().enumerate() {
+            *r = u16::from_le_bytes([*lintel_rid.get(2 * i)?, *lintel_rid.get(2 * i + 1)?]);
+        }
+        Some(DoorFrameTables {
+            lintel_sub: lintel_sub.get(..16)?.try_into().ok()?,
+            lintel_rid: rid,
+            post_sub: post_sub.get(..32)?.try_into().ok()?,
+            cell_index: cell_index.get(..16)?.try_into().ok()?,
+        })
+    }
 }
 
 /// Drawing state of one creature group, filled by the frontend from
@@ -197,6 +231,7 @@ impl Default for ViewExtras {
             mid_step: false,
             darkness_step: 0,
             stack_nudges: None,
+            door_frame: None,
         }
     }
 }
@@ -501,6 +536,13 @@ fn summarise(cx: &Ctx, x: i32, y: i32) -> Cell {
                     }
                 }
                 3 => {
+                    // Type 0x27 (map-edge link switch) shows its ornament only
+                    // when bits 7+ of word 1, less one, name the current map
+                    // (0x1E908); otherwise it contributes none.
+                    let w1 = word(dg, t, 1);
+                    if w1 & 0x7F == 0x27 && (w1 >> 7) as i64 - 1 != cx.map as i64 {
+                        continue;
+                    }
                     let nib = (word(dg, t, 2) >> 12) as usize;
                     if nib != 0 {
                         if let Some(&o) = lists.floor_ornaments.get(nib - 1) {
@@ -862,9 +904,12 @@ fn draw_floor_ornament(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Ce
     } else {
         u8::from(side > 0)
     };
-    // 0x50081 reads attribute 0x11 and hands it to the drawer (0x4E620)
-    // as the colour key; attribute 4 is not used for floor ornaments.
-    let key = a.gdat.lookup(Key::new(10, orn, 11, 0x11)).and_then(|k| u8::try_from(k).ok());
+    // 0x50081 takes the colour key from attribute 4, falling back to the
+    // map set's key (attribute (8, set, 11, 100), via 0x75BFA) when it is 0.
+    // Attribute 0x11 is a separate argument to the composing drawer
+    // (0x4E620), not the key.
+    let set_key = a.gdat.lookup(Key::new(8, cx.set, 11, 100)).and_then(|k| u8::try_from(k).ok());
+    let key = key_attr(a, 10, orn, set_key, true);
     let slot = match attr(a, 10, orn, 5) {
         0 => 12u16,
         v => (v & 0xFF).saturating_sub(1),
@@ -964,10 +1009,66 @@ fn draw_door(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c: usi
     }
     let state = cell.sq & 7;
     let Some(t) = cell.door else { return };
+    // Frame parts drawn before and after the panel, per view cell (0x539CB):
+    // bit 0 lintel, bit 1 left post, bit 2 right post.
+    let (before, after) = DOOR_FRAME_MASKS[c];
+    draw_door_frame(a, buf, cx, t, c, before);
     draw_door_button(a, buf, cx, t, c);
-    if state == 0 {
+    if state != 0 {
+        draw_door_panel(a, buf, cx, t, c, state);
+    }
+    draw_door_frame(a, buf, cx, t, c, after);
+}
+
+/// Door-frame parts drawn before and after the panel for each view cell,
+/// as 0x539CB passes them to 0x5346E (bit 0 lintel, 1 left post, 2 right
+/// post). Cells without a door-across drawing are (0, 0).
+const DOOR_FRAME_MASKS: [(u8, u8); 16] = [
+    (6, 0), (0, 0), (0, 0), (7, 0), (1, 4), (1, 2), (7, 0), (1, 4),
+    (1, 2), (0, 0), (0, 0), (6, 0), (2, 4), (4, 2), (0, 0), (0, 0),
+];
+
+/// Door frame (0x531EC): the lintel through the ambient-only drawer and
+/// the two posts from the map set's images through the lit drawer at
+/// depth 0, the right post mirrored. Door types with attribute 0x40 set
+/// have no frame here. The post images swap with the ambient level.
+fn draw_door_frame(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usize, mask: u8) {
+    if mask == 0 || c >= 16 {
         return;
     }
+    let Some(tb) = cx.ex.door_frame else { return };
+    let dt = door_type(cx, t);
+    if attr(a, 14, dt, 0x40) != 0 {
+        return;
+    }
+    let set = cx.set;
+    let key = a.gdat.lookup(Key::new(8, set, 11, 100)).map(|k| k as u8);
+    if mask & 1 != 0 && tb.lintel_sub[c] != 0xFF {
+        let r = Req { key, ambient_only: true, ..Req::new(8, set, tb.lintel_sub[c], tb.lintel_rid[c]) };
+        draw(a, buf, cx, r);
+    }
+    let lit = cx.ex.ambient != 0;
+    let idx = if lit { tb.cell_index[c] as usize } else { c };
+    let post = |k: bool| tb.post_sub.get(idx * 2 + k as usize).copied().unwrap_or(0xFF);
+    let slot_rid = |slot: u16| 5000 + 25 * c as u16 + slot;
+    if mask & 2 != 0 {
+        let sub = post(lit);
+        if sub != 0xFF {
+            let r = Req { key, depth: Some(0), anchor: Some(4), ..Req::new(8, set, sub, slot_rid(10)) };
+            draw(a, buf, cx, r);
+        }
+    }
+    if mask & 4 != 0 {
+        let sub = post(!lit);
+        if sub != 0xFF {
+            let r = Req { key, depth: Some(0), anchor: Some(3), flip: 1, ..Req::new(8, set, sub, slot_rid(14)) };
+            draw(a, buf, cx, r);
+        }
+    }
+}
+
+/// The panel itself, with its ornament and damage overlay (0x5346E).
+fn draw_door_panel(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usize, state: u8) {
     let depth = DEPTH[c];
     let dt = door_type(cx, t);
     let w1 = word(cx.dg, t, 1);
@@ -977,6 +1078,10 @@ fn draw_door(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c: usi
     } else {
         (0, if depth == 0 { 113 } else { DEPTH_SCALE[depth] })
     };
+    // A per-depth panel image is already drawn for its distance, so the
+    // original lights it with depth 0 (ambient only); only the scaled
+    // fallback image gets the depth's darkening (0x5346E -> 0x4E502).
+    let light_depth = if sc == 64 && depth > 0 { 0 } else { depth };
     let Some(panel) = a.sprite(14, dt, sub) else { return };
     // Compose the door ornament and the damage overlay onto a copy of the
     // panel; composition yields an 8-bit image with its own key.
@@ -1003,7 +1108,7 @@ fn draw_door(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c: usi
     }
     let Some(img) = (if sc == 64 { Some(img) } else { img.scaled(sc, sc) }) else { return };
     let base = DOOR_LAYOUT[c] as u16;
-    let r = |rid: u16| Req { depth: Some(depth), key: img_key, ..Req::new(14, dt, sub, rid) };
+    let r = |rid: u16| Req { depth: Some(light_depth), key: img_key, ..Req::new(14, dt, sub, rid) };
     if state >= 4 {
         draw_sprite(a, buf, cx, &img, panel.off, &r(base), sc, sc);
     } else if w1 & 0x20 != 0 {

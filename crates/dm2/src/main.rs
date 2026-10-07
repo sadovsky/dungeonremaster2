@@ -290,6 +290,11 @@ fn view_extras(g: &GameState) -> viewport::ViewExtras {
     ex.mid_step = g.walk.is_some();
     // Floor-item stacking table (0x75B94), from the user's SKULL.EXE.
     ex.stack_nudges = g.data.as_ref().and_then(|d| d.exe.slice(0x75B94, 32)).and_then(|b| b.try_into().ok());
+    // Door-frame tables (0x531EC), from the user's SKULL.EXE.
+    ex.door_frame = g.data.as_ref().and_then(|d| {
+        let e = &d.exe;
+        viewport::DoorFrameTables::from_slices(e.slice(0x75EF9, 16)?, e.slice(0x75F07, 32)?, e.slice(0x75EDD, 32)?, e.slice(0x75B28, 16)?)
+    });
     if let Some(d) = &g.creature_data {
         // 0x802CC's high word (0x802CE) is the ambient level: the darkness
         // step (0x7F282) × 10, set each frame at 0x54015.
