@@ -133,6 +133,58 @@ pub fn refresh(g: &mut GameState) {
     g.weather.hour_light = hour_light_now(g);
 }
 
+/// Weather fields of the save's 60-byte globals record, as the original
+/// writes them (0x3502B) and reads them back on load:
+///
+/// | Offset | Size | Global |
+/// |--------|------|--------|
+/// | 0x2A | u32 | 0x8047B outdoor-light flag |
+/// | 0x2E | u8 | 0x8047C storm |
+/// | 0x2F | u8 | 0x8047F wind |
+/// | 0x30 | u8 | 0x8047E raining level |
+/// | 0x31 | u8 | 0x8047A cloud backdrop level |
+/// | 0x32 | u8 | 0x80479 cloud build-up |
+/// | 0x33 | u8 | 0x80480 curve multiplier |
+/// | 0x34 | u16 | 0x80470 rain intensity |
+/// | 0x36 | u8 | 0x80477 curve step |
+/// | 0x37 | u8 | 0x80474 curve pattern |
+/// | 0x38 | u32 | 0x80430 tick of the next hour change |
+pub fn read_globals(w: &mut Weather, r: &[u8]) {
+    if r.len() < 0x3C {
+        return;
+    }
+    w.env = u32::from_le_bytes([r[0x2A], r[0x2B], r[0x2C], r[0x2D]]) != 0;
+    w.storm = r[0x2E];
+    w.wind = r[0x2F];
+    w.rain_on = r[0x30];
+    w.cloud_level = r[0x31];
+    w.cloud = r[0x32];
+    w.kind = r[0x33];
+    w.rain = u16::from_le_bytes([r[0x34], r[0x35]]);
+    w.step = r[0x36];
+    w.pattern = r[0x37] as u16;
+    w.next_hour = u32::from_le_bytes([r[0x38], r[0x39], r[0x3A], r[0x3B]]);
+    w.ready = true;
+}
+
+/// Write the weather fields into a 60-byte globals record (see `read_globals`).
+pub fn write_globals(w: &Weather, r: &mut [u8]) {
+    if r.len() < 0x3C {
+        return;
+    }
+    r[0x2A..0x2E].copy_from_slice(&u32::from(w.env).to_le_bytes());
+    r[0x2E] = w.storm;
+    r[0x2F] = w.wind;
+    r[0x30] = w.rain_on;
+    r[0x31] = w.cloud_level;
+    r[0x32] = w.cloud;
+    r[0x33] = w.kind;
+    r[0x34..0x36].copy_from_slice(&w.rain.to_le_bytes());
+    r[0x36] = w.step;
+    r[0x37] = w.pattern as u8;
+    r[0x38..0x3C].copy_from_slice(&w.next_hour.to_le_bytes());
+}
+
 /// New-game setup from the dungeon (0x36909): the hour offset, then the
 /// first weather cycle.
 pub fn new_game(g: &mut GameState) {
@@ -412,7 +464,10 @@ mod tests {
     use crate::data::GameData;
 
     /// Night, day and rainy-day outdoor views at map 1 (2,9) facing north.
-    const PINNED_OUTDOOR: (u64, u64, u64) = (0x7e94fe4b5e9a670f, 0xf162253859b96d64, 0x0486520c97b381a3);
+    // Backdrops are keyed with the map set's colour key and weather layers
+    // draw behind the landmarks (checked against the original's outdoor
+    // captures in DOSBox).
+    const PINNED_OUTDOOR: (u64, u64, u64) = (0x6d709e3cb00e2ea7, 0xe25ac480f2385f8d, 0x3bffddab2fc9c966);
 
     fn game() -> Option<GameState> {
         let gd = Rc::new(GameData::load_default()?);

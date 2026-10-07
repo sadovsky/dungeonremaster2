@@ -938,8 +938,30 @@ Simplifications, still TODO:
   original also uses sub 50 for every far cell, so neither explains it.
 
 - Outdoor weather and time of day (section 3) are implemented with the
-  simplifications listed there; not yet compared against the original's
-  outdoor views.
+  simplifications listed there. Compared against the original's outdoor
+  captures in DOSBox, three fixes followed:
+  - Backdrops (landmarks, horizon, clouds) are drawn with the map set's
+    colour key: 0x544BE passes 0x75BFA's high word, which 0x3AB31 loads
+    from attribute (8, set, 11, 100). Without it each landmark showed its
+    background as a solid box.
+  - Weather backdrops (clouds and storm, subs 0x67-0x6C) are the far
+    layer: the map set's landmarks are drawn over them.
+  - The weather state at save time is part of the save (globals record
+    bytes 0x2A-0x3B, see `12-savegame.md`). The original's rain, cloud
+    level and wind on load come from there; the wet-looking floor in rain
+    is the rain overlay itself, not a separate floor image.
+  Remaining outdoor differences are mostly rain-streak placement (the
+  remake's offsets come from a visual-only random source).
+- Floor ornaments take their colour key from attribute 0x11 (0x50081
+  passes it to the drawer through 0x4E620), not attribute 4. Using
+  attribute 4 left a solid box around ornaments whose 4-bit key nibble
+  differs from their mapped key colour.
+- Open: at map 3 (13,8) facing south the floor itself still differs from
+  the original over most of its area, with all feature layers off. It is
+  not a flip of the floor image, a vertical shift, or the 'p'/'q' fill
+  colours (map set 3 has neither attribute). Not yet traced.
+- Open: the door panel two squares ahead at map 2 (19,12) is about 23%
+  too bright; the panel's per-depth lighting is not yet traced.
 - (Resolved.) Remake saves with the party moved onto map 2 or 3 stopped
   the original with system error 71. The cause was the skipped map-entry
   pass, not rendering; see `12-savegame.md`, "Loading sequence".
