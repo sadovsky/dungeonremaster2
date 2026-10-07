@@ -23,7 +23,11 @@ fn main() {
             done += 1;
             next = g.tick + gap;
         }
+        let st = g.champions[0].stamina();
         g.advance();
+        if std::env::var_os("TRACE").is_some() && g.champions[0].stamina() != st {
+            println!("  tick {} stamina {} -> {}", g.tick, st, g.champions[0].stamina());
+        }
     }
     let c = &g.champions[0];
     println!("tick {} pos map {} ({},{}) dir {}  hp {}/{} st {}/{} food {} water {}",

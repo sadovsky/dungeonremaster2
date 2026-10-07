@@ -475,6 +475,14 @@ adds half the largest per-champion move time (0x46892, which depends on
 load and condition) to the cooldown. While the remote-view counter is
 active the move is queued.
 
+**Stamina per attempt.** Before the move is classified, each living
+champion pays `load × 3 / max_load + 1` stamina (0x47707), so blocked
+attempts and wall bumps cost the same as real steps. Against the original
+in DOSBox this is consistent with walking six steps from the start costing
+2 stamina by tick 92 once a regeneration call (every 64 ticks) has landed
+between the steps; the probes don't record each press's tick, so the
+interleaving itself isn't confirmed.
+
 **Destination.** The destination square is computed from the facing by
 0x1C9E9, and 0x23D13 classifies the move:
 

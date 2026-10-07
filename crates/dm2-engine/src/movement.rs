@@ -409,7 +409,16 @@ pub fn party_command(g: &mut GameState, mv: Move) -> bool {
     let p = g.party;
     let d = ((p.dir + mv.offset()) & 3) as usize;
     let dest = (p.x + DX[d], p.y + DY[d]);
-    // TODO(0x47707): each living champion pays a stamina cost for the step.
+    // Every move attempt, blocked or not, costs each living champion
+    // load * 3 / max_load + 1 stamina (0x235BF calling 0x47707).
+    for i in 0..g.champions.len() {
+        if !g.champions[i].is_alive() {
+            continue;
+        }
+        let max = crate::champions::max_load(&g.champions[i], &mut g.rng).max(1) as u32;
+        let cost = g.champions[i].load() as u32 * 3 / max + 1;
+        crate::champions::stamina_loss(&mut g.champions, &mut g.party_status, i, cost as i16);
+    }
     match classify(g, mv, dest) {
         MoveClass::StairsBack => {
             take_stairs(g);

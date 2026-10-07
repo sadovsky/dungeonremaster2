@@ -496,3 +496,21 @@ fn bump_queues_the_champion_cry() {
     }
     assert!(cried);
 }
+
+/// Every move attempt costs each living champion load * 3 / max_load + 1
+/// stamina, blocked or not (0x235BF calling 0x47707).
+#[test]
+fn move_attempts_cost_stamina() {
+    let Some(gd) = crate::data::GameData::load_default() else { return };
+    let Ok(bytes) = std::fs::read(default_data_dir().join("DUNGEON.DAT")) else { return };
+    let dg = Dungeon::parse(&bytes).unwrap();
+    let mut g = GameState::new_game_with(&dg, std::rc::Rc::new(gd));
+    let max = crate::champions::max_load(&g.champions[0], &mut g.rng).max(1) as i32;
+    let cost = g.champions[0].load() as i32 * 3 / max + 1;
+    // One free step and one bump against the end wall, between regenerations.
+    let before = g.champions[0].stamina() as i32;
+    movement::party_command(&mut g, Move::Forward);
+    g.party = PartyPos { map: 0, x: 1, y: 1, dir: 0 };
+    movement::party_command(&mut g, Move::Forward);
+    assert_eq!(before - g.champions[0].stamina() as i32, 2 * cost);
+}
