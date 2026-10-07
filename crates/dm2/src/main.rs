@@ -8,6 +8,9 @@
 //!                                           after N game ticks and the given
 //!                                           interface commands (hex, e.g. 0x07)
 //!   dm2 --screenshot-title OUT.png [SUB]    render title image (5,0,1,SUB) headless
+//!   dm2 --replay SCRIPT --frames DIR [--load SAVE]
+//!                                           replay timed interface commands and
+//!                                           write one PNG frame per game tick
 //!
 //! Controls follow the original's tables (read from SKULL.EXE): keypad
 //! 4/5/6 turn left / forward / turn right, 1/2/3 strafe left / back /
@@ -375,6 +378,81 @@ fn screenshot(args: &[String], title: bool) {
     println!("{out}");
 }
 
+/// Parse a replay script: one `TICK CODE` per line (decimal or 0x hex
+/// interface command numbers, as in --cmd), `#` comments, and an `end TICK`
+/// line giving the number of ticks to render.
+fn parse_replay(text: &str) -> (Vec<(u32, u16)>, u32) {
+    let num = |v: &str| {
+        let v = v.trim();
+        match v.strip_prefix("0x") {
+            Some(h) => u32::from_str_radix(h, 16),
+            None => v.parse(),
+        }
+        .expect("bad number in replay script")
+    };
+    let mut cmds = Vec::new();
+    let mut end = 0;
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        let mut f = line.split_whitespace();
+        match (f.next(), f.next()) {
+            (Some("end"), Some(t)) => end = num(t),
+            (Some(t), Some(c)) => cmds.push((num(t), num(c) as u16)),
+            _ => {}
+        }
+    }
+    cmds.sort_by_key(|&(t, _)| t);
+    let last = cmds.last().map_or(0, |&(t, _)| t + 1);
+    (cmds, end.max(last))
+}
+
+/// Headless replay: load a save (or start a new game), apply the script's
+/// commands at their ticks and write frame NNNNN.png for every tick, so a
+/// recording of the original can be put next to the remake tick for tick.
+fn replay(args: &[String]) {
+    let opt = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1));
+    let script = std::fs::read_to_string(&args[0]).expect("read replay script");
+    let dir = std::path::PathBuf::from(opt("--frames").expect("--frames DIR"));
+    std::fs::create_dir_all(&dir).expect("create frames directory");
+    let mut d = load(&data_dir(None));
+    let mut g = match opt("--load") {
+        Some(p) => {
+            let gd = d.game_data.clone().expect("SKULL.EXE is needed to load saves");
+            save::read(std::path::Path::new(p), gd, d.creature_data.clone()).expect("load save")
+        }
+        None => new_game(&d),
+    };
+    let (cmds, end) = parse_replay(&script);
+    let mut next = cmds.iter().peekable();
+    let mut paused = false;
+    for tick in 0..end {
+        while let Some(&&(t, c)) = next.peek() {
+            if t > tick {
+                break;
+            }
+            next.next();
+            match c {
+                0x90 => paused = true,
+                0x91 => paused = false,
+                _ => {
+                    if let Some(gc) = input::game_command(c) {
+                        g.push_command(gc);
+                    }
+                }
+            }
+        }
+        if !paused {
+            g.advance();
+        }
+        let mut view = ui_view(&g, false);
+        view.paused = paused;
+        let frame = game_frame(&mut d, &g, &view);
+        let png = png::encode_rgb(SCREEN_W as u32, SCREEN_H as u32, &to_rgb(&d.assets.palette, &frame));
+        std::fs::write(dir.join(format!("{tick:05}.png")), png).expect("write frame");
+    }
+    println!("{end} frames in {}", dir.display());
+}
+
 /// BIOS scan code (plus modifier bits) for a macroquad key, as used by the
 /// original key table. Only keys the game binds are listed.
 fn scan_code(k: KeyCode) -> Option<u16> {
@@ -431,6 +509,7 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("--screenshot") => screenshot(&args[1..], false),
         Some("--screenshot-title") => screenshot(&args[1..], true),
+        Some("--replay") => replay(&args[1..]),
         _ => macroquad::Window::from_config(window_conf(), play(args)),
     }
 }
@@ -589,6 +668,20 @@ async fn play(args: Vec<String>) {
             draw_text(&label, 8.0, screen_height() - 12.0, 22.0, YELLOW);
         }
         next_frame().await;
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::parse_replay;
+
+    #[test]
+    fn parses_ticks_codes_comments_and_end() {
+        let (cmds, end) = parse_replay("# walk\n12 3\n4 0x07 # open inventory\n\nend 40\n");
+        assert_eq!(cmds, vec![(4, 7), (12, 3)]);
+        assert_eq!(end, 40);
+        // Without an end line the replay runs one tick past the last command.
+        assert_eq!(parse_replay("9 1").1, 10);
     }
 }
 
