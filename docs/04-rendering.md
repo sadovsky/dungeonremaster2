@@ -973,6 +973,22 @@ Simplifications, still TODO:
   index into the map's byte lists after the creature types and wall
   ornaments, i.e. the floor list), except type 0x27, which supplies one
   only when bits 7+ of word 1, less one, name the current map.
+- Open: far side-wall stripe at the start view. The 29 differing pixels
+  are columns x 91-92, rows 69-98, at the inner edge of cell 17's depth-4
+  wall: the original shows black (0,0,0) where the remake shows a very
+  dark brown (34,18,0). The rest of the wall matches, and flipping cells
+  17/18 does not help, so the cause is probably how the darkest shades of
+  that image are remapped (ramp or key handling in 0x4E3D5), not geometry.
+- Open: teleporter view, map 1 (9,7) facing north (gallery 05). With the
+  save's remake trailer removed (the original ignores it) the view differs
+  in 6,450 pixels, mostly rain streaks plus the centre. The square ahead,
+  (9,6), is a teleporter with value 0xB8: bit 3 set, bit 2 clear. The
+  remake draws a teleporter field only when both bits are set, so it draws
+  none, but the original shows the blue field there. The visibility rule
+  in the cell summary needs tracing. In the same view the remake draws the
+  wall ornament of (9,5)'s actuator and the original does not, and the
+  distant tower silhouettes differ in size, so the two renders may not be
+  from the same viewpoint; check the party position the original saved.
 - Open: map-edge-link floor ornaments. At map 3 (13,8) facing south the
   square two ahead, (13,10), is a map-edge link (a teleporter square with a
   type 0x27 switch naming map 3). For such squares, and for ornaments with
