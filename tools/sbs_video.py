@@ -38,8 +38,16 @@ DATA = MAIN / 'original/dumast2/DATA'
 CONF = MAIN / 're/dosbox/dm2.conf'
 OUT = MAIN / 're/video'
 BASE = DATA / 'SKSAVE0.DAT'          # the original's own save: only read
+# The original is recorded from a scratch copy of the install whose
+# SKULL.CFG selects the Sound Blaster Pro for digital sound: under DOSBox
+# 0.74 the SB16 digital driver (0xE015) produces no output at all, so the
+# sound effects were missing from every recording (docs/11). The user's
+# install and saves are never written.
+GAME = OUT / 'game'                  # mounted as C:
+GAME_DATA = GAME / 'dumast2/DATA'
+SBPRO_CONF = OUT / 'dm2_sbpro.conf'
 SLOT = 7
-SLOT_FILE = DATA / f'SKSAVE{SLOT}.DAT'
+SLOT_FILE = GAME_DATA / f'SKSAVE{SLOT}.DAT'
 TICK = 8 / 60                        # 133 ms (docs/05, measured in DOSBox)
 FPS = 30
 SCALE = 3
@@ -82,9 +90,35 @@ def click(w, x, y):
     xdo('mousemove', '--window', w, x, y, 'click', 1)
 
 
+def prepare_original():
+    """Build the scratch copy of the game (no CD image, no saves) with the
+    digital device set to a Sound Blaster Pro, and a DOSBox config that
+    mounts it as C:. The CD image is still mounted from the install."""
+    (GAME / 'dumast2').mkdir(parents=True, exist_ok=True)
+    run('rsync', '-a', '--delete', '--exclude', 'cd/', '--exclude', 'DATA/SKSAVE*',
+        str(DATA.parent) + '/', str(GAME / 'dumast2') + '/')
+    cfg = GAME / 'dumast2/SKULL.CFG'
+    out, section = [], None
+    for line in cfg.read_text().splitlines():
+        if line.startswith('['):
+            section = line.strip()
+        elif section == '[DIGITAL]' and line.startswith('DeviceName'):
+            line = 'DeviceName  = Sound Blaster Pro'
+        elif section == '[DIGITAL]' and line.startswith('DeviceID'):
+            line = 'DeviceID    = 0xe001'
+        out.append(line)
+    cfg.write_text('\r\n'.join(out) + '\r\n')
+    conf = []
+    for line in CONF.read_text().splitlines():
+        if line.lower().startswith('mount c '):
+            line = f'mount c {GAME}'
+        conf.append(line)
+    SBPRO_CONF.write_text('\n'.join(conf) + '\n')
+
+
 def open_original(save_slot):
     """Start DOSBox, skip the intro and load `save_slot`. Returns (proc, window)."""
-    p = subprocess.Popen(['dosbox', '-conf', str(CONF)], cwd=MAIN / 're/dosbox',
+    p = subprocess.Popen(['dosbox', '-conf', str(SBPRO_CONF)], cwd=MAIN / 're/dosbox',
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     w = None
     for _ in range(60):
@@ -303,6 +337,8 @@ def main():
     work = OUT / 'work'
     work.mkdir(parents=True, exist_ok=True)
     parts = []
+    if not compose_only and not realign:
+        prepare_original()
     try:
         for name in names:
             if compose_only:

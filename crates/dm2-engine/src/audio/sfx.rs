@@ -262,6 +262,19 @@ pub struct Sfx {
     pub pan_table: Option<PanTable>,
 }
 
+/// The key a request actually plays: the play wrapper 0x15BAA takes a
+/// fallback index (0xFE in every traced call) and substitutes it when the
+/// requested index has no sample, before the play function's checks. So a
+/// champion's wall-bump cry (0x16, portrait, 0x8A) plays the shared
+/// (0x16, 0xFE, 0x8A) sample (docs/11).
+pub fn resolve_idx(g: &Gdat, cat: u8, idx: u8, sub: u8) -> u8 {
+    if g.record(Key::new(cat, idx, 2, sub)).is_none() && g.record(Key::new(cat, 0xFE, 2, sub)).is_some() {
+        0xFE
+    } else {
+        idx
+    }
+}
+
 impl Sfx {
     pub fn new(has_header: bool) -> Sfx {
         Sfx { cache: HashMap::new(), playing: Vec::new(), has_header, volume: 1.0, pan_table: None }
@@ -281,7 +294,8 @@ impl Sfx {
     pub fn play(&mut self, g: &Gdat, dg: &Dungeon, party: &PartyPos, asleep: bool, registry: Option<&Registry>, reqs: &[SoundRequest]) {
         let mut grid: Option<SoundGrid> = None;
         let (mut queued, mut interface) = (Vec::new(), Vec::new());
-        for r in reqs {
+        for r0 in reqs {
+            let r = &SoundRequest { idx: resolve_idx(g, r0.cat, r0.idx, r0.sub), ..*r0 };
             if r.mode >= 1 && r.map != party.map {
                 continue;
             }
@@ -439,5 +453,23 @@ mod tests {
         let s = drain_sounds(&mut q);
         assert_eq!(s.len(), 1);
         assert_eq!(q.len(), 1);
+    }
+
+    #[test]
+    fn missing_sound_keys_fall_back_to_the_shared_index() {
+        let Ok(g) = Gdat::open(dm2_formats::gdat::default_path()) else { return };
+        // The wall-bump cry is requested per portrait but only the shared
+        // 0xFE entry has a sample (0x15BAA's fallback, docs/11).
+        assert!(g.record(Key::new(0x16, 14, 2, 0x8A)).is_none());
+        assert_eq!(resolve_idx(&g, 0x16, 14, 0x8A), 0xFE);
+        // A key with its own sample keeps its index.
+        let own = g
+            .records
+            .iter()
+            .find(|r| r.key.cat == 0x16 && r.key.kind == 2 && r.key.idx != 0xFE)
+            .expect("a per-portrait champion sound");
+        assert_eq!(resolve_idx(&g, 0x16, own.key.idx, own.key.sub), own.key.idx);
+        // No shared entry either: the index is left alone (nothing plays).
+        assert_eq!(resolve_idx(&g, 0x16, 14, 0x7F), 14);
     }
 }

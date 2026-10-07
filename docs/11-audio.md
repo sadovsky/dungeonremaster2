@@ -383,15 +383,15 @@ curve, linear fade, effects at 0.8):
 | outdoor (map 1) | +15.8 dB | +17.7 dB |
 
 **Open:**
-- **No effects in the recordings:** none of the five DOSBox recordings
-  contains a sound-effect transient (the routes include walking, turning,
-  a door, stairs and a creature in view), so the original's digital output
-  apparently did not reach them, most likely because the digital path did
-  not start under that DOSBox configuration. The effects level therefore
-  comes from the traced driver levels (unity at level 7), not from the
-  recordings, and the outdoor segment, where creature sounds dominate the
-  remake, cannot be compared until the original is recorded with working
-  digital sound.
+- **Effects level (measured):** the wall-bump cry, recorded from the
+  original with FM music off, peaks at −27.4 dB in DOSBox's own capture,
+  about 5 dB below the music's median when music plays. The remake plays
+  the same cry at −9.5 dB, so its effects are about 18 dB too loud relative
+  to the calibrated music. That agrees with the outdoor segment's excess.
+  Cry timing matches (onsets within 0.2 s of the original's over five
+  bumps). The level is measured with the SB Pro driver (see "Recording the
+  original's sound in DOSBox"); whether the SB16 driver plays at the same
+  level on real hardware is not known.
 - **Stairs offset:** before its fade the stairs segment stays about 4.7 dB
   louder than the original under every curve tried and with 9 or 18
   voices, so it is not the loudness law. Candidates: the music state the
@@ -399,3 +399,34 @@ curve, linear fade, effects at 0.8):
 - **Assumed, not verified:** that DOSBox mixes the SB digital and OPL
   outputs at equal level (so digital full scale equals the calibrated FM
   scale), and that HMI's digital master volume scales samples linearly.
+
+## Recording the original's sound in DOSBox
+
+Under DOSBox 0.74-3 the game's Sound Blaster 16 digital driver (device ID
+0xE015 in SKULL.CFG) produces no output at all. With FM music switched off
+(`oplmode=none`), DOSBox's own wave capture of five wall bumps is exact
+digital silence, so the effects were never played, rather than lost on the
+way to PulseAudio. Setting DOSBox's high DMA to the same channel
+(`hdma=1`) makes the digital path run, but it produces a constant
+near-full-scale signal, consistent with the driver's 16-bit buffer being
+read in the wrong format.
+
+Selecting the Sound Blaster Pro digital driver (device ID 0xE001, an 8-bit
+device in SETUP.INI) on the same port, IRQ and DMA fixes it, with DOSBox's
+`sbtype=sb16` unchanged: every bump's cry is present in both the wave
+capture and the PulseAudio monitor. `tools/sbs_video.py` therefore records
+the original from a scratch copy of the install (`re/video/game`, no CD
+image and no saves) whose SKULL.CFG selects the SB Pro for digital sound,
+with a generated DOSBox config (`re/video/dm2_sbpro.conf`) that mounts the
+copy as C:. The user's install and save files are never written.
+`tools/sfx_bump.sh`, `tools/sfx_bump_cap.sh` and `tools/sfx_env.py` repeat
+the wall-bump measurement.
+
+**Sample fallback (0x15BAA).** The play wrapper 0x15BAA takes a fallback
+index (0xFE in every traced call). When the requested index has no sample,
+it substitutes the fallback before the play function's checks, so a
+champion's wall-bump cry (0x16, portrait, 0x8A) plays the shared
+(0x16, 0xFE, 0x8A) sample: only sub 0x82 has per-portrait champion
+samples. The remake resolves the index the same way, before the
+registration check (`sfx::resolve_idx`); before this, the bump cry never
+played.

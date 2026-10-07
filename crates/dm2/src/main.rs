@@ -688,7 +688,11 @@ fn replay(args: &[String]) {
             if g.game_over {
                 a.stop_all();
             } else {
-                a.music_tick(g.party.map);
+                // DM2_NO_MUSIC renders sound effects only (for level checks
+                // against the original recorded with FM music off).
+                if std::env::var_os("DM2_NO_MUSIC").is_none() {
+                    a.music_tick(g.party.map);
+                }
                 let portraits: Vec<u8> = g.champions.iter().map(|c| c.portrait()).collect();
                 a.play_tick(&g.dungeon, &g.party, g.party_status.asleep, &portraits, &reqs);
             }

@@ -500,7 +500,8 @@ pub fn bump(g: &mut GameState, mv: Move, dest: (i32, i32)) {
     for i in [first, second].into_iter().flatten() {
         if crate::apply::damage_champion(g, i, 1, 0x18, 2) != 0 {
             let portrait = g.champions[i].portrait();
-            g.effects.push(Effect::Sound { cat: 0x16, idx: portrait, sub: 0x8A, map, x: dest.0, y: dest.1 });
+            // 0x234A8: the cry plays through 0x15BAA with mode 1, volume 100.
+            g.effects.push(Effect::SoundAt { cat: 0x16, idx: portrait, sub: 0x8A, map, x: dest.0, y: dest.1, vol: 100, mode: 1 });
         }
     }
 }
