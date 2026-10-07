@@ -305,10 +305,13 @@ Cells 9 and 10 (the far side cells at depth 2) have no contents pass
   to the request's screen position after scaling (0x4E502); the y nudge
   is skipped for alcove items (0x51EB7's fifth argument).
 - The per-category offset attribute (cat, 0xFE, 12, sub) is added.
-- Colour key: attribute (cat, index, 11, 4) when present, else 10. The
-  attribute can be 0x8000; the request's key field is 16 bits, so that
-  value never matches a pixel and the item is drawn fully opaque
-  (verified: treating it as key 0 punches holes in container images).
+- Colour key: always 10 on this path. 0x51EB7 passes the drawer
+  (0x4E502) a constant 10 as its ninth argument, which the drawer stores
+  at 0x801BA and hands to the light and key setup (0x4E3D5); attribute
+  (cat, index, 11, 4) is not read here. (An earlier note used attribute 4,
+  treating 0x8000 as "opaque"; that was checked against the Python
+  reference renderer, not the original. Against the original, map 3's
+  misc item 63, whose attribute 4 is 0x320, is drawn keyed.)
 
 ### Missiles and spell effects (0x518B0)
 
@@ -511,7 +514,12 @@ separate visual generator to keep the simulation deterministic. Sound (24, 0, 2,
   indexed the same way, a digit giving frames 0-9 and a letter `char −
   0x4B`. The frame keeps 6 bits (bits 10-15 of the face word) and adds
   4·frame to the image sub. The phase is 0 for wall ornaments; some
-  actuators supply one from their record.
+  actuators supply one from their record. Not every face animates: the
+  wall summary (0x1E4EE) asks for a frame only in some cases. For a mode-1
+  text thing the type in word 1 bits 11-15 decides: type 2 always
+  animates; types 4, 5, 7, 8 and 0x0D animate only when word 1 bit 0 is
+  set; the others show frame 0. (Map 3's type-5 wall texts with bit 0
+  clear show ornament 74's grey frame 0, not its cyan frames 1-3.)
 - **Wall writing**: text things in mode 0, or in mode 1 with bits 11-15 =
   14, shown when bit 0 is set. This dungeon uses only the mode-1 form,
   whose text is GRAPHICS.DAT message (3, 0, 5, bits 3-10). The map set's
@@ -540,7 +548,9 @@ separate visual generator to keep the simulation deterministic. Sound (24, 0, 2,
     colour key; its cause is open.
 - **Floor ornaments** (0x50081): from the cell summary's floor slot (the
   set's attribute 0x6B, or an actuator or text thing on the square);
-  category 10.
+  category 10. Attribute 5 places them like wall ornaments: slot + 1 in the
+  low byte and an anchor kind in the high byte, both passed to the drawer;
+  when the attribute is 0 the slot is 12 and the anchor 0 (centred).
 
 ### Depth scale and shading
 
@@ -963,6 +973,22 @@ Simplifications, still TODO:
   index into the map's byte lists after the creature types and wall
   ornaments, i.e. the floor list), except type 0x27, which supplies one
   only when bits 7+ of word 1, less one, name the current map.
+- Open: far side-wall stripe at the start view. The 29 differing pixels
+  are columns x 91-92, rows 69-98, at the inner edge of cell 17's depth-4
+  wall: the original shows black (0,0,0) where the remake shows a very
+  dark brown (34,18,0). The rest of the wall matches, and flipping cells
+  17/18 does not help, so the cause is probably how the darkest shades of
+  that image are remapped (ramp or key handling in 0x4E3D5), not geometry.
+- Open: teleporter view, map 1 (9,7) facing north (gallery 05). With the
+  save's remake trailer removed (the original ignores it) the view differs
+  in 6,450 pixels, mostly rain streaks plus the centre. The square ahead,
+  (9,6), is a teleporter with value 0xB8: bit 3 set, bit 2 clear. The
+  remake draws a teleporter field only when both bits are set, so it draws
+  none, but the original shows the blue field there. The visibility rule
+  in the cell summary needs tracing. In the same view the remake draws the
+  wall ornament of (9,5)'s actuator and the original does not, and the
+  distant tower silhouettes differ in size, so the two renders may not be
+  from the same viewpoint; check the party position the original saved.
 - Open: map-edge-link floor ornaments. At map 3 (13,8) facing south the
   square two ahead, (13,10), is a map-edge link (a teleporter square with a
   type 0x27 switch naming map 3). For such squares, and for ornaments with
@@ -971,10 +997,10 @@ Simplifications, still TODO:
   (here colour 14) after drawing the linked map's squares beyond the link
   (0x52BF6 / 0x52518 over the cells behind it). Floor ornament 34 is such a
   portal frame: 41% of its depth-2 image is colour 14, which the original
-  fills with the view across the link and the remake shows as a brown
-  blob. Not implemented; this accounts for most of the remaining
-  difference at that view (11,057 differing pixels, the floor bands now
-  matching).
+  fills with the view across the link. Not implemented. At that view the
+  brown blob and the shifted tiled floor came from ignoring attribute 5's
+  anchor, not from this path: with the anchor honoured the view differs in
+  480 viewport pixels (was 11,057), none of them in the portal.
 - (Resolved.) The door view at map 2 (19,12) differed in the panel and
   around it. Two causes, both in the door-across path:
   - **Panel light.** 0x5346E passes the lit drawer (0x4E502) a light

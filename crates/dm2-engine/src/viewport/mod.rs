@@ -260,6 +260,9 @@ struct Cell {
     /// Wall ornament per face, indexed by direction relative to the party
     /// facing (2 = the face looking back at the party). 0 = wall writing.
     faces: [u8; 4],
+    /// Faces (bit per relative direction) whose ornament is drawn at frame
+    /// 0 rather than animated (0x1E4EE leaves them unanimated).
+    face_still: u8,
     /// Text thing shown as wall writing on the face towards the party.
     wall_text: Option<ThingRef>,
     floor_orn: u8,
@@ -474,7 +477,7 @@ fn summarise(cx: &Ctx, x: i32, y: i32) -> Cell {
     let dg = cx.dg;
     let sq = dg.square(cx.map, x, y).0;
     let things = dg.things_at(cx.map, x, y);
-    let mut c = Cell { x, y, vt: vt::ROCK, sq, faces: [NO_ORN; 4], wall_text: None, floor_orn: NO_ORN, door: None, things };
+    let mut c = Cell { x, y, vt: vt::ROCK, sq, faces: [NO_ORN; 4], face_still: 0, wall_text: None, floor_orn: NO_ORN, door: None, things };
     let lists = dg.map_lists(cx.map);
     match sq >> 5 {
         0 => c.vt = vt::WALL,
@@ -509,7 +512,20 @@ fn summarise(cx: &Ctx, x: i32, y: i32) -> Cell {
                             c.wall_text = Some(t);
                         }
                     }
-                    (1, _) => c.faces[rel] = (w1 >> 3) as u8,
+                    (1, tt) => {
+                        c.faces[rel] = (w1 >> 3) as u8;
+                        // 0x1E4EE animates a mode-1 ornament only for type 2,
+                        // or for types 4, 5, 7, 8 and 0x0D with bit 0 set;
+                        // otherwise the face shows frame 0.
+                        let animate = match tt {
+                            2 => true,
+                            4 | 5 | 7 | 8 | 0x0D => w1 & 1 != 0,
+                            _ => false,
+                        };
+                        if !animate {
+                            c.face_still |= 1 << rel;
+                        }
+                    }
                     _ => {}
                 }
             } else if kind == 3 {
@@ -777,7 +793,11 @@ fn draw_wall_ornament(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cel
         }
     };
     // Animated ornaments add 4 per frame to the sub (0x1E3DA).
-    let step = (ornament_frame(a, 9, orn, cx.ex.tick, 0) << 2) as u8;
+    let step = if cell.face_still & (1 << rel) != 0 {
+        0
+    } else {
+        (ornament_frame(a, 9, orn, cx.ex.tick, 0) << 2) as u8
+    };
     let (sub, flip) = if side == 0 {
         (1u8, 0u8)
     } else if side > 0 {
@@ -910,9 +930,12 @@ fn draw_floor_ornament(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Ce
     // (0x4E620), not the key.
     let set_key = a.gdat.lookup(Key::new(8, cx.set, 11, 100)).and_then(|k| u8::try_from(k).ok());
     let key = key_attr(a, 10, orn, set_key, true);
-    let slot = match attr(a, 10, orn, 5) {
-        0 => 12u16,
-        v => (v & 0xFF).saturating_sub(1),
+    // Attribute 5: slot + 1 in the low byte and the anchor kind in the high
+    // byte (default slot 12, anchor 0 = centred), passed to the drawer as
+    // for wall ornaments (0x50081).
+    let (slot, anchor) = match attr(a, 10, orn, 5) {
+        0 => (12u16, 0u16),
+        v => ((v & 0xFF).saturating_sub(1), v >> 8),
     };
     let rid = 5000 + 25 * c as u16 + slot;
     let (sub, sc) = if a.has_image(10, orn, FLOOR_ORN_SUB[c]) {
@@ -926,6 +949,7 @@ fn draw_floor_ornament(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Ce
     r.ys = sc;
     r.depth = Some(depth);
     r.key = key;
+    r.anchor = Some(anchor as i16);
     draw(a, buf, cx, r);
 }
 
@@ -1338,7 +1362,9 @@ fn draw_item(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usi
     }
     let (cat, idx) = item_key(cx.dg, t);
     let sc = ITEM_SCALE[depth * 4 + 4 - row];
-    let key = key_attr(a, cat, idx, Some(10), false);
+    // 0x51EB7 passes the drawer a constant colour key of 10 for floor
+    // items; attribute 4 is not consulted here.
+    let key = Some(10u8);
     let post = cx.ex.stack_nudges.map_or((0, 0), |t| (NUDGE[(t[2 * stack] & 7) as usize], NUDGE[(t[2 * stack + 1] & 7) as usize]));
     let r = Req { xs: sc, ys: sc, depth: Some(depth), key, post, ..Req::new(cat, idx, 0, 5000 + 25 * c as u16 + slot as u16) };
     let placed = draw(a, buf, cx, r);
