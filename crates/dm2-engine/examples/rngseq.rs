@@ -26,10 +26,25 @@ fn main() {
         Err(_) => GameState::new_game_full(&a.dungeon, gd, Some(cd.clone())),
     };
     let step: Option<u32> = std::env::var("STEP").ok().and_then(|s| s.strip_prefix("F@").and_then(|t| t.parse().ok()));
+    // CMDS=TICK:CODE,... dispatches interface commands (hex codes, as the
+    // original's click zones produce) at those ticks, before the tick runs.
+    let cmds: Vec<(u32, u16)> = std::env::var("CMDS")
+        .unwrap_or_default()
+        .split(',')
+        .filter_map(|p| {
+            let (t, c) = p.split_once(':')?;
+            Some((t.parse().ok()?, u16::from_str_radix(c.trim_start_matches("0x"), 16).ok()?))
+        })
+        .collect();
     let _ = creatures::set_data;
     while g.tick < end {
         if step == Some(g.tick) {
             g.push_command(dm2_engine::state::Command::Move(dm2_engine::world::Move::Forward));
+        }
+        for &(t, c) in &cmds {
+            if t == g.tick {
+                dm2_engine::hand::dispatch(&mut g, c);
+            }
         }
         g.advance();
     }

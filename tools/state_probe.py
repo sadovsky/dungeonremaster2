@@ -34,6 +34,9 @@ GAME = MAIN / 're/state/game'           # mounted as C:
 DATA = GAME / 'dumast2/DATA'
 PROBE_CONF = MAIN / 're/state/dm2_probe.conf'
 LOAD_SLOT = 7
+# DM2_PROBE_SLOW multiplies every wait: the draw-logging build runs slower,
+# and fixed waits made its save-dialog clicks land too early.
+SLOW = float(os.environ.get('DM2_PROBE_SLOW', '1'))
 
 
 def xdo(*a):
@@ -44,7 +47,7 @@ def click(w, x, y, wait=1.0):
     # One call, real pointer click: DOSBox ignores synthetic per-window clicks.
     xdo('windowactivate', '--sync', w)
     xdo('mousemove', '--window', w, x, y, 'click', 1)
-    time.sleep(wait)
+    time.sleep(wait * SLOW)
 
 
 def key(w, name):
@@ -85,7 +88,7 @@ def start(load=False):
     if not w:
         p.kill()
         sys.exit('no DOSBox window')
-    time.sleep(6)
+    time.sleep(6 * SLOW)
     steady = 0
     for _ in range(40):
         g = subprocess.run(['xdotool', 'getwindowgeometry', w], capture_output=True, text=True).stdout
@@ -96,8 +99,8 @@ def start(load=False):
         else:
             steady = 0
             xdo('key', '--window', w, 'Escape')
-        time.sleep(1.5)
-    time.sleep(2)
+        time.sleep(1.5 * SLOW)
+    time.sleep(2 * SLOW)
     if load:
         click(w, 45, 78, wait=4)                    # title: Resume
         click(w, 90, 45 + 8 * LOAD_SLOT, wait=1)    # slot row
@@ -149,9 +152,10 @@ def main():
                     log.append((round(time.time() - t0, 3), parts[0]))
                     time.sleep(gap)
             elif kind == 'wait':
-                time.sleep(float(rest))
+                time.sleep(float(rest) * SLOW)
             elif kind == 'click':
                 x, y = map(int, rest.split(','))
+                log.append((round(time.time() - t0, 3), f'click {x},{y}'))
                 click(w, x, y)
         save(w, slot)
     finally:

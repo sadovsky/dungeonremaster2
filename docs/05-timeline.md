@@ -203,6 +203,24 @@ pit run matches draw for draw through tick 1710 and parts at tick 1711
 (creature 0x1047 starts its program 0x36 with action 0xC in the original);
 the idle run still matches through tick 156 (6,151 draws each).
 
+**Combat probe (round 8).** Opponent: creature 0x1041 (type 0x09: attack 6,
+36 health, defence 65; `examples/weakcreatures` lists active groups weakest
+first), with the party placed by `posave` at map 22 (3,2) facing south.
+`examples/zonefind` reads the click zones from SKULL.EXE: Torham's hand cells
+are commands 0x74 and 0x75 at (239,50) and (261,50); menu rows 0x71-0x73 at
+(273,58), (273,76) and (273,94). In the draw-logging build, with the
+champion action executor 0x414A5 hooked, three attacks executed at ticks 95,
+172 and 250. `examples/rngseq` replays interface commands with
+`CMDS=TICK:CODE,...`. The draws part at tick 58, the first tick after
+loading and before any attack: in the original, creature 0x109C makes three
+behaviour-probability rolls, a sequence-branch draw and a frame-timing draw,
+while the remake's 0x109C does not think on that tick. So a post-load
+creature scheduling difference on map 22 has to be fixed before the combat
+rolls can be compared. The draw-logging build still fails to write the
+probe's save at the end of a run, even with waits stretched 2.5 times
+(`DM2_PROBE_SLOW`), so a field-by-field save comparison needs the plain
+build with a separately timed run.
+
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
 (5,13), from the pit probe's save), the original reached its game-over
