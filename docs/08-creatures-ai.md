@@ -271,8 +271,9 @@ data for every behaviour that uses them:
 |---------|-----|-------|
 | 0 | none | one fixed spec at 0x731D2: "stay here" (goal type 0) |
 | 1 | row argument | the general case (0x2759E) |
-| 2, 6 | 2 | 6 adds a distance analysis of the party (0x26A67) |
-| 3, 7 | 4 | as above |
+| 2 | 2 | plain tag rule (0x27663) |
+| 3 | 4 | as 2 |
+| 6, 7 | 2, 4 | attack goals (0x277FB): nothing unless the creature is alert this think (0x7F589) and its type has attack bits; the distance analysis (0x26A67, tag 1 or 3) drops the throw attack (value 8) when the creature carries nothing of those specs' kinds; a non-zero row argument gives a zero distance limit |
 | 4 | 1 | distance-limited by the analysis (0x276F2) |
 | 5 | 3 | as 4 |
 | 8 | 5 | passes the previous goal's target when its type was 0x0D |
@@ -806,8 +807,8 @@ also commits an attack action to the slot; that half is not ported yet.
   (`merchant.rs`, `ops.rs`).
 - **Partial:** spec conditions 4, 9, 0x0A-0x0C and 0x11; goal types 5
   (flee keeps "farther than here" rather than the farthest square), 6, 7
-  and 0x0A-0x1B; builders 2-7 use the plain tag rule without the distance
-  analysis, and 0x0E adds nothing; the planner doesn't follow pits or
+  and 0x0A-0x1B; builders 2-5 use the plain tag rule without the distance
+  analysis (6 and 7 are ported, round 13), and 0x0E adds nothing; the planner doesn't follow pits or
   map-edge links; `Y` only covers argument 0 (the payout modes 0x29598 and
   0x15958 are not modelled); pile values use the item value attribute in
   place of the per-creature valuation 0x15737; the light bonus word at

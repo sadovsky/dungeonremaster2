@@ -382,6 +382,47 @@ takes a different goal or opcode; not yet traced. The distance analysis
 0x26A67, which can clear mask bit value 8 before `R` commits, is still not
 modelled.
 
+**Round 13: attacks wait for alertness.** The tick-188 think of round 12
+builds no goal at all in the original: its picker (0x26008) runs, but the
+planner and the program start are never reached. Program 5's attack rows use
+goal builders 6 and 7, which both go through 0x277FB, and that routine adds
+nothing unless the creature is alert this think (the 0x7F589 flag the context
+setup rolls from the ticks since the slot's last action). A creature that has
+just attacked is usually not alert yet, so its next attack waits; the gaps
+between commits in a hooked run (19, 21, 18, 15 and 11 ticks) follow the
+alertness roll. The same routine also runs the distance analysis (0x26A67)
+with tag 1 (builder 6) or 3 (builder 7): it counts the creature's possessions
+of each matching spec's item kind (0x2697B, looking into containers) and drops
+the throw attack (mask value 8) from the goals' values when the count is not
+positive. Opcode `R` repeats that check with the chosen goal's data and tag.
+
+**Delayed sounds take timeline records.** A creature blow that hurts a
+champion plays the champion's cry two ticks later (0x18758: sub 0x82 for the
+portrait with fallback 0xFE, mode 2, volume 200, extra byte 0x69). Every
+request with mode 2 or more schedules event 0x15, with the play function's
+extra byte as the event's priority. Because that schedule happens inside the
+creature's handler, after its event was popped and before it is rescheduled,
+the cry takes the creature's just-freed record and the creature moves to the
+next free one. Records decide the order of same-tick events with the same
+type and priority, so this changed which of two creatures ran first. The
+hooked build's draw lines now end with the loaded creature's event record
+(slot +0x02), and `examples/evorder` lists the remake's events due at a tick
+(or all of them with `SHOW=all`) in run order with their records.
+
+**Result (round 13).** The combat probe of round 8 now matches the original
+draw for draw through tick 201 (draw 6139); a new hooked run with three
+attacks (executor at ticks 170, 359 and 549) matches through tick 176 (draw
+5205). The idle run stays identical through tick 155 and the pit run through
+tick 1711. At tick 177 of the new run two creatures of the same type and
+event kind (0x109C and 0x1080) run in the other order: at tick 170 the hurt
+creature's home-square signal takes 0x109C's freed record 2 in both games, as
+it should, but the remake's next free record is 26 while the original's is
+below 0x1080's 18. So the free list's order has drifted, most likely through
+the lifetime of the delayed cry's record (taken at tick 161, freed when it
+plays two ticks later) or another allocation between ticks 161 and 170. The
+field-by-field combat comparison is still open: the hooked build still writes
+no save.
+
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
 (5,13), from the pit probe's save), the original reached its game-over

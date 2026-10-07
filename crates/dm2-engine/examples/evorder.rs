@@ -36,6 +36,22 @@ fn main() {
         }
         g.advance();
     }
+    // SHOW=all lists every queued event (record order) instead of only those
+    // due at TICK.
+    if std::env::var("SHOW").as_deref() == Ok("all") {
+        let mut evs: Vec<_> = g.timeline.iter().map(|(s, e)| (s, *e)).collect();
+        evs.sort_by_key(|(s, _)| *s);
+        for (slot, ev) in evs {
+            let who = if ev.w10 & 0x8000 != 0 {
+                g.creature_slots.get((ev.w10 & 0x7FFF) as usize).and_then(|s| s.as_ref()).map(|s| s.thing.0 & 0x3FFF)
+            } else {
+                None
+            };
+            let who = who.map_or("-".to_string(), |c| format!("{c:#06x}"));
+            println!("rec {slot:4} kind {:#04x} prio {:#04x} tick {} creature {who}", ev.kind, ev.prio, ev.tick);
+        }
+        return;
+    }
     let mut tl = g.timeline.clone();
     while tl.due(at) {
         let Some(slot) = tl.iter().next().map(|(s, _)| s) else { break };
