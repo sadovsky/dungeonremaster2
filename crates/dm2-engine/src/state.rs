@@ -96,6 +96,10 @@ pub struct GameState {
     /// read the table entry before index 0 (see the off-map slowdown in
     /// 0x3023F). Transient.
     pub creature_class_loaded: bool,
+    /// The thinking creature's previous action (0x7F56A): its slot action
+    /// when the context was set up for a new action (event 0x22), with "no
+    /// action" read as 0. Goal kind 0x0A tests its flags. Transient.
+    pub creature_prev_action: u8,
     /// Result of the last alertness roll (0x7F589). Transient; tentative.
     pub creature_alert_roll: u16,
     /// Save-game fields the engine does not model yet (script variables,
@@ -142,6 +146,7 @@ impl GameState {
             play_start_pending: false,
             creature_ctx_rolled: false,
             creature_class_loaded: false,
+            creature_prev_action: 0,
             creature_alert_roll: 0,
             legacy: Default::default(),
             hand: Default::default(),

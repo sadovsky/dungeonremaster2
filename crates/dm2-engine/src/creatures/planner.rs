@@ -156,14 +156,15 @@ pub fn satisfies_on(g: &mut GameState, s: &Searcher, goal: &Goal, map: usize, x:
         // remake's goals don't carry that word, which is normally unset.)
         0x0D => distance > 0 && (goal.arg <= 0 || lfsr_gate(g)),
         // The path test with no target square and the creature's facing as
-        // the direction (docs/05, round 9): on the party's map, for types
-        // whose flag byte in the table at 0x75136 has bits 0-1 clear, the
-        // party stands on the square ahead. Tentative: the table's index is
-        // taken to be the creature type.
+        // the direction (docs/05, round 9): on the party's map, when the
+        // action the creature just finished (0x7F56A, set by the context
+        // setup for a new action) has bits 0-1 clear in the action flag table
+        // at 0x75136, the party stands on the square ahead. So a creature
+        // does not take this goal straight after an attack.
         0x0A => {
             let f = super::facing(g, s.group) as usize;
             let flags_clear = g.creature_data.as_ref().is_some_and(|d| {
-                d.action_flags(super::creature_type(g, s.group)) & 3 == 0
+                d.action_flags(g.creature_prev_action) & 3 == 0
             });
             party_map && flags_clear && (x + DX[f], y + DY[f]) == (g.party.x, g.party.y)
         }

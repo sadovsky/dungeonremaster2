@@ -541,6 +541,38 @@ fn party_facing_mask_is_relative_to_the_partys_facing() {
     assert!(super::planner::satisfies_on(&mut g, &s, &goal, 22, 3, 2, 1, 1, (3, 3)));
 }
 
+#[test]
+fn facing_path_goal_waits_after_an_attack() {
+    // Goal kind 0x0A takes the party on the square ahead only when the
+    // action the creature just finished (0x7F56A) has bits 0-1 clear in the
+    // action flag table. After a melee attack (action 8) it does not: seen at
+    // tick 202 of the round 8 combat log, where the original's creature idles
+    // instead of attacking again.
+    let Some((mut g, d)) = load() else { return };
+    assert_ne!(d.action_flags(8) & 3, 0, "melee attack is a flagged action");
+    assert_eq!(d.action_flags(0) & 3, 0, "idle is not");
+    let s = super::planner::Searcher {
+        map: 22,
+        x: 3,
+        y: 3,
+        mask: 0xFFFF,
+        size: 1,
+        group: ThingRef(0x3FFE),
+        attack_mask: 0,
+        range: 1,
+        info0: 0,
+        cflags: 0,
+    };
+    let goal = super::planner::Goal { kind: 0x0A, arg: 0, program: 5, limit: 0, data: 0, mode: 0xFFFF, value: 0xFFF, tag: 2 };
+    // The creature faces north (its default facing) toward the party.
+    g.party = crate::world::PartyPos { map: 22, x: 3, y: 2, dir: 2 };
+    let ahead = super::facing(&g, s.group) == 0;
+    g.creature_prev_action = 8;
+    assert!(!super::planner::satisfies_on(&mut g, &s, &goal, 22, 3, 3, 0, 1, (3, 3)));
+    g.creature_prev_action = 0;
+    assert_eq!(super::planner::satisfies_on(&mut g, &s, &goal, 22, 3, 3, 0, 1, (3, 3)), ahead);
+}
+
 /// 0x56BA5's visiting order: the rectangle centred on the event square, rows
 /// from the highest y down, squares from the highest x down, clipped to the
 /// map. Data-free.

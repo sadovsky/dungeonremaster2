@@ -207,6 +207,11 @@ pub fn begin_action(g: &mut GameState, d: &CreatureData, ctx: &Ctx) {
     let s = ctx.slot_mut(g);
     s.stage = 0;
     s.armed = 0;
+    // The context setup for a new action keeps the action just finished
+    // (0x7F56A, "no action" read as 0) before clearing it; goal kind 0x0A
+    // tests that action's flags.
+    let prev = ctx.slot(g).action;
+    g.creature_prev_action = if prev == NO_ACTION { 0 } else { prev };
     let queued = ctx.slot(g).queued;
     if queued == NO_ACTION {
         set_action(g, ctx, NO_ACTION);
