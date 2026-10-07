@@ -1545,6 +1545,30 @@ that cell:
 | 0x1C | With an empty hand and word 2 bit 2 clear: move the party to the target square (0x4BED2), facing word 2 bits 3-4 (absolute when inverted, otherwise added to the party's facing), then fire. |
 | 0x3F | Clears the busy bit when clicked with an empty hand; it fires nothing except in follow mode (where it sends set) |
 
+## Lightning strikes (0x5A073, code)
+
+The per-tick weather step makes its strike roll everywhere, but acts on a
+strike only when the environment flag is on (outdoor map sets); indoors
+the roll is the only effect. A strike, in order:
+
+1. With rain below 0xB6, clears script byte variable 0x40 (0x1512E with
+   operation 6 and value 0).
+2. Rolls `random(rain + 1)`; above 0x3B it arms (rnd & 7) + 1 attempts to
+   explode lightning on a random open floor square (two `random(0x20)`
+   draws per attempt), or fires the set's fixed strike square when
+   attribute (8, set, 11, 0x6C) is set. A bolt landing close to the party
+   in the direction it faces adds 1 to script variable 0x41.
+3. If no attempt is left, a random bit decides on a sky bolt: backdrop
+   0x64 + `random(3)`, and when the set has that image, a position from
+   `random(100)` and a 2-bit draw.
+4. Every other sky bolt (a toggle at 0x76188, not saved) plays thunder
+   (0x17, set, 0) at the party through the delayed queue, after
+   `random(10) + 5` ticks with no rain or 0x4C - rain / multiplier,
+   clamped to 1-15.
+5. Sets the flash flag (0x7F248) and recomputes the darkness step, which
+   the flag forces to full light; the next tick clears it. So each strike
+   brightens exactly one frame.
+
 ## Open questions
 
 - The original's per-tick random draws (about 37.7 per tick when idle, tied to game ticks) and its startup draws (about 120 before the recruit and about 140 more before the first tick); see "Idle draw rate" and "Open lead: creature animation" above.

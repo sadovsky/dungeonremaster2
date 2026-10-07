@@ -1577,6 +1577,10 @@ fn draw_rain(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, set: u8, ex: &ViewE
     }
     let ox = (cx.rand() & 0xFF) as usize % s.w;
     let oy = (cx.rand() & 0x1F) as usize % s.h;
+    // 0x4E79C blits the overlay through 0x4E226's colour map, which darkens
+    // by the ambient level (0x802CE) only: at night the rain is drawn almost
+    // black. Colour 0 is the key.
+    let lm = light_map(a, cx, None, Some(0), false, true);
     for y in 0..buf.h {
         let sy = (y + oy) % s.h;
         for x in 0..buf.w {
@@ -1588,9 +1592,13 @@ fn draw_rain(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, set: u8, ex: &ViewE
             if v == 0 {
                 continue;
             }
-            buf.px[y * buf.w + x] = match &s.cmap {
+            let c = match &s.cmap {
                 Some(m) => m[(v & 15) as usize],
                 None => v,
+            };
+            buf.px[y * buf.w + x] = match &lm {
+                Some(m) => m[c as usize],
+                None => c,
             };
         }
     }

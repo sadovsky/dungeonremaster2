@@ -729,7 +729,15 @@ night.
   for wind from the side or 0x71-0x74 for wind from ahead or behind, by
   rain level (0x10, 0x40, 0x80), mirrored when the relative wind is 1
   (0x4E733), drawn through layout 702 with random source offsets
-  (0x4E79C).
+  (0x4E79C). The overlay goes through the same ambient-only colour map as
+  the backdrops (0x4E226, keyed on colour 0), so its brightness follows
+  the darkness step: at night the streaks are drawn nearly black and the
+  rain is barely visible.
+- **Strikes:** outdoors only (the environment flag gates the strike block
+  of 0x5A073). Each strike ends by setting the flash flag (0x7F248) and
+  recomputing the darkness step, so the next frame is drawn at full
+  light; the following tick clears the flag. A strike that lands no
+  explosion may add a sky-bolt backdrop (0x64-0x66) to that tick's list.
 
 **Remake differences (tentative or simplified):**
 - The rain overlay is tiled over the viewport with colour key 0 and
@@ -739,9 +747,14 @@ night.
 - The cloud build-up condition follows the visible branches of a
   tangled decompilation.
 - Lightning strikes try up to 8 random squares and explode the first open
-  floor; the original's square test, its party-distance thunder rule and
-  the fixed strike square of attribute (8, set, 11, 0x6C) are not
-  modelled. Thunder plays as global sound 0x40 at the party.
+  floor; the original's square test, its party-distance rule and the
+  fixed strike square of attribute (8, set, 11, 0x6C) are not modelled.
+  The sky bolt is drawn at its script's default place, not at the random
+  position (0x19234) the original gives it.
+- Strike timing depends on the game RNG, which outdoor runs don't yet
+  match draw for draw, so flashes and sky bolts appear at different
+  ticks in the two games (in the outdoor video segment the original
+  flashes on single frames at 0.0, 0.4, 8.4 and 9.6 s).
 - The step adjustment for the word at 0x7F972 is not modelled. Bit-15
   floor-ornament sources next to map-edge links (0x1D113 test) are treated
   like ordinary bit-15 sources.

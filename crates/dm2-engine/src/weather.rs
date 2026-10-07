@@ -61,6 +61,12 @@ pub struct Weather {
     pub first: bool,
     /// Lightning flash: forces full light for the next darkness update (0x7F248).
     pub flash: bool,
+    /// Sky bolt drawn this tick after a strike that hit no square: the
+    /// backdrop image (0x64-0x66) and its random position (0x5A6DC).
+    pub bolt: Option<(u8, u16)>,
+    /// Alternates on every sky bolt; thunder sounds only when it was clear
+    /// (0x76188). Not saved, like the original's.
+    pub thunder_toggle: bool,
     /// Map set features present (0x3AB31): lightning, storm and cloud
     /// backdrops, rain overlays.
     pub can_lightning: bool,
@@ -329,43 +335,97 @@ pub fn tick(g: &mut GameState) {
             strike = g.rng.random(span) <= thr;
         }
     }
-    if g.weather.env && g.weather.flash {
-        g.weather.flash = false;
+    // The backdrop list and the strike are handled only outdoors (the
+    // environment flag gates the whole second half of 0x5A073); indoors the
+    // strike roll above is still made but has no effect.
+    if !g.weather.env {
+        return;
     }
+    // A flash lasts one tick: the next tick clears it and recomputes the
+    // darkness step. The sky bolt is drawn only on its own tick.
+    g.weather.flash = false;
+    g.weather.bolt = None;
     if strike {
         lightning(g);
     }
 }
 
-/// A storm strike (part of 0x5A073): thunder, and with enough rain a
-/// lightning explosion on a random open square of the party's map.
-/// Simplified: the original's square test (0x1E908 / 0x1D113), its
-/// party-distance thunder rule and the fixed strike square of attribute
-/// (8, set, 11, 0x6C) are only partly modelled.
+/// A storm strike (the strike block of 0x5A073), outdoors only:
+///
+/// 1. With rain below 0xB6, script byte variable 0x40 is cleared
+///    (0x1512E(0x40, 0, 6)).
+/// 2. `random(rain + 1) > 0x3B` arms (rnd & 7) + 1 attempts to land a
+///    lightning explosion on a random open floor square of the party's map.
+///    Simplified: the original's square test (0x1E908 / 0x1D113), its
+///    party-distance rule and the fixed strike square of attribute
+///    (8, set, 11, 0x6C) are only partly modelled.
+/// 3. If no attempt is left (none armed, or none landed), a random bit may
+///    draw a sky bolt: backdrop 0x64 + random(3) at position random(100),
+///    then a 2-bit draw, made only when the map set has that image.
+/// 4. A drawn sky bolt sounds thunder on every other occurrence (0x76188).
+/// 5. Every strike sets the flash flag, which brightens the view for this
+///    tick (0x7F248, cleared on the next tick).
 fn lightning(g: &mut GameState) {
     let rain = g.weather.rain;
     if rain < 0xB6 {
-        thunder(g);
+        crate::actuators::script_var_op(g, 0x40, 6, 0);
     }
-    if g.rng.random(rain + 1) <= 0x3B {
-        return;
-    }
-    let attempts = (g.rng.rnd() & 7) + 1;
-    let map = g.party.map;
-    let (w, h) = (g.dungeon.maps[map].width as i32, g.dungeon.maps[map].height as i32);
-    for _ in 0..attempts {
-        let x = g.rng.random(0x20) as i32;
-        let y = g.rng.random(0x20) as i32;
-        if x >= w || y >= h {
-            continue;
+    let mut left = 0u32;
+    if g.rng.random(rain + 1) > 0x3B {
+        left = (g.rng.rnd() & 7) + 1;
+        let map = g.party.map;
+        let (w, h) = (g.dungeon.maps[map].width as i32, g.dungeon.maps[map].height as i32);
+        while left > 0 {
+            let x = g.rng.random(0x20) as i32;
+            let y = g.rng.random(0x20) as i32;
+            if x < w
+                && y < h
+                && g.dungeon.square(map, x, y).element() == dm2_formats::dungeon::Element::Floor
+            {
+                crate::missiles::explode(g, 0xFFB0, rain as u8, map, x, y, 0xFF);
+                break;
+            }
+            left -= 1;
         }
-        if g.dungeon.square(map, x, y).element() != dm2_formats::dungeon::Element::Floor {
-            continue;
-        }
-        crate::missiles::explode(g, 0xFFB0, rain as u8, map, x, y, 0xFF);
-        g.weather.flash = true;
-        break;
     }
+    let mut bolt = false;
+    if left == 0 && g.rng.bit() != 0 {
+        let img = g.rng.random(3) as u8 + 0x64;
+        let set = g.dungeon.maps[g.party.map].tileset;
+        let exists = g
+            .data
+            .as_ref()
+            .is_some_and(|d| d.gdat.record(Key::new(23, set, 1, img)).is_some());
+        if exists {
+            let pos = g.rng.random(100);
+            let _ = g.rng.rand4();
+            g.weather.bolt = Some((img, pos));
+            bolt = true;
+        }
+    }
+    if bolt {
+        if !g.weather.thunder_toggle {
+            bolt_thunder(g);
+            g.weather.thunder_toggle = true;
+        } else {
+            g.weather.thunder_toggle = false;
+        }
+    }
+    g.weather.flash = true;
+}
+
+/// Thunder after a sky bolt (0x5A7CF): sound (0x17, map set, 0) at the party
+/// with volume 0x40 and mode 0x19, delayed by random(10) + 5 ticks with no
+/// rain or 0x4C - rain / multiplier, clamped to 1-15.
+fn bolt_thunder(g: &mut GameState) {
+    let p = g.party;
+    let set = g.dungeon.maps[p.map].tileset;
+    let delay = if g.weather.rain == 0 {
+        g.rng.random(10) as i32 + 5
+    } else {
+        0x4C - g.weather.rain as i32 / (g.weather.kind.max(1) as i32)
+    };
+    crate::sound_queue::request(g, 0x17, set, 0, 0x40, p.map, p.x, p.y, delay.clamp(1, 15) as i8);
 }
 
 /// The darkness-step term of the outdoor light model (0x389C2): added to
@@ -392,6 +452,12 @@ pub fn view(g: &GameState) -> WeatherView {
     }
     if w.can_storm && w.cloud > 0x3F {
         v.backdrops.push(if w.cloud >= 0xC0 { 0x6C } else if w.cloud >= 0x80 { 0x6B } else { 0x6A });
+    }
+    // A sky bolt joins this tick's list after the cloud and storm layers
+    // (approximate: drawn at its script's default place, not at the random
+    // position 0x19234 sets).
+    if let Some((img, _pos)) = w.bolt {
+        v.backdrops.push(img);
     }
     let rain_allowed = table(g, ENV_STATES + 2 + w.state as u32 * 4, 1).is_some_and(|b| b[0] != 0);
     if w.rain_on != 0 && w.can_rain && rain_allowed {
@@ -483,7 +549,9 @@ mod tests {
     // The rain hash moves whenever the new-game random sequence does: streak
     // placement is seeded from it (it changed when the weather and creature
     // passes were moved ahead of recruiting, as in the original).
-    const PINNED_OUTDOOR: (u64, u64, u64) = (0x6d709e3cb00e2ea7, 0xe25ac480f2385f8d, 0x7bf5c5f843b10a62);
+    // The rain view's hash changed when the rain overlay began to go through
+    // the ambient colour map (0x4E79C → 0x4E226), as the original draws it.
+    const PINNED_OUTDOOR: (u64, u64, u64) = (0x6d709e3cb00e2ea7, 0xe25ac480f2385f8d, 0xdafdee540c9ac6e2);
 
     fn game() -> Option<GameState> {
         let gd = Rc::new(GameData::load_default()?);
