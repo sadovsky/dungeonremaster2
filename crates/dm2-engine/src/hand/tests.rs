@@ -195,3 +195,71 @@ fn eating_plays_the_eating_sound() {
     assert!(g.effects.iter().any(|e| matches!(e,
         crate::effects::Effect::SoundAt { cat: 9, idx: 0x5B, sub: 0xFB, vol: 200, mode: 0, .. })));
 }
+
+/// A launcher and an ammunition item from the dungeon's weapons, as 0x408A8
+/// pairs them: the launcher's attribute 5 has bit 15, the ammunition's not,
+/// and their class bits overlap. Also some weapon that doesn't fit.
+fn launcher_and_ammo(g: &GameState) -> Option<(u16, u16, u16)> {
+    let data = g.data.clone()?;
+    let db = data.item_db(&g.dungeon);
+    let n = g.dungeon.thing_count(ThingType::Weapon) as u16;
+    let weapon = |i: u16| (ThingType::Weapon as u16) << 10 | i;
+    let attr5 = |i: u16| db.attr(ThingRef(weapon(i)), 5);
+    let l = (0..n).find(|&i| attr5(i) & 0x8000 != 0)?;
+    let a = (0..n).find(|&i| attr5(i) & 0x8000 == 0 && attr5(i) & 0x7FFF & attr5(l) != 0)?;
+    let other = (0..n).find(|&i| attr5(i) & 0x8000 == 0 && attr5(i) & 0x7FFF & attr5(l) == 0)?;
+    Some((weapon(l), weapon(a), weapon(other)))
+}
+
+/// Finish hand `hand`'s action `action` through the busy countdown.
+fn finish_action(g: &mut GameState, hand: usize, action: u8) {
+    g.champions[0].raw[0x20 + hand] = action;
+    g.champions[0].raw[0x2A + hand] = 1;
+    champions::count_down_busy(g);
+}
+
+#[test]
+fn shooting_reloads_the_other_hand_from_slot_12() {
+    let Some(mut g) = game() else { return };
+    let (launcher, ammo, _) = launcher_and_ammo(&g).expect("the data has a launcher, its ammunition and an unrelated weapon");
+    let c = &mut g.champions[0];
+    c.set_inventory(0, launcher);
+    c.set_inventory(1, EMPTY);
+    c.set_inventory(12, ammo);
+    finish_action(&mut g, 0, 0x20);
+    assert_eq!(g.champions[0].inventory(1), ammo, "ammunition moves into the empty hand");
+    assert_eq!(g.champions[0].inventory(12), EMPTY);
+    assert_eq!(g.champions[0].raw[0x20], 0xFF, "the action still ends");
+}
+
+#[test]
+fn shooting_leaves_unsuitable_items_and_full_hands_alone() {
+    let Some(mut g) = game() else { return };
+    let (launcher, ammo, other) = launcher_and_ammo(&g).expect("the data has a launcher, its ammunition and an unrelated weapon");
+    // An item whose class doesn't fit the launcher stays in slot 12.
+    let c = &mut g.champions[0];
+    c.set_inventory(0, launcher);
+    c.set_inventory(1, EMPTY);
+    c.set_inventory(12, other);
+    for s in 7..10 {
+        c.set_inventory(s, EMPTY);
+    }
+    finish_action(&mut g, 0, 0x20);
+    assert_eq!(g.champions[0].inventory(1), EMPTY);
+    assert_eq!(g.champions[0].inventory(12), other);
+    // With the other hand already full nothing moves.
+    let c = &mut g.champions[0];
+    c.set_inventory(1, other);
+    c.set_inventory(12, ammo);
+    finish_action(&mut g, 0, 0x20);
+    assert_eq!(g.champions[0].inventory(1), other);
+    assert_eq!(g.champions[0].inventory(12), ammo);
+    // Ammunition in slots 7-9 is found when slot 12 has none.
+    let c = &mut g.champions[0];
+    c.set_inventory(1, EMPTY);
+    c.set_inventory(12, EMPTY);
+    c.set_inventory(8, ammo);
+    finish_action(&mut g, 0, 0x20);
+    assert_eq!(g.champions[0].inventory(1), ammo);
+    assert_eq!(g.champions[0].inventory(8), EMPTY);
+}
