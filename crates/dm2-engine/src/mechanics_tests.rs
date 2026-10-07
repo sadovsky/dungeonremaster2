@@ -449,3 +449,105 @@ fn variable_actuators_set_and_test() {
     actuators::wall_actuator(&mut g, ev, test_var);
     assert_eq!(g.timeline.len(), 2);
 }
+
+/// Walking into a wall hurts the front champions (0x234A8): the original's
+/// probe (walk to the end of the start corridor, then 9 more presses into
+/// the wall) lost 8 health. Each bump costs at most 1 and cries out.
+#[test]
+fn bumping_a_wall_hurts_the_front_champions() {
+    let Some(gd) = crate::data::GameData::load_default() else { return };
+    let Ok(bytes) = std::fs::read(default_data_dir().join("DUNGEON.DAT")) else { return };
+    let dg = Dungeon::parse(&bytes).unwrap();
+    let mut g = GameState::new_game_with(&dg, std::rc::Rc::new(gd));
+    assert_eq!(g.party.map, 0);
+    let start = g.champions[0].health();
+    let mut presses = 0;
+    while presses < 16 {
+        if g.tick >= g.move_ready {
+            g.push_command(Command::Move(Move::Forward));
+            presses += 1;
+        }
+        g.advance();
+    }
+    for _ in 0..20 {
+        g.advance();
+    }
+    assert_eq!((g.party.x, g.party.y), (1, 1), "the corridor ends at (1,1)");
+    let lost = start - g.champions[0].health();
+    assert!((1..=9).contains(&lost), "lost {lost} health from 9 bumps");
+}
+
+#[test]
+fn bump_queues_the_champion_cry() {
+    let Some(gd) = crate::data::GameData::load_default() else { return };
+    let Ok(bytes) = std::fs::read(default_data_dir().join("DUNGEON.DAT")) else { return };
+    let dg = Dungeon::parse(&bytes).unwrap();
+    let mut g = GameState::new_game_with(&dg, std::rc::Rc::new(gd));
+    g.party = PartyPos { map: 0, x: 1, y: 1, dir: 0 };
+    let mut cried = false;
+    for _ in 0..30 {
+        let before = g.champions[0].health();
+        g.effects.clear();
+        movement::bump(&mut g, Move::Forward, (1, 0));
+        let hurt = g.champions[0].health() < before || g.party_status.pending_damage[0] > 0;
+        let cry = g.effects.iter().any(|e| matches!(e, Effect::Sound { cat: 0x16, sub: 0x8A, .. }));
+        assert_eq!(hurt, cry, "a cry is queued exactly when the bump lands");
+        cried |= cry;
+    }
+    assert!(cried);
+}
+
+/// Every move attempt costs each living champion load * 3 / max_load + 1
+/// stamina, blocked or not (0x235BF calling 0x47707).
+#[test]
+fn move_attempts_cost_stamina() {
+    let Some(gd) = crate::data::GameData::load_default() else { return };
+    let Ok(bytes) = std::fs::read(default_data_dir().join("DUNGEON.DAT")) else { return };
+    let dg = Dungeon::parse(&bytes).unwrap();
+    let mut g = GameState::new_game_with(&dg, std::rc::Rc::new(gd));
+    let max = crate::champions::max_load(&g.champions[0], &mut g.rng).max(1) as i32;
+    let cost = g.champions[0].load() as i32 * 3 / max + 1;
+    // One free step and one bump against the end wall, between regenerations.
+    let before = g.champions[0].stamina() as i32;
+    movement::party_command(&mut g, Move::Forward);
+    g.party = PartyPos { map: 0, x: 1, y: 1, dir: 0 };
+    movement::party_command(&mut g, Move::Forward);
+    assert_eq!(before - g.champions[0].stamina() as i32, 2 * cost);
+}
+
+/// The new-game creature pass (0x3624F): every creature group starts at its
+/// type's base hit points, and types whose info flag bit 0 is clear record
+/// their home square in word +0xC.
+#[test]
+fn new_game_initialises_creatures() {
+    let Some(gd) = crate::data::GameData::load_default() else { return };
+    let Ok(bytes) = std::fs::read(default_data_dir().join("DUNGEON.DAT")) else { return };
+    let dg = Dungeon::parse(&bytes).unwrap();
+    let gd = std::rc::Rc::new(gd);
+    let g = GameState::new_game_with(&dg, gd.clone());
+    let info = |ty: u8, off: u32| {
+        let idx = g.attrs.get(15, ty, 5) as u32;
+        gd.exe.u8_at(0x71968 + 36 * idx + off).unwrap()
+    };
+    let mut checked = 0;
+    for (m, md) in g.dungeon.maps.iter().enumerate() {
+        for x in 0..md.width as i32 {
+            for y in 0..md.height as i32 {
+                for t in g.dungeon.things_at(m, x, y) {
+                    if t.kind() != ThingType::Creature {
+                        continue;
+                    }
+                    let ty = g.dungeon.record(t).unwrap()[4];
+                    let base = u16::from_le_bytes([info(ty, 4), info(ty, 5)]);
+                    assert_eq!(g.dungeon.record_word(t, 3), Some(base), "hp of type {ty}");
+                    if info(ty, 0) & 1 == 0 {
+                        let home = (x as u16) | (y as u16) << 5 | (m as u16) << 10;
+                        assert_eq!(g.dungeon.record_word(t, 6), Some(home));
+                    }
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 100, "checked {checked} creature groups");
+}
