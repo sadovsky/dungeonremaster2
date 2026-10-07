@@ -165,12 +165,16 @@ impl Sound {
         };
         self.last_tick = Some(game.tick);
         if let Ok(mut a) = self.audio.lock() {
+            if game.game_over {
+                // The end of the game shuts both sound drivers down.
+                a.stop_all();
+                return;
+            }
             for _ in 0..ticks {
                 a.music_tick(game.party.map);
             }
-            if !reqs.is_empty() {
-                a.play_sounds(&game.dungeon, &game.party, &reqs);
-            }
+            let portraits: Vec<u8> = game.champions.iter().map(|c| c.portrait()).collect();
+            a.play_tick(&game.dungeon, &game.party, game.party_status.asleep, &portraits, &reqs);
         }
     }
 

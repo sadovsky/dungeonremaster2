@@ -425,8 +425,6 @@ fn step(g: &mut GameState, d: &CreatureData, si: usize, continuing: bool) {
 /// the type's info byte 2 or 5% of the remaining hit points, with a coin
 /// flip when the status word has bit 3 and else a one-in-four roll. The
 /// random draws happen whether or not a sound plays, as in the original.
-// TODO(0x31348): types without class flag 0x04 also signal the floor
-// sensors under the creature (0x4BBE4); not modelled here.
 fn hurt_cry(g: &mut GameState, ctx: &Ctx, owed: u16, hp_before: u16) {
     if ctx.info.raw[0] & 1 != 0 || ctx.cflags & 0x8000 == 0 {
         return;
@@ -453,6 +451,15 @@ fn apply_damage(g: &mut GameState, ctx: &Ctx, owed: u16) -> bool {
     let h = hp(g, c);
     if ctx.info.raw[1] == 0xFF {
         return false;
+    }
+    // A hurt creature (type flag 0x01 clear, class without flag 0x04)
+    // sends a clear action to its home square next tick, whether or not it
+    // survives (0x31348 via 0x4BBE4).
+    if ctx.info.raw[0] & 1 == 0 && ctx.cflags & 4 == 0 {
+        if let Some(home) = home_of(g, c) {
+            let t = g.tick.wrapping_add(1);
+            crate::actuators::square_action(g, home.map(), home.x(), home.y(), 0, crate::actuators::CLEAR, t);
+        }
     }
     if owed < h {
         hurt_cry(g, ctx, owed, h);

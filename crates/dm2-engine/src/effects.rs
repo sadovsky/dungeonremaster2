@@ -9,8 +9,10 @@ pub enum Effect {
     /// Play sound (cat, idx, 2, sub) heard from square (x, y) of `map`.
     Sound { cat: u8, idx: u8, sub: u8, map: usize, x: i32, y: i32 },
     /// As `Sound`, with the original's volume argument when it differs from
-    /// the usual 200 (creature frame sounds use 0x80; 0x15CA9 argument 5).
-    SoundAt { cat: u8, idx: u8, sub: u8, map: usize, x: i32, y: i32, vol: u8 },
+    /// the usual 200 (creature frame sounds use 0x80; 0x15CA9 argument 5)
+    /// and its mode (argument 8: 1 positional, 0 at once, negative through
+    /// the interface queue; 2 or more is handled by `sound_queue`).
+    SoundAt { cat: u8, idx: u8, sub: u8, map: usize, x: i32, y: i32, vol: u8, mode: i8 },
     /// Show a text thing's message (floor text, wall text).
     ShowText { map: usize, thing: ThingRef },
     /// Champions took damage (`mask` = champions hit, as returned by 0x4766B).

@@ -1,14 +1,25 @@
 //! Positional sound effects (docs/11-audio.md "Sound effects", play
 //! function 0x15CA9).
 //!
-//! The source square is made relative to the party and rotated into the
-//! party's facing; that gives the left/right pan and the distance used for
-//! attenuation. Requests for the same sample from the same relative spot in
-//! one batch are dropped, and at most 20 positional requests are accepted
-//! per batch, as in the original's pending queue.
+//! As in the original, a request plays only if:
+//! - it is an interface or party sound (mode < 1), or its source is on the
+//!   party's map;
+//! - its key is registered for the party's map (`registry`);
+//! - when it is more than one square away, the party's sound-distance grid
+//!   (a breadth-first search over passable squares, up to 8 steps, built by
+//!   0x2F8F5 and read by 0x2FACC) reaches its square. When the path is
+//!   longer than the straight distance, the source is pushed out along the
+//!   same direction to the path length.
 //!
-//! Tentative (not documented in detail): the attenuation curve, the audible
-//! range and how a different map level adds to the distance.
+//! The source square is made relative to the party and rotated into the
+//! party's facing. The driver's volume falls off with the square of the
+//! distance: out = volume * 8 / (dx^2 + dy^2 + 8), out of 255 (0x10877).
+//! Requests for the same sample from the same relative spot in one batch
+//! are dropped; at most 20 positional and 6 interface requests are accepted
+//! per batch. While the party sleeps, volumes are halved.
+//!
+//! Tentative: the pan curve (the original uses a 16-step table indexed by
+//! the angle, not ported).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,14 +28,18 @@ use dm2_formats::dungeon::Dungeon;
 use dm2_formats::gdat::{Gdat, Key};
 
 use crate::effects::Effect;
-use crate::world::PartyPos;
+use crate::world::{self, PartyPos};
+
+use super::registry::Registry;
 
 /// Positional requests accepted per batch (the original's pending queue).
 pub const MAX_PENDING: usize = 20;
+/// Interface requests (mode < 0) accepted per batch.
+pub const MAX_INTERFACE: usize = 6;
+/// Steps the sound-distance search covers from the party.
+pub const SOUND_RANGE: u8 = 8;
 /// Simultaneously playing effect voices.
 pub const MAX_VOICES: usize = 16;
-/// Distance (in squares, |dx| + |dy|) beyond which a sound is inaudible.
-pub const AUDIBLE_RANGE: i32 = 8;
 
 /// A decoded sample: mono, -1..1.
 #[derive(Clone, Debug)]
@@ -57,6 +72,10 @@ pub struct SoundRequest {
     pub y: i32,
     /// Volume as passed to the original's play function (200 is usual).
     pub vol: u8,
+    /// The play function's mode: 1 queued at (x, y), 0 played at once,
+    /// negative through the interface queue, 2 or more delayed by that many
+    /// ticks less one (the simulation schedules those; see `delayed`).
+    pub mode: i8,
 }
 
 /// The original's usual sound volume argument.
@@ -68,11 +87,11 @@ pub fn drain_sounds(effects: &mut Vec<Effect>) -> Vec<SoundRequest> {
     let mut out = Vec::new();
     effects.retain(|e| match *e {
         Effect::Sound { cat, idx, sub, map, x, y } => {
-            out.push(SoundRequest { cat, idx, sub, map, x, y, vol: DEFAULT_VOL });
+            out.push(SoundRequest { cat, idx, sub, map, x, y, vol: DEFAULT_VOL, mode: 1 });
             false
         }
-        Effect::SoundAt { cat, idx, sub, map, x, y, vol } => {
-            out.push(SoundRequest { cat, idx, sub, map, x, y, vol });
+        Effect::SoundAt { cat, idx, sub, map, x, y, vol, mode } => {
+            out.push(SoundRequest { cat, idx, sub, map, x, y, vol, mode });
             false
         }
         _ => true,
@@ -91,30 +110,101 @@ pub fn rotate(dx: i32, dy: i32, dir: u8) -> (i32, i32) {
     }
 }
 
-/// Relative position of a source: (right, forward) in squares from the
-/// party, plus the number of map levels between them.
-pub fn relative(dg: &Dungeon, party: &PartyPos, map: usize, x: i32, y: i32) -> (i32, i32, i32) {
-    let (mut dx, mut dy, mut levels) = (x - party.x, y - party.y, 0);
-    if map != party.map && map < dg.maps.len() && party.map < dg.maps.len() {
-        let (a, b) = (&dg.maps[map], &dg.maps[party.map]);
-        dx = a.origin_x as i32 + x - (b.origin_x as i32 + party.x);
-        dy = a.origin_y as i32 + y - (b.origin_y as i32 + party.y);
-        levels = (a.depth as i32 - b.depth as i32).abs();
-    }
-    let (right, forward) = rotate(dx, dy, party.dir);
-    (right, forward, levels)
+/// Relative position of a source on the party's map: (right, forward).
+pub fn relative(party: &PartyPos, x: i32, y: i32) -> (i32, i32) {
+    rotate(x - party.x, y - party.y, party.dir)
 }
 
-/// Gain and pan (-1 left .. 1 right) for a relative position, or None if
-/// out of range.
-pub fn place(right: i32, forward: i32, levels: i32) -> Option<(f32, f32)> {
-    let dist = right.abs() + forward.abs() + 2 * levels;
-    if dist > AUDIBLE_RANGE {
-        return None;
+/// The party's sound-distance grid (0x2F8F5 via the planner 0x3188A):
+/// for each square of the party's map, the number of steps from the party
+/// plus one (0 = not reached within `SOUND_RANGE`). Squares that block
+/// movement are marked with bit 7.
+pub struct SoundGrid {
+    w: i32,
+    h: i32,
+    cells: Vec<u8>,
+}
+
+impl SoundGrid {
+    pub fn build(dg: &Dungeon, party: &PartyPos) -> SoundGrid {
+        let Some(m) = dg.maps.get(party.map) else { return SoundGrid { w: 0, h: 0, cells: Vec::new() } };
+        let (w, h) = (m.width as i32, m.height as i32);
+        let mut cells = vec![0u8; (w * h).max(0) as usize];
+        let idx = |x: i32, y: i32| (x * h + y) as usize;
+        for x in 0..w {
+            for y in 0..h {
+                if world::blocks(dg, party.map, x, y) {
+                    cells[idx(x, y)] = 0x80;
+                }
+            }
+        }
+        let (px, py) = (party.x, party.y);
+        if px < 0 || py < 0 || px >= w || py >= h {
+            return SoundGrid { w, h, cells };
+        }
+        cells[idx(px, py)] = 1;
+        let mut q = std::collections::VecDeque::from([(px, py, 0u8)]);
+        while let Some((x, y, d)) = q.pop_front() {
+            if d >= SOUND_RANGE {
+                continue;
+            }
+            for (dx, dy) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
+                let (nx, ny) = (x + dx, y + dy);
+                if nx < 0 || ny < 0 || nx >= w || ny >= h || cells[idx(nx, ny)] != 0 {
+                    continue;
+                }
+                cells[idx(nx, ny)] = d + 2;
+                q.push_back((nx, ny, d + 1));
+            }
+        }
+        SoundGrid { w, h, cells }
     }
-    let gain = 1.0 - dist as f32 / (AUDIBLE_RANGE + 1) as f32;
-    let pan = (right as f32 * 0.35).clamp(-1.0, 1.0);
-    Some((gain, pan))
+
+    fn cell(&self, x: i32, y: i32) -> Option<u8> {
+        (x >= 0 && y >= 0 && x < self.w && y < self.h).then(|| self.cells[(x * self.h + y) as usize])
+    }
+
+    /// Steps from the party to (x, y), or None if the sound can't reach
+    /// it (0x2FACC). A blocking square (a wall actuator, a closed door)
+    /// takes its nearest reached neighbour's distance.
+    pub fn distance(&self, x: i32, y: i32) -> Option<i32> {
+        let mut v = self.cell(x, y)?;
+        if v & 0x80 != 0 {
+            v = [(0, -1), (1, 0), (0, 1), (-1, 0)]
+                .iter()
+                .filter_map(|(dx, dy)| self.cell(x + dx, y + dy))
+                .filter(|&n| n != 0 && n & 0x80 == 0)
+                .min()
+                .unwrap_or(0);
+        }
+        (v != 0).then(|| v as i32 - 1)
+    }
+}
+
+/// Push a source out to `path` squares along its direction when the path
+/// is longer than the straight distance (rounded as 0x15CA9 does).
+pub fn stretch(right: i32, forward: i32, dist: i32, path: i32) -> (i32, i32) {
+    if dist <= 0 || path <= dist {
+        return (right, forward);
+    }
+    let k = (path << 10) / dist;
+    let s = |v: i32| if v < 0 { -((-v * k + 0x200) >> 10) } else { (v * k + 0x200) >> 10 };
+    (s(right), s(forward))
+}
+
+/// Driver volume 0..1 for a request volume and relative position (0x10877).
+pub fn attenuate(vol: u8, right: i32, forward: i32) -> f32 {
+    let d2 = (right * right + forward * forward) as u32;
+    let out = (((vol as u32) << 8) / (d2 + 8)) >> 5;
+    out.min(255) as f32 / 255.0
+}
+
+/// Pan (-1 left .. 1 right) for a relative position. Tentative curve.
+pub fn pan(right: i32, forward: i32) -> f32 {
+    if right == 0 {
+        return 0.0;
+    }
+    (right as f32 / (right.abs() + forward.abs()) as f32 * 0.8).clamp(-1.0, 1.0)
 }
 
 struct Playing {
@@ -144,29 +234,52 @@ impl Sfx {
             .clone()
     }
 
-    /// Start the sounds of one batch (one game tick).
-    pub fn play(&mut self, g: &Gdat, dg: &Dungeon, party: &PartyPos, reqs: &[SoundRequest]) {
-        let mut seen = Vec::new();
-        for r in reqs.iter().take(MAX_PENDING) {
-            let (right, forward, levels) = relative(dg, party, r.map, r.x, r.y);
-            let key = (r.cat, r.idx, r.sub, right, forward, levels);
-            if seen.contains(&key) {
+    /// Start the sounds of one batch (one game tick), applying the original
+    /// play function's acceptance rules. `registry` is the party map's set
+    /// of playable keys (None accepts every key).
+    pub fn play(&mut self, g: &Gdat, dg: &Dungeon, party: &PartyPos, asleep: bool, registry: Option<&Registry>, reqs: &[SoundRequest]) {
+        let mut grid: Option<SoundGrid> = None;
+        let (mut queued, mut interface) = (Vec::new(), Vec::new());
+        for r in reqs {
+            if r.mode >= 1 && r.map != party.map {
+                continue;
+            }
+            if registry.is_some_and(|reg| !reg.contains(r.cat, r.idx, r.sub)) {
+                continue;
+            }
+            let vol = if asleep { r.vol >> 1 } else { r.vol };
+            let (mut right, mut forward) = relative(party, r.x, r.y);
+            let key = (r.cat, r.idx, r.sub, right, forward);
+            let seen = if r.mode < 0 { &mut interface } else { &mut queued };
+            let full = if r.mode < 0 { seen.len() >= MAX_INTERFACE } else { r.mode >= 1 && seen.len() >= MAX_PENDING };
+            if seen.contains(&key) || full {
                 continue;
             }
             seen.push(key);
-            let Some((gain, pan)) = place(right, forward, levels) else { continue };
+            let dist = right.abs() + forward.abs();
+            if dist > 1 {
+                let grid = grid.get_or_insert_with(|| SoundGrid::build(dg, party));
+                let Some(path) = grid.distance(r.x, r.y) else { continue };
+                (right, forward) = stretch(right, forward, dist, path);
+            }
             let Some(sample) = self.sample(g, r.cat, r.idx, r.sub) else { continue };
             if self.playing.len() >= MAX_VOICES {
                 self.playing.remove(0);
             }
-            let g = gain * self.volume * r.vol as f32 / DEFAULT_VOL as f32;
+            let gain = attenuate(vol, right, forward) * self.volume;
+            let p = pan(right, forward);
             self.playing.push(Playing {
                 sample,
                 pos: 0.0,
-                gain_l: g * (1.0 - pan.max(0.0)),
-                gain_r: g * (1.0 + pan.min(0.0)),
+                gain_l: gain * (1.0 - p.max(0.0)),
+                gain_r: gain * (1.0 + p.min(0.0)),
             });
         }
+    }
+
+    /// Stop every playing effect (game over shuts the driver down).
+    pub fn stop_all(&mut self) {
+        self.playing.clear();
     }
 
     /// Mix into an interleaved stereo buffer at `sr` Hz (adds to `out`).
@@ -216,12 +329,37 @@ mod tests {
     }
 
     #[test]
-    fn attenuation_and_range() {
-        let near = place(0, 0, 0).unwrap().0;
-        let far = place(0, 4, 0).unwrap().0;
-        assert!(near > far && far > 0.0);
-        assert!(place(5, 4, 0).is_none());
-        assert!(place(1, 0, 0).unwrap().1 > 0.0);
+    fn attenuation_follows_the_driver_curve() {
+        // At the party the volume byte passes through unchanged.
+        assert!((attenuate(200, 0, 0) - 200.0 / 255.0).abs() < 1e-6);
+        // Four squares ahead: 8 / (16 + 8) of the volume.
+        assert_eq!((attenuate(200, 0, 4) * 255.0).round() as u32, ((200u32 << 8) / 24) >> 5);
+        assert!(attenuate(200, 0, 4) > attenuate(200, 0, 5));
+        assert!(attenuate(0x80, 0, 0) < attenuate(200, 0, 0));
+    }
+
+    #[test]
+    fn stretch_pushes_sources_out_to_the_path_length() {
+        assert_eq!(stretch(0, 2, 2, 2), (0, 2));
+        assert_eq!(stretch(0, 2, 2, 6), (0, 6));
+        assert_eq!(stretch(-1, 1, 2, 4), (-2, 2));
+    }
+
+    #[test]
+    fn sound_grid_stops_at_walls_and_range() {
+        let Ok(bytes) = std::fs::read(crate::assets::default_data_dir().join("DUNGEON.DAT")) else { return };
+        let dg = Dungeon::parse(&bytes).unwrap();
+        // Map 1: the party at (2,9) outside the walled courtyard; (10,9)
+        // inside it is not reachable, (2,5) straight up the open column is
+        // 4 steps away.
+        let party = PartyPos { map: 1, x: 2, y: 9, dir: 0 };
+        let grid = SoundGrid::build(&dg, &party);
+        assert_eq!(grid.distance(2, 9), Some(0));
+        assert_eq!(grid.distance(2, 5), Some(4));
+        assert_eq!(grid.distance(10, 9), None, "courtyard behind the trick wall");
+        assert_eq!(grid.distance(2, 18), None, "beyond 8 steps");
+        // A wall square takes its nearest reached neighbour.
+        assert!(grid.distance(6, 9).is_some());
     }
 
     #[test]

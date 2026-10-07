@@ -38,6 +38,7 @@ pub mod party;
 pub mod potions;
 pub mod rng;
 pub mod save;
+pub mod sound_queue;
 pub mod squares;
 pub mod state;
 pub mod timeline;

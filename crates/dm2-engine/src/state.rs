@@ -85,6 +85,8 @@ pub struct GameState {
     pub legacy: crate::save::Legacy,
     /// The leader's hand, open inventory and action menu (docs/10).
     pub hand: crate::hand::HandState,
+    /// Sounds waiting for their delay (0x7F188, event 0x15).
+    pub delayed_sounds: [Option<crate::sound_queue::DelayedSound>; crate::sound_queue::SLOTS],
     commands: std::collections::VecDeque<Command>,
 }
 
@@ -120,6 +122,7 @@ impl GameState {
             creature_map_seen: None,
             legacy: Default::default(),
             hand: Default::default(),
+            delayed_sounds: [None; crate::sound_queue::SLOTS],
             commands: Default::default(),
         }
     }

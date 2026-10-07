@@ -765,7 +765,7 @@ pub fn frame_delay(g: &mut GameState, ctx: &Ctx, an: &Anim) -> u16 {
     ctx.slot_mut(g).jitter = jit;
     if f.sound() != 0x7F {
         // Frame sounds are played at volume 0x80 (0x3023F).
-        g.effects.push(Effect::SoundAt { vol: 0x80, cat: 15, idx: ctx.ty, sub: f.sound(), map: ctx.map, x: ctx.x, y: ctx.y });
+        g.effects.push(Effect::SoundAt { vol: 0x80, mode: 1, cat: 15, idx: ctx.ty, sub: f.sound(), map: ctx.map, x: ctx.x, y: ctx.y });
     }
     let st = status(g, ctx.thing);
     if st & 0x40 != 0 {

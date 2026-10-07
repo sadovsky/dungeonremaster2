@@ -11,6 +11,7 @@ pub mod hmp;
 pub mod midi;
 pub mod music;
 pub mod opl;
+pub mod registry;
 pub mod sfx;
 
 use std::collections::HashMap;
@@ -24,6 +25,7 @@ use bnk::Bank;
 use hmp::Song;
 use midi::Driver;
 use music::{Sequencer, SongList, FADE_START};
+use registry::Registry;
 use sfx::{Sfx, SoundRequest};
 
 /// Music is mixed below the effects; 18 FM voices can sum well above 1.
@@ -45,6 +47,9 @@ pub struct Audio {
     /// Song most recently chosen for the party's map (0x7050E).
     map_song: Option<u8>,
     sfx: Sfx,
+    /// Sound keys registered for the party's map, and the portraits it
+    /// was built with.
+    registry: Option<(Registry, Vec<u8>)>,
     pub music_volume: f32,
     pub sfx_volume: f32,
 }
@@ -94,6 +99,7 @@ impl Audio {
             fade: 0,
             map_song: None,
             sfx: Sfx::new(has_header),
+            registry: None,
             music_volume: 1.0,
             sfx_volume: 1.0,
         }
@@ -164,10 +170,34 @@ impl Audio {
         self.current.as_ref().map(|c| c.0)
     }
 
-    /// Queue the sound requests of one game tick.
+    /// Queue the sound requests of one game tick (awake, no champions).
     pub fn play_sounds(&mut self, dg: &Dungeon, party: &PartyPos, reqs: &[SoundRequest]) {
-        let Audio { sfx, gdat, .. } = self;
-        sfx.play(gdat, dg, party, reqs);
+        self.play_tick(dg, party, false, &[], reqs);
+    }
+
+    /// Queue the sound requests of one game tick through the original's
+    /// play rules: the party map's registered keys, the sound-distance
+    /// grid, distance attenuation and halved volume while `asleep`.
+    /// `portraits` are the recruited champions' portrait numbers.
+    pub fn play_tick(&mut self, dg: &Dungeon, party: &PartyPos, asleep: bool, portraits: &[u8], reqs: &[SoundRequest]) {
+        if reqs.is_empty() {
+            return;
+        }
+        let stale = !matches!(&self.registry, Some((r, p)) if r.map == party.map && p == portraits);
+        if stale {
+            self.registry = Some((Registry::for_map(&self.gdat, dg, party.map, portraits), portraits.to_vec()));
+        }
+        let Audio { sfx, gdat, registry, .. } = self;
+        sfx.play(gdat, dg, party, asleep, registry.as_ref().map(|(r, _)| r), reqs);
+    }
+
+    /// Stop the music and every effect: the end of the game shuts both
+    /// sound drivers down (0x2005B -> 0x10D29 -> 0x1043C).
+    pub fn stop_all(&mut self) {
+        self.current = None;
+        self.pending = None;
+        self.fade = 0;
+        self.sfx.stop_all();
     }
 
     /// Render interleaved stereo frames into `out` (length must be even).
@@ -266,9 +296,10 @@ mod tests {
         let Ok(dg) = Dungeon::parse(&std::fs::read(crate::assets::default_data_dir().join("DUNGEON.DAT")).unwrap()) else {
             return;
         };
-        let rec = a.gdat.records.iter().find(|r| r.key.kind == 2).unwrap().key;
         let party = PartyPos { map: 0, x: 2, y: 2, dir: 0 };
-        let req = SoundRequest { vol: sfx::DEFAULT_VOL, cat: rec.cat, idx: rec.idx, sub: rec.sub, map: 0, x: 2, y: 1 };
+        let reg = Registry::for_map(&a.gdat, &dg, 0, &[]);
+        let rec = a.gdat.records.iter().find(|r| r.key.kind == 2 && reg.contains(r.key.cat, r.key.idx, r.key.sub)).unwrap().key;
+        let req = SoundRequest { vol: sfx::DEFAULT_VOL, mode: 1, cat: rec.cat, idx: rec.idx, sub: rec.sub, map: 0, x: 2, y: 1 };
         a.play_sounds(&dg, &party, &[req, req]);
         assert_eq!(a.sfx.active(), 1, "duplicate request from the same spot is dropped");
         let mut buf = vec![0f32; 1024];
