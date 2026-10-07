@@ -281,11 +281,14 @@ struct Req {
     ambient_only: bool,
     /// Screen-pixel offset added after scaling (0x4E502's position adds).
     post: (i32, i32),
+    /// Anchor override for the layout record (0x4E502's eighth argument,
+    /// forwarded to the resolver); None keeps the record's own kind.
+    anchor: Option<i16>,
 }
 
 impl Req {
     fn new(cat: u8, idx: u8, sub: u8, rid: u16) -> Req {
-        Req { cat, idx, sub, rid, flip: 0, xs: 64, ys: 64, xoff: 0, yoff: 0, depth: None, key: None, wall_mid: false, ambient_only: false, post: (0, 0) }
+        Req { cat, idx, sub, rid, flip: 0, xs: 64, ys: 64, xoff: 0, yoff: 0, depth: None, key: None, wall_mid: false, ambient_only: false, post: (0, 0), anchor: None }
     }
 }
 
@@ -349,9 +352,9 @@ fn draw_sprite(a: &mut Assets, buf: &mut Bitmap, cx: &Ctx, s: &Sprite, base_off:
     let (ox, oy) = (ox + r.post.0, oy + r.post.1);
     let img = (s.w as i32, s.h as i32);
     let p = if (ox, oy) != (0, 0) {
-        a.layout.resolve(r.rid | 0x8000, ox, oy, img)
+        a.layout.resolve_anchored(r.rid | 0x8000, ox, oy, img, r.anchor)
     } else {
-        a.layout.resolve(r.rid, img.0, img.1, img)
+        a.layout.resolve_anchored(r.rid, img.0, img.1, img, r.anchor)
     };
     let mut p = p?;
     if cx.ex.mid_step {
@@ -650,7 +653,9 @@ fn draw_wall(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c: usi
     let wall_mid = cx.ex.mid_step && depth >= 1;
     let r = Req { flip, key: Some(key), depth: Some(if wall_mid { depth } else { 0 }), wall_mid, ..Req::new(8, cx.set, sub, LAYOUT_WALL0 + c as u16) };
     draw(a, buf, cx, r);
-    if !cx.on(layers::ORNAMENTS) || c >= 16 {
+    // Cells 16-20 show their front face's ornament too (0x53E9E runs the
+    // wall faces for every wall cell; FACES gives 16-20 a front face).
+    if !cx.on(layers::ORNAMENTS) {
         return;
     }
     // Ornaments on the visible faces (0x53E41 -> 0x4F3DF).
@@ -690,7 +695,11 @@ fn draw_wall_ornament(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cel
         return;
     }
     let key = key_attr(a, 9, orn, None, true);
-    let (slot, _anchor) = match attr(a, 9, orn, 5) {
+    // Slot in the 5×5 face grid and the anchor kind (attribute 5: slot + 1
+    // in the low byte, anchor in the high byte; default slot 12, anchor 0).
+    // 0x4F3DF passes the anchor to the drawer, which hands it to the layout
+    // resolver as an override, so 0 centres the image on the grid point.
+    let (slot, anchor) = match attr(a, 9, orn, 5) {
         0 => (12u16, 0u16),
         v => ((v & 0xFF).saturating_sub(1), v >> 8),
     };
@@ -717,6 +726,7 @@ fn draw_wall_ornament(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cel
     r.ys = ds;
     r.depth = Some(depth);
     r.key = key;
+    r.anchor = Some(anchor as i16);
     let placed = draw(a, buf, cx, r);
     // Alcoves (attribute 10) show the items lying in them.
     if side == 0 && attr(a, 9, orn, 10) != 0 && !a.has_image(9, orn, 0x0F) {

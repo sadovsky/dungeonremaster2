@@ -85,9 +85,19 @@ impl Layout {
 
     /// Place a w×h object at layout id `rid`. If bit 15 of `rid` is set, w
     /// and h are extra x/y offsets instead, and the size comes from `img`.
-    pub fn resolve(&self, rid: u16, mut w: i32, mut h: i32, img: (i32, i32)) -> Option<Placement> {
+    pub fn resolve(&self, rid: u16, w: i32, h: i32, img: (i32, i32)) -> Option<Placement> {
+        self.resolve_anchored(rid, w, h, img, None)
+    }
+
+    /// `resolve` with the resolver's sixth argument: `Some(kind)` replaces
+    /// the record's own anchor kind (0x1936F; 0xFFFF in the original means
+    /// keep the record's kind, which is `None` here).
+    pub fn resolve_anchored(&self, rid: u16, mut w: i32, mut h: i32, img: (i32, i32), anchor: Option<i16>) -> Option<Placement> {
         let extra = rid & 0x8000 != 0;
-        let rec = self.get(rid & 0x7FFF)?;
+        let mut rec = self.get(rid & 0x7FFF)?;
+        if let Some(k) = anchor {
+            rec.kind = k;
+        }
         let mut kind = rec.kind;
         let (mut ox, mut oy);
         if kind < 9 {

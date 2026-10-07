@@ -635,9 +635,9 @@ mod screen_tests {
     #[test]
     fn pinned_interface_screens() {
         let cases: [(&str, &[u16], u64); 5] = [
-            ("start", &[], 0x23be4bf743c5bd49),
+            ("start", &[], 0x5419f7d0883bebfb),
             ("inventory", &[7], 0xd54bfe305cc1b708),
-            ("action menu", &[0x75], 0x7600a6e0bd246531),
+            ("action menu", &[0x75], 0xb1c79885b597f7c3),
             ("paused", &[0x90], 0xf6498d891cf26ca8),
             ("eye, empty hand", &[7, 0x47], 0xe6d8a3c85198e6ad),
         ];
