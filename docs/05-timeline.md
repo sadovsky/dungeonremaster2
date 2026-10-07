@@ -53,10 +53,56 @@ the same food and water, which from seed 0 are draws 121 and 122. So:
 
 The remake now follows the original's new-game order (weather start 0x59F38,
 then the creature pass of 0x3624F, then the recruit), but makes 32 draws
-before the recruit and about 1 per tick while idle. The remaining startup
-draws and the per-tick source (not yet identified; rendering-time draws,
-off-map creature updates and periodic sensors are candidates) are open, so
-the remake's random results do not yet line up with the original's.
+before the recruit and about 1 per tick while idle, so its random results
+do not yet line up with the original's.
+
+**Idle draw rate (measured, round 2).** Two more new games, left idle and
+saved, give 4,564 draws by tick 114 at DOSBox's normal speed and 1,281 by
+tick 27 with the CPU slowed to a fixed 6,000 cycles. A straight line
+through the idle runs gives about 37.7 draws per tick plus about 262 before
+tick counting starts, and it also fits round 1's saves at ticks 57 and 92
+within about 10 draws. The slowed run did not draw fewer per tick, so the
+source is tied to game ticks, not to how fast the CPU spins. The ~262 is
+more than the 120 before the recruit: about 140 more draws happen between
+the recruit and the first tick. The two saves 92 ticks apart with the party
+facing a wall (map 0 (1,1)) give a similar 41 per tick, so the 3D view is
+not the main source either.
+
+**Ruled out by tracing** (tools/rngshallow.py, rngcalls.py, rngorphans.py,
+rngptrs.py): every one of the 277 direct calls to the generator routines is
+inside a known function, and no generator-reaching function is reached only
+through a stored pointer, so there is no hidden interrupt callback. Of the
+main loop's per-tick work (0x24691), the weather step 0x5A073(0) draws once
+per tick while it isn't raining; 0x54EAC, 0x47113, 0x4904F, 0x210DC,
+0x557B5, 0x1616D and the input wait 0x224A9 draw nothing at idle; 0x4910B
+draws only for an animated item held on the cursor; the render-time draws
+are the rain overlay (0x4E79C, 0x4E930, only while raining) and the
+teleporter and cloud fields (0x509E6), none of them in the starting cave.
+The start map's two pending 0x5A events (wall and floor ornament
+animations, 0x5964E) draw nothing.
+
+**Open lead: creature animation.** The per-map pass 0x34106 (called for
+every map by 0x34236 at the main loop's start, after loading through
+0x342A3 and after saving through 0x3502B) tests info byte 0 bit 0 of each
+inactive creature group's type: clear means activate (0x306A8), set means
+start an animation through 0x301F3 → 0x14E42 instead. All 299 groups in the
+shipped dungeon have the bit set. 0x14F1B, reached from 0x14E42 and from
+the slot animation driver 0x25420, draws one number per frame that can
+branch randomly. 299 groups stepping a frame about every 8 ticks would give
+about 37 draws per tick, which matches the measured rate. But with the bit
+set on every type, the decompiled tests in 0x34106 and in 0x306A8 (which
+schedules the first step through 0x3023F only when the bit is clear) would
+never start any creature's AI, while creatures do act in the original. So
+either the decompiler has those tests inverted, or the remake's info
+record isn't the one 0x1F8D9 returns. This needs a dynamic check (for
+example counting active slots in a DOSBox memory dump) before porting:
+an attempt to port the pass as read left every creature in the remake
+inactive and was reverted.
+
+**Idle upkeep matches.** Over 114 idle ticks from a new game the original
+drains food by 4 and water by 2 with health and stamina unchanged
+(SKSAVE7: food 1697 → 1693, water 1686 → 1684); the remake drains the same
+amounts. Only the starting values differ, because of the random-stream gap.
 
 **New-game creature pass (0x3624F, creature case).** While the dungeon
 loads for a new game, every creature group on every map (in map, column,
@@ -825,7 +871,7 @@ that cell:
 
 ## Open questions
 
-- The original's per-tick random draws (about 37-39 per tick when idle) and the 88 startup draws the remake still lacks before recruiting.
+- The original's per-tick random draws (about 37.7 per tick when idle, tied to game ticks) and its startup draws (about 120 before the recruit and about 140 more before the first tick); see "Idle draw rate" and "Open lead: creature animation" above.
 
 - The charges that alcove 0x1A gives a newly
   created item (the engine leaves them at the default).
