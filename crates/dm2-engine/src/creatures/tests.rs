@@ -686,3 +686,40 @@ fn q_is_done_facing_an_occupied_target() {
         assert_eq!(r == Some(ai::Res::Done), done, "party in direction {dir}, facing {f}");
     }
 }
+
+/// The movement test's door branch (0x2E4F1): a creature whose terrain mask
+/// keeps only 0x4000 of a closed door's class (0x4200) never walks into the
+/// door. Its walk step hands the door to the door routine in mode 0 and
+/// fails, so the creature stays put; the door's flags and the type's door
+/// mask decide whether it then bashes, casts or does nothing. Seen at tick
+/// 217 of the round 8 combat log, at the closed door (7,2) on map 36.
+#[test]
+fn walking_into_a_closed_door_never_enters_it() {
+    let Some((mut g, d)) = load() else { return };
+    let (map, door) = (36usize, (7, 2));
+    assert_eq!(g.dungeon.square(map, door.0, door.1).element(), dm2_formats::dungeon::Element::Door);
+    // Close the door (state 4) whatever its starting state.
+    let sq = g.dungeon.square(map, door.0, door.1).0;
+    g.dungeon.set_square(map, door.0, door.1, (sq & !7) | 4);
+    // A group of a type that takes the door branch and may open doors.
+    let Some(c) = groups(&g).into_iter().map(|(_, _, _, c)| c).find(|&c| {
+        let ty = creature_type(&g, c);
+        type_info(&g, &d, ty).is_some_and(|(i, _)| i.terrain() & 0x4200 == 0x4000 && i.door_actions() & 0x6F != 0)
+    }) else {
+        return;
+    };
+    let (m0, x0, y0, _) = groups(&g).into_iter().find(|&(_, _, _, t)| t == c).unwrap();
+    crate::movement::move_thing(&mut g, c, Some((m0, x0, y0)), Some((map, 6, 2)));
+    let Some(si) = activate(&mut g, &d, c, map, 6, 2) else { return };
+    set_facing(&mut g, c, 1);
+    let ctx = Ctx::load(&g, &d, si).unwrap();
+    {
+        let s = ctx.slot_mut(&mut g);
+        s.target = slot::Packed::new(map, door.0, door.1);
+        s.action = ai::action::WALK;
+    }
+    let failed = ai::frame_event(&mut g, &d, &ctx);
+    assert_ne!(failed, 0, "the walk step fails at the door");
+    assert_eq!(group_at(&g, map, 6, 2), Some(c), "the creature stays put");
+    assert_eq!(group_at(&g, map, door.0, door.1), None, "nothing entered the door");
+}

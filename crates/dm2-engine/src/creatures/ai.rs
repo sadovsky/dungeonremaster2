@@ -1080,6 +1080,18 @@ fn move_frame(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> bool {
     if party_here(g, ctx.map, t.x(), t.y()) {
         return attack_frame(g, d, ctx);
     }
+    // The movement test's door branch (0x2E4F1): a door the creature may
+    // only open or bash (its terrain mask keeps 0x4000 of a closed door's
+    // 0x4200) goes to the door routine in mode 0 with the walk's commit bit
+    // (0x2E51A). The walk handler then moves only for actions whose flag
+    // entry has bit 4 (0x29E4A), which the door routine's turn, bash and
+    // casts don't, so the step fails and the creature stays put.
+    if group_at(g, ctx.map, t.x(), t.y()).is_none()
+        && super::terrain::class(g, ctx.map, t.x(), t.y(), ctx.info.door_size().max(1)) & ctx.info.terrain() == 0x4000
+    {
+        door_act_mode(g, ctx, 0);
+        return false;
+    }
     let ok = group_at(g, ctx.map, t.x(), t.y()).is_none()
         && super::terrain::can_enter(g, ctx.map, t.x(), t.y(), ctx.info.terrain(), ctx.info.door_size().max(1));
     if !ok {
@@ -1347,6 +1359,14 @@ fn act_on_target(g: &mut GameState, ctx: &Ctx) -> Res {
 /// is open, plus the cell coin at the end.
 fn door_act(g: &mut GameState, ctx: &Ctx) -> Res {
     let mode = (ctx.slot(g).kind_b as u8) & 0x7F;
+    door_act_mode(g, ctx, mode)
+}
+
+/// The door routine (0x2CC42) with an explicit mode, committing, at the
+/// slot's target square. The movement test calls it this way (mode 0, its
+/// own commit bit 0x80) when the destination is a door the creature may
+/// only open or bash (masked terrain class 0x4000).
+fn door_act_mode(g: &mut GameState, ctx: &Ctx, mode: u8) -> Res {
     let mut mask = (if mode == 0 { 0x6F } else { 0x73 }) & ctx.info.door_actions();
     if mask == 0 {
         return Res::Failed;
