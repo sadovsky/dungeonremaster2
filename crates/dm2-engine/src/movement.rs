@@ -271,7 +271,14 @@ fn place_party(g: &mut GameState, map: usize, x: i32, y: i32, stationary: bool) 
 
 /// Apply a pending party map change (main loop step 1, 0x24629).
 pub fn arrive(g: &mut GameState, p: PartyPos) {
+    let old = g.party.map;
+    if p.map != old {
+        crate::map_entry::run(g, old, false);
+    }
     g.party = PartyPos { map: p.map, x: p.x, y: p.y, dir: p.dir };
+    if p.map != old {
+        crate::map_entry::run(g, p.map, true);
+    }
     place_party(g, p.map, p.x, p.y, false);
 }
 

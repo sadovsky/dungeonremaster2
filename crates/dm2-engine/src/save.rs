@@ -304,6 +304,21 @@ pub fn prepare(g: &mut GameState) {
 // ---------------------------------------------------------------------------
 // Writing
 
+/// Would the original stop with SYSTEM ERROR 71 when loading this state?
+///
+/// Model of the original's load path (0x55310): the pool of active creature
+/// slots is sized (0x342F9), then game start (0x551D4) runs the map-change
+/// routine (0x24629) for the party's map *before* the slots are cleared
+/// (0x342A3). That routine's map-entry pass (0x59785) creates the creature
+/// of every first-entry spawn text not yet done; placing it activates it,
+/// no slot is usable yet, and activation (0x306A8) raises error 0x47.
+/// Normal play can't reach such a state (arriving on the map runs the
+/// spawns and marks them done), but moving the party by other means can.
+/// Returns the offending squares of the party's map.
+pub fn original_load_hazard(g: &GameState) -> Vec<(i32, i32)> {
+    crate::map_entry::pending_spawns(g, g.party.map)
+}
+
 /// Serialise a game. Works on a prepared copy, so `g` is left as it is; use
 /// `save` to also prepare the live game the way the original does.
 pub fn to_bytes(g: &GameState, name: &str) -> Result<Vec<u8>, SaveError> {
