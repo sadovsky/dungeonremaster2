@@ -551,3 +551,18 @@ fn new_game_initialises_creatures() {
     }
     assert!(checked > 100, "checked {checked} creature groups");
 }
+
+#[test]
+fn arriving_with_a_new_facing_rotates_the_champions() {
+    let Some(mut g) = game() else { return };
+    // Face north with the champion facing north in cell 0.
+    g.set_party_facing(0);
+    g.champions[0].raw[0x1C] = 0;
+    g.champions[0].raw[0x1D] = 0;
+    // Arrive on another map facing east (a stairs or teleport arrival).
+    let to = (0..g.dungeon.maps.len()).find(|&m| m != g.party.map).unwrap();
+    crate::movement::arrive(&mut g, PartyPos { map: to, x: 1, y: 1, dir: 1 });
+    assert_eq!(g.party.dir, 1);
+    assert_eq!(g.champions[0].raw[0x1C], 1, "champion facing must rotate with the party");
+    assert_eq!(g.champions[0].raw[0x1D], 1, "champion cell must rotate with the party");
+}

@@ -275,6 +275,9 @@ pub fn arrive(g: &mut GameState, p: PartyPos) {
     if p.map != old {
         crate::map_entry::run(g, old, false);
     }
+    // The new facing goes through the party-facing routine (0x45869) so
+    // each champion's facing and cell rotate with the party, as for turns.
+    g.set_party_facing(p.dir);
     g.party = PartyPos { map: p.map, x: p.x, y: p.y, dir: p.dir };
     if p.map != old {
         crate::map_entry::run(g, p.map, true);
