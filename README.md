@@ -87,3 +87,11 @@ listed in each doc's open-questions or implementation-status section.
 Still to be confirmed against the original game: the real-time tick
 length, compatibility with save files written by the DOS game, and the
 music driver's exact voice allocation and volume curve.
+
+## License
+
+The code, tools and notes in this repository are released under the MIT
+License (see `LICENSE`). The license does not cover *Dungeon Master II*
+itself: the original game's files, graphics, sounds, music and text remain
+the property of their copyright holders and are not part of this
+repository. You need your own copy of the game to run the remake.

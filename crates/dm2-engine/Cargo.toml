@@ -2,6 +2,7 @@
 name = "dm2-engine"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 dm2-formats = { version = "0.1.0", path = "../dm2-formats" }
