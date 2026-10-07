@@ -449,3 +449,50 @@ fn variable_actuators_set_and_test() {
     actuators::wall_actuator(&mut g, ev, test_var);
     assert_eq!(g.timeline.len(), 2);
 }
+
+/// Walking into a wall hurts the front champions (0x234A8): the original's
+/// probe (walk to the end of the start corridor, then 9 more presses into
+/// the wall) lost 8 health. Each bump costs at most 1 and cries out.
+#[test]
+fn bumping_a_wall_hurts_the_front_champions() {
+    let Some(gd) = crate::data::GameData::load_default() else { return };
+    let Ok(bytes) = std::fs::read(default_data_dir().join("DUNGEON.DAT")) else { return };
+    let dg = Dungeon::parse(&bytes).unwrap();
+    let mut g = GameState::new_game_with(&dg, std::rc::Rc::new(gd));
+    assert_eq!(g.party.map, 0);
+    let start = g.champions[0].health();
+    let mut presses = 0;
+    while presses < 16 {
+        if g.tick >= g.move_ready {
+            g.push_command(Command::Move(Move::Forward));
+            presses += 1;
+        }
+        g.advance();
+    }
+    for _ in 0..20 {
+        g.advance();
+    }
+    assert_eq!((g.party.x, g.party.y), (1, 1), "the corridor ends at (1,1)");
+    let lost = start - g.champions[0].health();
+    assert!((1..=9).contains(&lost), "lost {lost} health from 9 bumps");
+}
+
+#[test]
+fn bump_queues_the_champion_cry() {
+    let Some(gd) = crate::data::GameData::load_default() else { return };
+    let Ok(bytes) = std::fs::read(default_data_dir().join("DUNGEON.DAT")) else { return };
+    let dg = Dungeon::parse(&bytes).unwrap();
+    let mut g = GameState::new_game_with(&dg, std::rc::Rc::new(gd));
+    g.party = PartyPos { map: 0, x: 1, y: 1, dir: 0 };
+    let mut cried = false;
+    for _ in 0..30 {
+        let before = g.champions[0].health();
+        g.effects.clear();
+        movement::bump(&mut g, Move::Forward, (1, 0));
+        let hurt = g.champions[0].health() < before || g.party_status.pending_damage[0] > 0;
+        let cry = g.effects.iter().any(|e| matches!(e, Effect::Sound { cat: 0x16, sub: 0x8A, .. }));
+        assert_eq!(hurt, cry, "a cry is queued exactly when the bump lands");
+        cried |= cry;
+    }
+    assert!(cried);
+}

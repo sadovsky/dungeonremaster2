@@ -482,7 +482,7 @@ active the move is queued.
 |--------|-----------|--------|
 | 1 | Standing on stairs and moving backward | Take the stairs |
 | 2 | Destination is a stairs square | Step onto it and take the stairs at once |
-| 3 | Destination blocked (0x4AF72) | No move. A closed door gets bashed (0x18D9E, random damage scaled by the party's move time). |
+| 3 | Destination blocked (0x4AF72) | No move. Every bump hurts (0x234A8): for each of two starting cells, (facing + move offset + 2) and (+3), the party cells are searched in an order taken from a table at 0x716CC (row = 2 × move direction + bit 1 of the start cell, the start cell first incremented when the direction is north or south), and the first living champion found takes 1 point of damage through 0x4722A (body-part mask 0x18, attack type 2). A champion found twice is hit once. When the damage lands, that champion's cry plays (category 22, their portrait, sub 0x8A). Confirmed against the original in DOSBox: walking to the end of the start corridor and pressing on into the wall nine times cost Torham 8 health, and the remake now loses the same. A closed door is also bashed (0x18D9E, random damage scaled by the party's move time). |
 | 4, 5 | A solid creature group stands there | Try to swap or push (0x24171, 0x23E5B, 0x24328); otherwise a 5-point bump (0x24E62 with 0x4005). Tentative. |
 | 6 | Free | Move with 0x4B108. If the move leaves the map through a teleporter edge link (0x1D113), the party teleports instead. |
 

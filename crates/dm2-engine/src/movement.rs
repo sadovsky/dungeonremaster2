@@ -424,6 +424,9 @@ pub fn party_command(g: &mut GameState, mv: Move) -> bool {
         }
         MoveClass::Blocked => {
             let sq = g.dungeon.square(p.map, dest.0, dest.1);
+            if !g.champions.is_empty() {
+                bump(g, mv, dest);
+            }
             if hooks::champion_count(g) != 0 && sq.element() == Element::Door && sq.0 & 7 == 4 {
                 let power = hooks::bash_power(g);
                 doors::bash(g, p.map, dest.0, dest.1, power, 0, false);
@@ -445,6 +448,50 @@ pub fn party_command(g: &mut GameState, mv: Move) -> bool {
             }
             move_party(g, Some(dest));
             true
+        }
+    }
+}
+
+/// Address of the cell-order table used by 0x1869A: 8 rows of 4 party cells,
+/// read from the user's SKULL.EXE at runtime.
+const CELL_ORDER_TABLE: u32 = 0x716CC;
+
+/// The four party cells in the order 0x1869A tries them, for a target in
+/// direction `dir` from the party and starting cell `start`.
+fn cell_order(g: &GameState, dir: u8, start: u8) -> Option<[u8; 4]> {
+    let data = g.data.as_ref()?;
+    let start = if dir & 1 == 0 { start + 1 } else { start };
+    let row = (dir as u32 & 3) * 2 + ((start as u32 >> 1) & 1);
+    let mut out = [0u8; 4];
+    for (k, c) in out.iter_mut().enumerate() {
+        *c = data.exe.u8_at(CELL_ORDER_TABLE + row * 4 + k as u32)? & 3;
+    }
+    Some(out)
+}
+
+/// The champion nearest an adjacent square, searching the party cells from
+/// `start` (0x45938 with 0x458F4: first living champion in the ordered cells).
+fn champion_toward(g: &GameState, dir: u8, start: u8) -> Option<usize> {
+    let order = cell_order(g, dir, start)?;
+    order.iter().find_map(|&cell| g.champions.iter().position(|c| c.cell() & 3 == cell && c.is_alive()))
+}
+
+/// Walking into a blocked square (0x234A8): the champion nearest the obstacle
+/// on each side takes 1 point of damage on body-part mask 0x18, attack type 2,
+/// and cries out if it lands.
+pub fn bump(g: &mut GameState, mv: Move, dest: (i32, i32)) {
+    let offset = mv.offset();
+    let dir = (g.party.dir + offset) & 3;
+    let first = champion_toward(g, dir, (g.party.dir + offset + 2) & 3);
+    let mut second = champion_toward(g, dir, (g.party.dir + offset + 3) & 3);
+    if second == first {
+        second = None;
+    }
+    let map = g.party.map;
+    for i in [first, second].into_iter().flatten() {
+        if crate::apply::damage_champion(g, i, 1, 0x18, 2) != 0 {
+            let portrait = g.champions[i].portrait();
+            g.effects.push(Effect::Sound { cat: 0x16, idx: portrait, sub: 0x8A, map, x: dest.0, y: dest.1 });
         }
     }
 }
