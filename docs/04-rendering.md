@@ -952,14 +952,29 @@ Simplifications, still TODO:
     is the rain overlay itself, not a separate floor image.
   Remaining outdoor differences are mostly rain-streak placement (the
   remake's offsets come from a visual-only random source).
-- Floor ornaments take their colour key from attribute 0x11 (0x50081
-  passes it to the drawer through 0x4E620), not attribute 4. Using
-  attribute 4 left a solid box around ornaments whose 4-bit key nibble
-  differs from their mapped key colour.
-- Open: at map 3 (13,8) facing south the floor itself still differs from
-  the original over most of its area, with all feature layers off. It is
-  not a flip of the floor image, a vertical shift, or the 'p'/'q' fill
-  colours (map set 3 has neither attribute). Not yet traced.
+- Floor ornaments take their colour key from attribute 4, falling back to
+  the map set's key (attribute (8, set, 11, 100), via 0x75BFA) when it is
+  0 (0x50081). Attribute 0x11 is not the key: it is the extra argument the
+  map-edge-link path passes to the composing drawer 0x4E620 (below). An
+  earlier reading of 0x11 as the key left floor ornaments without the
+  fallback unkeyed (solid brown floor bands at map 3 (13,8)).
+- Floor ornaments from actuators (0x1E908): any actuator on a floor, pit
+  or teleporter square supplies its ornament nibble through 0x1FC82 (an
+  index into the map's byte lists after the creature types and wall
+  ornaments, i.e. the floor list), except type 0x27, which supplies one
+  only when bits 7+ of word 1, less one, name the current map.
+- Open: map-edge-link floor ornaments. At map 3 (13,8) facing south the
+  square two ahead, (13,10), is a map-edge link (a teleporter square with a
+  type 0x27 switch naming map 3). For such squares, and for ornaments with
+  attribute 99, 0x50081 takes a second path for depths above 0: it draws
+  the ornament, then composes it through 0x4E620 with attribute 0x11
+  (here colour 14) after drawing the linked map's squares beyond the link
+  (0x52BF6 / 0x52518 over the cells behind it). Floor ornament 34 is such a
+  portal frame: 41% of its depth-2 image is colour 14, which the original
+  fills with the view across the link and the remake shows as a brown
+  blob. Not implemented; this accounts for most of the remaining
+  difference at that view (11,057 differing pixels, the floor bands now
+  matching).
 - (Resolved.) The door view at map 2 (19,12) differed in the panel and
   around it. Two causes, both in the door-across path:
   - **Panel light.** 0x5346E passes the lit drawer (0x4E502) a light

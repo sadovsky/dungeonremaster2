@@ -536,6 +536,13 @@ fn summarise(cx: &Ctx, x: i32, y: i32) -> Cell {
                     }
                 }
                 3 => {
+                    // Type 0x27 (map-edge link switch) shows its ornament only
+                    // when bits 7+ of word 1, less one, name the current map
+                    // (0x1E908); otherwise it contributes none.
+                    let w1 = word(dg, t, 1);
+                    if w1 & 0x7F == 0x27 && (w1 >> 7) as i64 - 1 != cx.map as i64 {
+                        continue;
+                    }
                     let nib = (word(dg, t, 2) >> 12) as usize;
                     if nib != 0 {
                         if let Some(&o) = lists.floor_ornaments.get(nib - 1) {
@@ -897,9 +904,12 @@ fn draw_floor_ornament(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Ce
     } else {
         u8::from(side > 0)
     };
-    // 0x50081 reads attribute 0x11 and hands it to the drawer (0x4E620)
-    // as the colour key; attribute 4 is not used for floor ornaments.
-    let key = a.gdat.lookup(Key::new(10, orn, 11, 0x11)).and_then(|k| u8::try_from(k).ok());
+    // 0x50081 takes the colour key from attribute 4, falling back to the
+    // map set's key (attribute (8, set, 11, 100), via 0x75BFA) when it is 0.
+    // Attribute 0x11 is a separate argument to the composing drawer
+    // (0x4E620), not the key.
+    let set_key = a.gdat.lookup(Key::new(8, cx.set, 11, 100)).and_then(|k| u8::try_from(k).ok());
+    let key = key_attr(a, 10, orn, set_key, true);
     let slot = match attr(a, 10, orn, 5) {
         0 => 12u16,
         v => (v & 0xFF).saturating_sub(1),
