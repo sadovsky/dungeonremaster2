@@ -518,10 +518,21 @@ separate visual generator to keep the simulation deterministic. Sound (24, 0, 2,
   wider than the panel is skipped), glyphs from the strip (8, set, 3) (A-Z
   → 0-25, '.' → 27, others blank). The bitmap is scaled and placed like
   the panel.
-- **Alcoves**: an ornament with attribute (9, orn, 11, 10) holds items. On
-  front faces at depth 1, unless the ornament has image sub 0x0F, the items
-  lying in the wall's quadrant that faces the party are drawn as items at
-  the ornament's position (0x528C5).
+- **Ornament kind** (attribute (9, orn, 11, 10), read by 0x1FCEC) is a
+  code, not a flag:
+  - **1, alcove:** on front faces at depth 1, unless the ornament has image
+    sub 0x0F, the items lying in the wall's quadrant that faces the party
+    are drawn as items at the ornament's position (0x528C5).
+  - **2:** used together with an image sub 0x0F (not traced further).
+  - **3, champion portrait mirror:** on front faces, the portrait image
+    (22, champion, 1) is drawn at the ornament's placement and depth scale,
+    offset by attribute (9, orn, 12, 0xFD) (x high byte, y low byte, signed)
+    and passed to the drawer with key −1 (none). The champion number comes
+    from the wall's portrait actuator (type 0x7E: word 1 bits 7 and up).
+    Items on the mirror's square are not drawn. Checked against the
+    original's starting mirror: 2,552 differing pixels before, 392 after.
+    The residue is inside the portrait frame and is not caused by the
+    colour key; its cause is open.
 - **Floor ornaments** (0x50081): from the cell summary's floor slot (the
   set's attribute 0x6B, or an actuator or text thing on the square);
   category 10.

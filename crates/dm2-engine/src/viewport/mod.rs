@@ -11,7 +11,7 @@ mod walltext;
 
 use std::collections::HashMap;
 
-use dm2_formats::dungeon::{Dungeon, Element, ThingRef};
+use dm2_formats::dungeon::{Dungeon, Element, ThingRef, ThingType};
 use dm2_formats::gdat::Key;
 
 use crate::assets::Assets;
@@ -740,9 +740,28 @@ fn draw_wall_ornament(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cel
     r.key = key;
     r.anchor = Some(anchor as i16);
     let placed = draw(a, buf, cx, r);
-    // Alcoves (attribute 10) show the items lying in them.
-    if side == 0 && attr(a, 9, orn, 10) != 0 && !a.has_image(9, orn, 0x0F) {
+    // Attribute 10 is the ornament's kind (0x1FCEC): 1 = an alcove showing
+    // the items lying in it, 3 = a champion portrait mirror (0x4F3DF).
+    let kind = attr(a, 9, orn, 10);
+    if side == 0 && kind == 1 && !a.has_image(9, orn, 0x0F) {
         draw_alcove_items(a, buf, cx, cell, c, rid);
+    }
+    if side == 0 && kind == 3 {
+        if let Some(portrait) = mirror_portrait(cx, cell) {
+            // Image (22, champion, 1) at the ornament's placement and scale,
+            // offset by attribute (9, orn, 12, 0xFD): x high byte, y low.
+            let off = a.gdat.lookup(Key::new(9, orn, 12, 0xFD)).unwrap_or(0);
+            let mut pr = Req::new(22, portrait, 1, rid);
+            pr.xs = ds;
+            pr.ys = ds;
+            pr.xoff = (off >> 8) as u8 as i8 as i32;
+            pr.yoff = (off & 0xFF) as u8 as i8 as i32;
+            pr.depth = Some(depth);
+            pr.anchor = Some(anchor as i16);
+            // The original passes key −1 to the drawer: no colour key.
+            pr.key = None;
+            draw(a, buf, cx, pr);
+        }
     }
     // Ornaments on the three nearest wall cells are clickable (kind 6).
     if let (Some(p), 1..=3) = (placed, c) {
@@ -1199,6 +1218,18 @@ fn draw_item(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usi
         let quadrant = (t.cell().wrapping_sub(cx.dir) & 3) as u8;
         cx.hits.item(hits::HitKind::FloorItem, c as u8, quadrant, t.0, (p.x, p.y, p.w, p.h));
     }
+}
+
+/// Champion number of the portrait actuator (type 0x7E: word 1 bits 0-6 the
+/// type, bits 7 and up the champion) on a wall square shown as a mirror.
+fn mirror_portrait(cx: &Ctx, cell: &Cell) -> Option<u8> {
+    cx.dg.things_at(cx.map, cell.x, cell.y).into_iter().find_map(|t| {
+        (t.kind() == ThingType::Actuator)
+            .then(|| cx.dg.record_word(t, 1))
+            .flatten()
+            .filter(|w| w & 0x7F == 0x7E)
+            .map(|w| (w >> 7) as u8)
+    })
 }
 
 /// Items lying in a wall alcove ahead (0x528C5): only on front faces at

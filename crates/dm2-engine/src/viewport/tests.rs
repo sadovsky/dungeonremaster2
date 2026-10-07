@@ -54,7 +54,11 @@ fn pinned_views() {
         ((4, 6, 11, 2), 0x50fac760491539ff),
         ((8, 12, 3, 0), 0x34eaa6dde0fdba81),
         ((7, 12, 11, 1), 0x8a9dbdd9e46d85e9),
-        ((0, 3, 4, 0), 0xc9631cee3dab9307),
+        // Ornament attribute 10 is a kind (1 alcove, 3 portrait mirror), not
+        // a flag: the starting map's mirror now shows its champion and no
+        // longer its items (alcove view (0,1,1,W) against the original in
+        // DOSBox: 2,552 -> 392 differing pixels).
+        ((0, 3, 4, 0), 0x67a035016ee93515),
         // Creature in cell 6 now offset by its descriptor shift byte (0x50DEE).
         // The outdoor set's backdrop scripts (horizon strip, landmarks) now
         // draw (0x54699); against the original in DOSBox this view's diff
