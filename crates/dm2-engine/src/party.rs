@@ -23,7 +23,6 @@ pub const EVENT_DAMAGE_DISPLAY: u8 = 0x0C;
 pub const EVENT_REBIRTH: u8 = 0x0D;
 pub const EVENT_MAGIC_COUNTER: u8 = 0x47;
 pub const EVENT_PARTY_EFFECT: u8 = 0x48;
-pub const EVENT_STATUS: u8 = 0x54;
 
 fn is_item(t: ThingRef) -> bool {
     (5..=10).contains(&(t.kind() as u8))
@@ -334,11 +333,6 @@ pub fn event(g: &mut GameState, ev: Event) {
         }
         EVENT_PARTY_EFFECT => party_effect_expired(g, ev),
         // Status refresh: redraw every champion box.
-        EVENT_STATUS => {
-            for c in g.champions.iter_mut() {
-                c.flag_redraw(0x0800);
-            }
-        }
         _ => {}
     }
 }

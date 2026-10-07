@@ -72,6 +72,8 @@ pub struct GameState {
     /// left of its in-between walking frame (the original's step counter
     /// 0x7F258, set to half the move time when it exceeds 1). Not saved.
     pub walk: Option<(PartyPos, u16)>,
+    /// Outdoor clock and weather (docs/04, event 0x54).
+    pub weather: crate::weather::Weather,
     /// Active creature slots (docs/08); None = free.
     pub creature_slots: Vec<Option<crate::creatures::slot::Slot>>,
     /// Creature tables from the user's files; creatures stay inert without them.
@@ -112,6 +114,7 @@ impl GameState {
             magic_counter: 0,
             game_over: false,
             walk: None,
+            weather: Default::default(),
             creature_slots: Vec::new(),
             creature_data: None,
             creature_map_seen: None,
@@ -129,6 +132,7 @@ impl GameState {
         g.attrs = Attributes::from_gdat(&data.gdat);
         g.data = Some(data);
         crate::party::recruit_starting_champion(&mut g);
+        crate::weather::new_game(&mut g);
         g
     }
 
@@ -159,6 +163,8 @@ impl GameState {
             let Some(ev) = self.timeline.pop() else { break };
             events::dispatch(self, ev);
         }
+        crate::weather::tick(self);
+        crate::weather::update_storm_flag(self);
         crate::creatures::update(self);
         champions::tick(self);
         while let Some(c) = self.commands.pop_front() {

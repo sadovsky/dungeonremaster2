@@ -611,33 +611,72 @@ mid-step frame it shrinks the offsets and scale by 52/64 and adds the
 walking shift (not yet modelled). Outdoor sets use this for a horizon
 strip (always drawn) and several distant landmarks.
 
-### Outdoor weather and time of day (0x59F38, 0x5A073; traced, not implemented)
+### Outdoor weather and time of day (0x59F38, 0x5A073; implemented in `weather.rs`)
 
-Outdoor map sets run a weather and clock model that changes both the
-light and the colours:
+Outdoor map sets run a clock and a rain model. Both act on the picture
+only through the darkness step and a few extra layers; there is no
+separate time-of-day palette.
 
-- **Clock:** an hour index advances every 0x555 (1365) ticks, 24 per day
-  (`(tick + offset) / 0x555 mod 24`, offset at 0x80434). The hour picks a
-  light adjustment from a 24-byte table at 0x760EC (0x80472).
-- **Light:** when the set's environment flag (0x8047B, from a per-state
-  table at 0x75BE2) is on, the darkness step (0x389C2) adds
-  `thresholds[clamp(0, 0x8047C + 0x80472, 5)]` to the light sum. A flag at
-  0x7F248 forces the step to 0 (full light) until the next update. The
-  step then drops by one when the light word at 0x7F972 exceeds 12.
-- **Colours:** category-23 images are drawn through a 16-entry colour map
-  chosen by the light index at 0x802CC (0x4E226), so the sky and horizon
-  are recoloured by time of day and weather. The remake draws them with
-  their stored colours, which is why its outdoor sky has the wrong tint.
-- **Weather:** a rain intensity (0x8047E, 0 = none) rises and falls at
-  random; its level (thresholds 0x10, 0x40, 0x80) and the wind direction
-  relative to the facing (0x8047F) pick the rain overlay among images
-  0x6D-0x74 of the set, drawn at a random offset each frame through
-  layout 702 with the game's RNG (0x4E79C). Cloud and storm backdrops use
-  images 0x67-0x6C (0x5A808), and storms can strike squares with
-  lightning (0xFFB0 explosions) and play thunder. Ornaments and objects
-  get a wet overlay while it rains (0x4E930).
-- **Save:** the load path (0x370D2) restores these globals, so a
-  comparison against the original needs the saved weather and clock.
+- **Setup on map entry (0x3AB31):** the environment state index is the
+  set's number attribute (8, set, 11, 0x66). A table of 4-byte entries at
+  0x75BE2, indexed by that state, gives the outdoor-light flag (+0) and
+  whether rain overlays may be drawn (+2). The set's features are
+  switched on by the presence of category-23 images: sub 100 lightning,
+  0x6A storm backdrops, 0x67 cloud backdrops, 0x71 rain overlays.
+- **Clock:** the hour is `(tick + offset) / 0x555 mod 24`, where the
+  offset is `clamp(attr(3,0,11,0), 0, 23) × 0x555`, set whenever the
+  dungeon is parsed (0x36909). The hour's light value comes from a
+  24-byte table at 0x760EC: 5 around midnight, falling to 1 through the
+  day and rising again at dusk. It is re-read every 0x555 ticks.
+- **Light (0x389C2):** when the outdoor flag is on, the light sum gains
+  `thresholds[clamp(storm + hour_light, 0, 5)]`, using the same threshold
+  table (0x7570E) the darkness step then counts against. Night (index 5)
+  adds nothing; daytime (index 1) adds a large amount, so the step drops
+  by about three. A lightning flash (0x7F248) forces the step to 0 for
+  one update. The step then feeds the ambient level (step × 10).
+- **Colours:** the "time-of-day colour map" (0x4E226) is the image's own
+  16-entry map run through the ordinary lighting shader at the ambient
+  level, the word at 0x802CE (the high half of the dword at 0x802CC).
+  So the sky and horizon change with the hour only through the darkness
+  step; backdrops already draw with ambient shading.
+- **Rain intensity:** a curve driven by timeline event 0x54. A cycle
+  picks a pattern (0-3) and a multiplier (1-3); each event adds
+  `multiplier × curve[pattern][step]` (four 32-entry signed tables at
+  0x76104) to the intensity, clamps it to 0-255, and reschedules itself
+  after random(256)+50 ticks. After 32 steps a new cycle starts, after
+  random(8000)+500 ticks (random(500) for the first cycle of a game,
+  which always uses pattern 3 and multiplier 1).
+- **Per tick (0x5A073 with argument 0, right after the timeline):** with
+  no rain, the cloud counter decays every third tick and there is a
+  1-in-64 thunder roll. With rain, rain starts with a small chance and,
+  once falling, takes the intensity as its level; the cloud counter
+  builds; and a lightning roll runs when the set has lightning.
+- **Drawing:** cloud backdrop scripts 0x67/0x68/0x69 by rain level
+  (thresholds 0x10, 0x40, 0x80; the heaviest sets the storm flag) and
+  storm scripts 0x6A-0x6C by cloud counter (0x40, 0x80, 0xC0) are added
+  to the set's backdrop list (0x5A808). The rain overlay is sub 0x6D-0x70
+  for wind from the side or 0x71-0x74 for wind from ahead or behind, by
+  rain level (0x10, 0x40, 0x80), mirrored when the relative wind is 1
+  (0x4E733), drawn through layout 702 with random source offsets
+  (0x4E79C).
+
+**Remake differences (tentative or simplified):**
+- The rain overlay is tiled over the viewport with colour key 0 and
+  offsets from the visual random source; the original's blit arguments
+  (0x13EE3) are only partly decoded, and its offsets come from the game
+  RNG, so in the original the RNG sequence depends on the rain.
+- The cloud build-up condition follows the visible branches of a
+  tangled decompilation.
+- Lightning strikes try up to 8 random squares and explode the first open
+  floor; the original's square test, its party-distance thunder rule and
+  the fixed strike square of attribute (8, set, 11, 0x6C) are not
+  modelled. Thunder plays as global sound 0x40 at the party.
+- The extra light term at 0x7FFEC and the step adjustment for the word at
+  0x7F972 are not modelled.
+- Saves written by the remake carry the weather in the trailer. A save
+  written by the DOS game restores these globals in its own stream, which
+  the remake doesn't read yet; it rederives the clock from the dungeon
+  instead.
 
 ## 4. Draw requests (traced)
 
@@ -836,12 +875,9 @@ Simplifications, still TODO:
   'n'/'o' wall clip attributes (0x53C7B → 0x19AC4) are 0 here, and the
   original also uses sub 50 for every far cell, so neither explains it.
 
-- Outdoor weather and time of day (section 3) are traced but not
-  implemented: the hour clock, the environment light term, the
-  time-of-day colour maps for category-23 images, rain overlays, clouds
-  and lightning. Until then outdoor views differ in brightness and tint
-  (map 1 view (2,9,N): 22,952 differing viewport pixels, down from
-  26,124 once backdrops were drawn).
+- Outdoor weather and time of day (section 3) are implemented with the
+  simplifications listed there; not yet compared against the original's
+  outdoor views.
 - Loading in the original a remake save whose party was moved onto map 2
   or 3 stops with system error 71 (0x47, raised only by creature
   activation 0x306A8 when no slot can be freed). Moving it onto map 1 works,

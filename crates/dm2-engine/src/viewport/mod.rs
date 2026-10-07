@@ -132,6 +132,8 @@ pub mod layers {
 pub struct ViewExtras {
     /// Game tick, for animated ornaments.
     pub tick: u32,
+    /// Outdoor weather to draw: cloud/storm backdrops and the rain overlay.
+    pub weather: crate::weather::WeatherView,
     /// Apply depth lighting (docs/04 section 6).
     pub lighting: bool,
     /// Ambient darkness in 64ths (0 = full light).
@@ -184,6 +186,7 @@ impl Default for ViewExtras {
     fn default() -> Self {
         ViewExtras {
             tick: 0,
+            weather: Default::default(),
             lighting: true,
             ambient: 0,
             visual_seed: 0,
@@ -561,7 +564,9 @@ pub fn render_full(a: &mut Assets, dg: &Dungeon, map: usize, px: i32, py: i32, d
     // Map-set backdrops: horizon strips and distant landmarks (0x54699).
     let m = &dg.maps[map];
     let (gx, gy) = (m.origin_x as i32 + px, m.origin_y as i32 + py);
-    for b in backdrop::plan(&a.gdat, set, gx, gy, dir) {
+    let weather_backdrops: Vec<backdrop::Backdrop> =
+        ex.weather.backdrops.iter().filter_map(|&n| backdrop::plan_one(&a.gdat, set, n, gx, gy, dir)).collect();
+    for b in backdrop::plan(&a.gdat, set, gx, gy, dir).into_iter().chain(weather_backdrops) {
         let flip = u8::from(backdrop::mirrored(b.flip_kind, set_flags, par, ex.tick));
         let s = if b.scale == 64 { a.sprite(23, set, b.index) } else { a.sprite_scaled(23, set, b.index, b.scale, b.scale) };
         if let Some(s) = s {
@@ -590,6 +595,7 @@ pub fn render_full(a: &mut Assets, dg: &Dungeon, map: usize, px: i32, py: i32, d
         draw_cell(a, &mut buf, &mut cx, &cells[c], c);
     }
     draw_party_cell(a, &mut buf, &mut cx, &cells[0]);
+    draw_rain(a, &mut buf, &mut cx, set, ex);
     Rendered { bitmap: buf, hits: cx.hits }
 }
 
@@ -1407,3 +1413,35 @@ fn draw_party_cell(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell) 
 
 #[cfg(test)]
 mod tests;
+
+/// Rain overlay (0x4E79C): the set's rain image tiled over the viewport with
+/// a fresh random offset each frame, mirrored when the wind blows from the
+/// left. Tentative: the original's blit (0x13EE3) arguments are only partly
+/// decoded, and it draws its offsets from the game RNG, while the remake
+/// uses the visual random source so rendering never changes the game.
+fn draw_rain(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, set: u8, ex: &ViewExtras) {
+    let Some((sub, mirror)) = ex.weather.rain else { return };
+    let Some(s) = a.sprite(23, set, sub) else { return };
+    if s.w == 0 || s.h == 0 {
+        return;
+    }
+    let ox = (cx.rand() & 0xFF) as usize % s.w;
+    let oy = (cx.rand() & 0x1F) as usize % s.h;
+    for y in 0..buf.h {
+        let sy = (y + oy) % s.h;
+        for x in 0..buf.w {
+            let mut sx = (x + ox) % s.w;
+            if mirror {
+                sx = s.w - 1 - sx;
+            }
+            let v = s.px[sy * s.w + sx];
+            if v == 0 {
+                continue;
+            }
+            buf.px[y * buf.w + x] = match &s.cmap {
+                Some(m) => m[(v & 15) as usize],
+                None => v,
+            };
+        }
+    }
+}

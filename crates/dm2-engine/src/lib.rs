@@ -40,4 +40,5 @@ pub mod state;
 pub mod timeline;
 pub mod ui;
 pub mod viewport;
+pub mod weather;
 pub mod world;

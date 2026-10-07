@@ -790,6 +790,8 @@ fn engine_trailer(g: &GameState, events: &[(u16, Event)]) -> Vec<u8> {
         o.0.extend_from_slice(&e.to_bytes());
     }
     o.u16(g.hand.held);
+    // Optional tail: outdoor weather and clock (absent in older trailers).
+    o.0.extend_from_slice(&g.weather.to_bytes());
     o.0
 }
 
@@ -838,6 +840,9 @@ fn apply_trailer(g: &mut GameState, b: &[u8]) -> Result<(), SaveError> {
     }
     g.timeline = Timeline::from_slots(cap, events);
     g.hand.held = i.u16()?;
+    if let Some(w) = i.take(crate::weather::SAVE_BYTES).ok().and_then(crate::weather::Weather::from_bytes) {
+        g.weather = w;
+    }
     Ok(())
 }
 

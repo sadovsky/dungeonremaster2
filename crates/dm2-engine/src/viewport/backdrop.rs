@@ -81,39 +81,38 @@ pub fn view_space(dir: u8, gx: i32, gy: i32, ax: i32, ay: i32) -> (i32, i32, i32
 /// (0x5439A for each non-empty entry 0..100). `gx`/`gy` is the party's
 /// global position (map origin plus square).
 pub fn plan(g: &Gdat, set: u8, gx: i32, gy: i32, dir: u8) -> Vec<Backdrop> {
-    let mut out = Vec::new();
-    for n in 0..100u8 {
-        if g.record(Key::new(23, set, 1, n)).is_none() {
-            continue;
-        }
-        let Some(raw) = g.get(Key::new(23, set, 5, n)) else { continue };
-        let text = crate::font::deobfuscate(raw);
-        let script: Vec<u8> = text.into_iter().take_while(|&b| b != 0).collect();
-        if script.is_empty() {
-            continue;
-        }
-        let rid = key_value(&script, b"cd") as u16;
-        let flip_kind = key_value(&script, b"fw") as u8;
-        let b = match key_value(&script, b"mv") {
-            0 => Backdrop { index: n, rid, flip_kind, xoff: 0, scale: 0x40 },
-            1 => {
-                let (ax, ay) = (key_value(&script, b"xl"), key_value(&script, b"yl"));
-                let (lat, _fwd, dist) = view_space(dir, gx, gy, ax, ay);
-                if dist == 0 {
-                    continue;
-                }
-                let fd = key_value(&script, b"fd");
-                let v = (0x40 - (dist - fd)).max(1);
-                let scale = ((v * 0x80 >> 6) + 1) >> 1;
-                Backdrop { index: n, rid, flip_kind, xoff: lat * 0xD2 / dist, scale }
-            }
-            _ => continue,
-        };
-        if b.rid != 0 {
-            out.push(b);
-        }
+    (0..100u8).filter_map(|n| plan_one(g, set, n, gx, gy, dir)).collect()
+}
+
+/// One backdrop script (category 23, sub `n`), if it draws something from
+/// this viewpoint. Also used for the weather's cloud and storm scripts
+/// (subs 0x67-0x6C, 0x5A808).
+pub fn plan_one(g: &Gdat, set: u8, n: u8, gx: i32, gy: i32, dir: u8) -> Option<Backdrop> {
+    g.record(Key::new(23, set, 1, n))?;
+    let raw = g.get(Key::new(23, set, 5, n))?;
+    let text = crate::font::deobfuscate(raw);
+    let script: Vec<u8> = text.into_iter().take_while(|&b| b != 0).collect();
+    if script.is_empty() {
+        return None;
     }
-    out
+    let rid = key_value(&script, b"cd") as u16;
+    let flip_kind = key_value(&script, b"fw") as u8;
+    let b = match key_value(&script, b"mv") {
+        0 => Backdrop { index: n, rid, flip_kind, xoff: 0, scale: 0x40 },
+        1 => {
+            let (ax, ay) = (key_value(&script, b"xl"), key_value(&script, b"yl"));
+            let (lat, _fwd, dist) = view_space(dir, gx, gy, ax, ay);
+            if dist == 0 {
+                return None;
+            }
+            let fd = key_value(&script, b"fd");
+            let v = (0x40 - (dist - fd)).max(1);
+            let scale = ((v * 0x80 >> 6) + 1) >> 1;
+            Backdrop { index: n, rid, flip_kind, xoff: lat * 0xD2 / dist, scale }
+        }
+        _ => return None,
+    };
+    (b.rid != 0).then_some(b)
 }
 
 /// Mirroring for a backdrop (0x54874): kinds 8 and 0x40 follow the map

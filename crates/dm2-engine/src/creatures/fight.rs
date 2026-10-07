@@ -106,12 +106,21 @@ pub fn darkness_level(g: &GameState, data: &CreatureData) -> u16 {
     let set = map.tileset;
     let attr = |n: u8| data.gdat.lookup(dm2_formats::gdat::Key::new(8, set, 11, n)).unwrap_or(0) as i16 as i32;
     sum += g.light as i32 + attr(0x67);
-    let thr = data.bytes_at(DARK_THRESHOLDS, 5).map(|b| b.to_vec()).unwrap_or_default();
+    let thr = data.bytes_at(DARK_THRESHOLDS, 6).map(|b| b.to_vec()).unwrap_or_default();
+    // Outdoor clock and storm term (0x8047B / 0x80472 / 0x8047C).
+    sum += crate::weather::light_term(g, &thr);
     let mut step = 0u16;
-    while (step as usize) < thr.len() && sum <= thr[step as usize] as i8 as i32 {
+    while (step as usize) < 5 && sum <= thr[step as usize] as i8 as i32 {
         step += 1;
     }
-    step.max(attr(0x68).max(0) as u16)
+    let mut step = step.max(attr(0x68).max(0) as u16);
+    // A lightning flash outdoors forces full light until the next update (0x7F248).
+    if g.weather.env && g.weather.flash {
+        step = 0;
+    }
+    // TODO(0x389C2): the original also drops the step by one when the word
+    // at 0x7F972 exceeds 12; that global isn't modelled yet.
+    step.min(5)
 }
 
 /// One creature blow against champion `idx` (0x18758). Returns damage dealt.

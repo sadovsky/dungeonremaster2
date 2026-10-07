@@ -292,6 +292,7 @@ fn view_extras(g: &GameState) -> viewport::ViewExtras {
         // step (0x7F282) × 10, set each frame at 0x54015.
         ex.darkness_step = creatures::fight::darkness_level(g, d) as i32;
         ex.ambient = ex.darkness_step * 10;
+        ex.weather = dm2_engine::weather::view(g);
     }
     ex
 }
