@@ -76,9 +76,14 @@ fn main() {
     let exe = std::fs::read(dm2_engine::exe_tables::default_exe_path()).unwrap();
     let gdat = Rc::new(Gdat::open(assets::default_data_dir().join("GRAPHICS.DAT")).unwrap());
     let cd = Rc::new(CreatureData::load(gdat, &exe).unwrap());
-    let mut g = GameState::new_game_full(&assets.dungeon, gd, Some(cd));
+    // LOAD=SAVE starts from a save (e.g. one state_probe.py --load started
+    // the original from); ticks in the route and END_TICK stay absolute.
+    let mut g = match std::env::var_os("LOAD") {
+        Some(p) => dm2_engine::save::read(std::path::Path::new(&p), gd, Some(cd)).expect("load save"),
+        None => GameState::new_game_full(&assets.dungeon, gd, Some(cd)),
+    };
     let mut steps = route.into_iter().peekable();
-    let mut next = 1u32;
+    let mut next = g.tick + 1;
     while g.tick < end {
         // Exact-tick commands: issue every one due on this tick.
         while let Some(Step::At(t, c)) = steps.peek() {

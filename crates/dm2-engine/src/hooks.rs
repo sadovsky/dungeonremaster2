@@ -34,8 +34,9 @@ pub fn fall_damage(g: &mut GameState, falls: u16) {
         }
         let base = (g.champions[i].max_health().max(0) as u16 / 4).min(17);
         let amount = (base + g.rng.rand4()) * falls;
-        // Attack kind 0x30 on legs and feet (docs/05 "Falling through pits").
-        crate::apply::damage_champion(g, i, amount as i16, 0x30, crate::combat::attack::UNBLOCKABLE);
+        // Legs and feet (parts mask 0x30), attack type 2 (0x4AAE7 calls
+        // 0x4722A with ebx = 0x30, ecx = 2; docs/05 "Falling through pits").
+        crate::apply::damage_champion(g, i, amount as i16, 0x30, crate::combat::attack::SELF);
         g.effects.push(Effect::PartyDamaged { amount, mask: 1 << i });
     }
 }
