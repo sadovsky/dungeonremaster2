@@ -681,9 +681,12 @@ fn replay(args: &[String]) {
         }
         if let Some((_, a, pcm, buf)) = audio.as_mut() {
             let reqs = dm2_engine::audio::sfx::drain_sounds(&mut g.effects);
-            a.music_tick(g.party.map);
-            if !reqs.is_empty() {
-                a.play_sounds(&g.dungeon, &g.party, &reqs);
+            if g.game_over {
+                a.stop_all();
+            } else {
+                a.music_tick(g.party.map);
+                let portraits: Vec<u8> = g.champions.iter().map(|c| c.portrait()).collect();
+                a.play_tick(&g.dungeon, &g.party, g.party_status.asleep, &portraits, &reqs);
             }
             // Samples per tick: RATE * 8 / 60, carrying the remainder so the
             // track length matches the frame count exactly over time.

@@ -22,9 +22,16 @@ fn main() {
     for _ in 0..ticks {
         g.advance();
         for e in g.effects.drain(..) {
-            if let Effect::Sound { cat, idx, sub, map, x, y } = e {
-                println!("tick {} sound cat {cat:#x} idx {idx:#x} sub {sub:#x} at map {map} ({x},{y})", g.tick);
-            }
+            let (cat, idx, sub, map, x, y, vol) = match e {
+                Effect::Sound { cat, idx, sub, map, x, y } => (cat, idx, sub, map, x, y, 200),
+                Effect::SoundAt { cat, idx, sub, map, x, y, vol, .. } => (cat, idx, sub, map, x, y, vol),
+                _ => continue,
+            };
+            let p = g.party;
+            println!(
+                "tick {} sound cat {cat:#x} idx {idx:#x} sub {sub:#x} vol {vol} at map {map} ({x},{y}); party map {} ({},{}) dir {}",
+                g.tick, p.map, p.x, p.y, p.dir
+            );
         }
     }
 }

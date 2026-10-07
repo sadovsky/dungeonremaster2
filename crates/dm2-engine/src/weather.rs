@@ -238,13 +238,20 @@ pub fn init(g: &mut GameState, reset: bool) {
     g.weather.first = false;
 }
 
-/// Thunder (0x5A073): sound (0x17, map set, 0) at the party's square. The
-/// original plays it through the delayed-sound queue, 1-15 ticks after the
-/// flash depending on distance; the remake plays it at once.
+/// Thunder (0x5A073): sound (0x17, map set, 0) at the party's square,
+/// volume 0x40, through the delayed-sound queue. The delay is clamped to
+/// 1-15 ticks: 0x4C - rain / multiplier while it rains. With no rain the
+/// original draws random(10) + 5; the remake uses a fixed 9 here and makes
+/// no draw (the game RNG's draw order is handled separately).
 fn thunder(g: &mut GameState) {
     let p = g.party;
     let set = g.dungeon.maps[p.map].tileset;
-    g.effects.push(crate::effects::Effect::Sound { cat: 0x17, idx: set, sub: 0, map: p.map, x: p.x, y: p.y });
+    let delay = if g.weather.rain == 0 {
+        9
+    } else {
+        0x4C - g.weather.rain as i32 / (g.weather.kind.max(1) as i32)
+    };
+    crate::sound_queue::request(g, 0x17, set, 0, 0x40, p.map, p.x, p.y, delay.clamp(1, 15) as i8);
 }
 
 fn schedule(g: &mut GameState, delay: u32) {
@@ -484,11 +491,18 @@ mod tests {
     fn thunder_plays_the_map_sets_sound_at_the_party() {
         let Some(mut g) = game() else { return };
         g.effects.clear();
+        g.delayed_sounds = Default::default();
+        g.weather.rain = 0;
         thunder(&mut g);
         let set = g.dungeon.maps[g.party.map].tileset;
         let p = g.party;
-        assert!(g.effects.iter().any(|e| matches!(e,
-            crate::effects::Effect::Sound { cat: 0x17, idx, sub: 0, x, y, .. } if *idx == set && *x == p.x && *y == p.y)));
+        // Held in a delayed slot, not played at once.
+        let held = g.delayed_sounds.iter().flatten().find(|s| s.cat == 0x17 && s.idx == set && s.sub == 0);
+        let held = held.expect("thunder is queued");
+        assert_eq!((held.x, held.y, held.map, held.vol), (p.x, p.y, p.map, 0x40));
+        // With no rain the delay is 9 ticks, so the event is due 8 ticks on.
+        let due = g.timeline.iter().find(|(_, e)| e.kind == crate::sound_queue::EV_DELAYED_SOUND).map(|(_, e)| e.tick);
+        assert_eq!(due, Some(g.tick.wrapping_add(8) & 0xFF_FFFF));
     }
 
     #[test]
