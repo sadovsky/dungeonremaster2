@@ -548,7 +548,7 @@ fn floor_actuator(g: &mut GameState, ev: Event, t: ThingRef) {
     let map = ev.map as usize;
     let a = Actuator::load(g, t);
     match a.kind() {
-        0x0B | 0x28 => creatures::floor_trap(g, map, ev.x as i32, ev.y as i32, t, ev.b9),
+        0x0B | 0x28 => creatures::area_effect(g, map, ev.x as i32, ev.y as i32, a.kind(), a.w1, a.w3, ev.b9),
         0x20 => timer(g, ev, &a, false),
         0x45 => timer(g, ev, &a, true),
         0x27 => {

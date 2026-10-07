@@ -216,9 +216,11 @@ pub fn hit(g: &mut GameState, c: ThingRef, map: usize, x: i32, y: i32, flags: u1
     let cflags = d.class_flags(class);
     // Info word 0 bit 0: the group is dormant until woken.
     let dormant = info.raw[0] & 1 != 0;
+    // A group without a slot (0x24EFD): a dormant type (info bit 0 set) is
+    // woken by the hit, an awake type is left alone.
     let si = match slot_of(g, c) {
         Some(si) => si,
-        None if dormant => return,
+        None if !dormant => return,
         None => match activate(g, &d, c, map, x, y) {
             Some(si) => si,
             None => return,
@@ -355,15 +357,69 @@ pub fn spawn(g: &mut GameState, kind: u16, map: usize, x: i32, y: i32, dir: u8) 
     Some(c)
 }
 
-/// Floor actuator types 0x0B/0x28 (0x56BA5): creature-affecting trap.
-/// Wakes and damages the group on the event square. Tentative.
-pub fn floor_trap(g: &mut GameState, map: usize, ev_x: i32, ev_y: i32, _actuator: ThingRef, _action: u8) {
-    if let Some(c) = group_at(g, map, ev_x, ev_y) {
-        if slot_of(g, c).is_none() {
-            if let Some(d) = g.creature_data.clone() {
-                activate(g, &d, c, map, ev_x, ev_y);
+/// Floor actuator types 0x0B and 0x28 (0x56BA5, called from 0x57917).
+/// Acts on every creature group in the rectangle centred on the event square
+/// whose half-sizes are its distances to the actuator's target square (word 3
+/// bits 6-10 and 11-15). Rows run from the highest y down and squares within a
+/// row from the highest x down; squares off the map are skipped. A group takes
+/// part only if its record word +8 equals the filter, word 1 bits 11-15
+/// (0x301DC). With the data value from word 1 bits 7-10:
+/// - type 0x28 calls the hit handler with the data value as flags (bit 15 set
+///   when the event's action is non-zero), chance 100 and no damage;
+/// - type 0x0B with data 2 queues the dying action with an interrupt
+///   (0x24DB5); data 0 or 1 skips the group and larger values end the scan.
+pub fn area_effect(g: &mut GameState, map: usize, ex: i32, ey: i32, kind: u16, w1: u16, w3: u16, action: u8) {
+    let data = (w1 >> 7) & 0x0F;
+    let filter = (w1 >> 11) & 0x1F;
+    let (tx, ty) = (((w3 >> 6) & 0x1F) as i32, ((w3 >> 11) & 0x1F) as i32);
+    let (dx, dy) = ((ex - tx).abs(), (ey - ty).abs());
+    let Some(m) = g.dungeon.maps.get(map) else { return };
+    let (w, h) = (m.width as i32, m.height as i32);
+    for j in (0..=2 * dy).rev() {
+        let y = ey - dy + j;
+        for i in (0..=2 * dx).rev() {
+            let x = ex - dx + i;
+            if x < 0 || x >= w || y < 0 || y >= h {
+                continue;
+            }
+            let Some(c) = group_at(g, map, x, y) else { continue };
+            if rec_u16(g, c, 8) != filter {
+                continue;
+            }
+            match kind {
+                0x28 => {
+                    let flags = if action != 0 { data | 0x8000 } else { data };
+                    hit(g, c, map, x, y, flags, 100, 0);
+                }
+                0x0B => match data {
+                    0 | 1 => {}
+                    2 => queue_action_interrupt(g, c, ai::action::DYING),
+                    _ => return,
+                },
+                _ => {}
             }
         }
+    }
+}
+
+/// Queue an action and interrupt the group's current step (0x24DB5 with
+/// its interrupt argument set). Refused when the group has no slot or its
+/// current or queued action is dying. If the current action's flags lack
+/// 0x10 the group's event moves to the next tick (0x3064D, 0x3059D);
+/// otherwise the slot is armed so the action is taken at the next frame.
+fn queue_action_interrupt(g: &mut GameState, c: ThingRef, act: u8) {
+    let Some(si) = slot_of(g, c) else { return };
+    let Some(d) = g.creature_data.clone() else { return };
+    let Some(Some(s)) = g.creature_slots.get_mut(si) else { return };
+    if s.action == ai::action::DYING || s.queued == ai::action::DYING {
+        return;
+    }
+    s.queued = act;
+    if d.action_flags(s.action) & 0x10 == 0 {
+        let kind = if rec_u16(g, c, 8) == 0xFFFF { EV_CONTINUE } else { EV_STEP };
+        reschedule(g, si, kind, 1);
+    } else {
+        s.armed = 1;
     }
 }
 
@@ -443,6 +499,9 @@ pub fn activate(g: &mut GameState, d: &CreatureData, c: ThingRef, map: usize, x:
     s.action = if rec_u16(g, c, 8) == 0xFFFF { 0x11 } else { 0 };
     g.creature_slots[si] = Some(s);
     set_rec_u8(g, c, 5, si as u8);
+    // 0x306A8 loads the group's context (0x24A88) whatever its type, so it
+    // becomes the current creature even when dormant.
+    crate::rng::trace_context(None, Some((c.0 & 0x3FFF) as u32));
     if !info.inanimate() {
         // Status: set bit 15 (recently activated), clear bit 14.
         let st = status(g, c);
@@ -646,7 +705,67 @@ fn step(g: &mut GameState, d: &CreatureData, si: usize, continuing: bool) {
             return;
         }
     }
+    // A dormant type (info bit 0) never runs the driver (0x258F9). Bits
+    // 0x4000 and 0x2000 of its frame-cycle word (record +10) select one of
+    // two cycle steps; if neither reschedules the group, its slot is freed and
+    // it sleeps again (0x25937, 0x3085A). No random numbers are drawn.
+    if ctx.info.inanimate() {
+        let w = rec_u16(g, c, 0x0A);
+        if w & 0x4000 != 0 {
+            dormant_cycle(g, d, &ctx, continuing, true);
+        } else if w & 0x2000 != 0 {
+            dormant_cycle(g, d, &ctx, continuing, false);
+        }
+        if ctx.slot(g).event.is_none() {
+            deactivate(g, ctx.si);
+        }
+        return;
+    }
     drive(g, d, &ctx, continuing);
+}
+
+/// The two cycle steps of a woken dormant group (0x25204 when `first`, else
+/// 0x252C3). The frame count n is the length of the sequence starting at
+/// record word +8 (0x14DF7) and the phase is word +10 bits 6-11. When the
+/// phase plus the tick is a multiple of n only the flag bits change;
+/// otherwise the count is stored with flags 0xC000 (first) or 0xA000 and the
+/// group's event is moved to the end of the cycle.
+fn dormant_cycle(g: &mut GameState, d: &CreatureData, ctx: &Ctx, continuing: bool, first: bool) {
+    let c = ctx.thing;
+    let w = rec_u16(g, c, 0x0A);
+    if first && w & 0xE03F == 0x8001 {
+        return;
+    }
+    if !first && (w >> 8) & 0xE0 == 0x80 && w & 0x3F >= 2 {
+        return;
+    }
+    let Some(anim) = d.anim(ctx.ty) else { return };
+    let start = rec_u16(g, c, 8);
+    let n = seq_len(&anim, start).max(1);
+    let phase = w & 0x0FC0;
+    let r = (phase as u32 + g.tick) % n as u32;
+    if r == 0 {
+        let v = if first { phase | 0x8001 } else { phase | n | 0x8000 };
+        set_rec_u16(g, c, 0x0A, v);
+    } else {
+        let v = phase | n | if first { 0xC000 } else { 0xA000 };
+        set_rec_u16(g, c, 0x0A, v);
+        let kind = if continuing { EV_CONTINUE } else { EV_STEP };
+        reschedule(g, ctx.si, kind, n as u32 - r);
+    }
+}
+
+/// Frames in the sequence starting at `start` (0x14DF7): up to the first
+/// frame without a continuation, at most 0x3F.
+fn seq_len(anim: &anim::Anim, start: u16) -> u16 {
+    let mut count: u16 = 0;
+    loop {
+        let f = anim.frame(start, count);
+        count += 1;
+        if f.cont() == 0 || count >= 0x3F {
+            return count;
+        }
+    }
 }
 
 /// The pain cry of a hurt but living creature (0x31348). Only creatures
