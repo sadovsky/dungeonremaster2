@@ -82,8 +82,10 @@ fn manhattan(ax: i32, ay: i32, bx: i32, by: i32) -> i32 {
 
 /// Does square (x, y) on `map` satisfy goal `goal` (final switch of
 /// 0x3188A)? `start_dist` is the start square's distance from the party,
-/// for the flee goal.
-pub fn satisfies_on(g: &mut GameState, s: &Searcher, goal: &Goal, map: usize, x: i32, y: i32, distance: u8, start_dist: i32) -> bool {
+/// for the flee goal; `from` is the square the search reached (x, y) from
+/// (the square itself for the start square).
+#[allow(clippy::too_many_arguments)]
+pub fn satisfies_on(g: &mut GameState, s: &Searcher, goal: &Goal, map: usize, x: i32, y: i32, distance: u8, start_dist: i32, from: (i32, i32)) -> bool {
     let party_map = g.party.map == map && !g.champions.is_empty();
     let to_party = manhattan(x, y, g.party.x, g.party.y);
     match goal.kind {
@@ -99,7 +101,17 @@ pub fn satisfies_on(g: &mut GameState, s: &Searcher, goal: &Goal, map: usize, x:
         // `value` squares; 4 exactly `value` squares away in line with it.
         2 => party_map && match goal.mode {
             0 | 3 => to_party == 0,
-            1 => to_party == 0 && goal.value & (1 << g.party.dir) != 0,
+            // The mask is relative to the party's facing: the direction from
+            // the party toward the square the search came from, less the
+            // party's facing (0x3188A, through 0x1863D). Bit 0 is the square
+            // in front of the party, so 0x0E means "beside or behind it".
+            1 => {
+                to_party == 0
+                    && (goal.value == 0 || {
+                        let d = super::ai::direction_toward_rand(g.party.x, g.party.y, from.0, from.1, &mut g.rng);
+                        goal.value & (1 << (d.wrapping_sub(g.party.dir) & 3)) != 0
+                    })
+            }
             2 => {
                 to_party > 0
                     && to_party <= goal.value as i32
@@ -170,7 +182,7 @@ fn lfsr_gate(g: &mut GameState) -> bool {
 /// Does square (x, y) on the searcher's map satisfy goal `goal`?
 pub fn satisfies(g: &mut GameState, s: &Searcher, goal: &Goal, x: i32, y: i32, distance: u8) -> bool {
     let start = manhattan(s.x, s.y, g.party.x, g.party.y);
-    satisfies_on(g, s, goal, s.map, x, y, distance, start)
+    satisfies_on(g, s, goal, s.map, x, y, distance, start, (s.x, s.y))
 }
 
 /// Per-kind goal flags (0x752EA, read from the user's SKULL.EXE): bit 0 the
@@ -278,6 +290,7 @@ fn test_square(
     d: u8,
     via: Option<(i32, i32)>,
     occupied: bool,
+    from: (i32, i32),
 ) -> bool {
     for i in 0..goals.len() {
         if !pr.testable(i, d as i32) {
@@ -291,7 +304,7 @@ fn test_square(
         if occupied && pr.flags[i] & 0x20 == 0 {
             continue;
         }
-        if satisfies_on(g, s, &goals[i], map, x, y, d, start_dist) {
+        if satisfies_on(g, s, &goals[i], map, x, y, d, start_dist, from) {
             // The goal's target: the party's square for kinds flagged 0x20.
             // Like the path test, the original takes the party's x and y as
             // they are, even when the party is on another map.
@@ -340,7 +353,7 @@ pub fn search(g: &mut GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> 
         if d as i32 > pr.max_limit {
             continue;
         }
-        if test_square(g, s, goals, &mut pr, start_dist, map, x, y, d, via, false) {
+        if test_square(g, s, goals, &mut pr, start_dist, map, x, y, d, via, false, (x, y)) {
             if dbg {
                 eprintln!("PLAN   found {:?}", pr.best);
             }
@@ -367,7 +380,7 @@ pub fn search(g: &mut GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> 
             // The party's square and other groups are goals, not paths.
             let target_only = party_at(g, map, nx, ny) || creature_at(g, map, nx, ny, s.group).is_some();
             if target_only {
-                if test_square(g, s, goals, &mut pr, start_dist, map, nx, ny, d + 1, via, true) {
+                if test_square(g, s, goals, &mut pr, start_dist, map, nx, ny, d + 1, via, true, (x, y)) {
                     return pr.best;
                 }
                 continue;

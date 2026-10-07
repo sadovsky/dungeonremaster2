@@ -509,7 +509,36 @@ fn path_test_reads_the_search_square_on_the_partys_map() {
         cflags: 0,
     };
     let goal = super::planner::Goal { kind: 7, arg: 0, program: 1, limit: 4, data: 0, mode: 0, value: 0xFFF, tag: 0 };
-    assert!(super::planner::satisfies_on(&mut g, &s, &goal, 4, 5, 13, 1, 3));
+    assert!(super::planner::satisfies_on(&mut g, &s, &goal, 4, 5, 13, 1, 3, (5, 13)));
+}
+
+#[test]
+fn party_facing_mask_is_relative_to_the_partys_facing() {
+    // Goal kind 2, mode 1 (0x3188A): the party's square counts only when the
+    // direction from the party toward the square the search came from, less
+    // the party's facing, has its bit in the value mask. 0x0E is "beside or
+    // behind the party". Seen at tick 165 of the map 22 combat probe: the
+    // creature straight in front of the party does not take this goal.
+    let Some((mut g, _)) = load() else { return };
+    let s = super::planner::Searcher {
+        map: 22,
+        x: 3,
+        y: 3,
+        mask: 0xFFFF,
+        size: 1,
+        group: ThingRef(0x3FFE),
+        attack_mask: 0,
+        range: 1,
+        info0: 0,
+        cflags: 0,
+    };
+    let goal = super::planner::Goal { kind: 2, arg: 3, program: 42, limit: 4, data: 0, mode: 1, value: 0x0E, tag: 24 };
+    // Party at (3,2) facing south: the creature's square (3,3) is in front.
+    g.party = crate::world::PartyPos { map: 22, x: 3, y: 2, dir: 2 };
+    assert!(!super::planner::satisfies_on(&mut g, &s, &goal, 22, 3, 2, 1, 1, (3, 3)));
+    // Facing north, the same square is behind the party: bit 2 is set.
+    g.party.dir = 0;
+    assert!(super::planner::satisfies_on(&mut g, &s, &goal, 22, 3, 2, 1, 1, (3, 3)));
 }
 
 /// 0x56BA5's visiting order: the rectangle centred on the event square, rows
