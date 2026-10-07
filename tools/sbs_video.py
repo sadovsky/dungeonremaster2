@@ -27,6 +27,7 @@ Needs: dosbox, xdotool, ffmpeg (with x11grab and drawtext), and release
 builds of dm2 and examples/posave.
 """
 import json
+import re
 import subprocess
 import sys
 import time
@@ -152,6 +153,18 @@ def open_original(save_slot):
     return p, w
 
 
+def capture_start(log_path, t0):
+    """Seconds from t0 (wall clock) to the first captured video frame.
+
+    ffmpeg's input summary for x11grab reports `start:` in wall-clock seconds
+    (the grabber stamps frames with the wall clock), and the output's frame 0
+    is that first frame. Measuring when Popen returned instead put every input
+    about 0.4 s too late in the recording."""
+    text = Path(log_path).read_text(errors='replace')
+    m = re.search(r"Input #0, x11grab.*?start: ([0-9.]+)", text, re.S)
+    return float(m.group(1)) - t0 if m else None
+
+
 def record_segment(name, seg, work):
     m, x, y, d, route = seg
     save = work / f'{name}.DAT'
@@ -164,30 +177,41 @@ def record_segment(name, seg, work):
         xdo('windowactivate', '--sync', w)
         xdo('mousemove', '--window', w, 300, 195)
         click(w, 160, 143)                 # OK on "Game loaded": the game runs from here
-        t0 = time.monotonic()
+        # Wall-clock time throughout: x11grab stamps frames with the wall clock,
+        # so its reported start is when frame 0 of the recording was captured.
+        t0 = time.time()
         # Video and the DOSBox mix (PulseAudio monitor of the WSLg sink) in one
-        # process, so both share the recording's timebase.
-        rec = subprocess.Popen(['ffmpeg', '-y', '-loglevel', 'error', '-thread_queue_size', '512',
+        # process, so both share the recording's timebase. Info-level logging
+        # keeps the input summary, which carries x11grab's start time.
+        err = open(work / f'{name}_ffmpeg.log', 'w')
+        rec = subprocess.Popen(['ffmpeg', '-y', '-loglevel', 'info', '-nostats', '-thread_queue_size', '512',
                                 '-f', 'x11grab', '-window_id', str(int(w)), '-framerate', str(FPS),
                                 '-i', ':0', '-thread_queue_size', '512', '-f', 'pulse',
                                 '-i', PULSE_SOURCE, '-t', f'{duration:.2f}', '-c:v', 'libx264',
-                                '-qp', '0', '-c:a', 'pcm_s16le', str(work / f'{name}_orig.mkv')])
-        rec_start = time.monotonic() - t0
+                                '-qp', '0', '-c:a', 'pcm_s16le', str(work / f'{name}_orig.mkv')],
+                               stderr=err)
+        launched = time.time() - t0
         log = []
         for item in route:
             time.sleep(item[0])
             if item[1] == 'key':
                 xdo('key', '--window', w, item[2])
-                log.append((time.monotonic() - t0, KEY_CMD[item[2]]))
+                log.append((time.time() - t0, KEY_CMD[item[2]]))
             else:
                 click(w, item[2], item[3])
                 xdo('mousemove', '--window', w, 300, 195)
-                log.append((time.monotonic() - t0, item[4]))
+                log.append((time.time() - t0, item[4]))
         rec.wait()
+        err.close()
     finally:
         p.kill()
         p.wait()
-    json.dump({'log': log, 'rec_start': rec_start}, open(work / f'{name}.json', 'w'))
+    rec_start = capture_start(work / f'{name}_ffmpeg.log', t0)
+    if rec_start is None:
+        print(f'{name}: no x11grab start in the ffmpeg log; using launch time', file=sys.stderr)
+        rec_start = launched
+    json.dump({'log': log, 'rec_start': rec_start, 'launched': launched},
+              open(work / f'{name}.json', 'w'))
     return align_segment(name, work)
 
 

@@ -314,6 +314,11 @@ fn view_extras(g: &GameState) -> viewport::ViewExtras {
     if std::env::var_os("DM2_NO_WEATHER").is_some() {
         ex.weather = Default::default();
     }
+    // DM2_FORCE_MIDSTEP: draw the in-between walking frame regardless of the
+    // walk state, to compare it with the original's captures.
+    if std::env::var_os("DM2_FORCE_MIDSTEP").is_some() {
+        ex.mid_step = true;
+    }
     if let Some(a) = std::env::var("DM2_AMBIENT").ok().and_then(|v| v.parse().ok()) {
         ex.ambient = a;
     }
@@ -559,10 +564,19 @@ fn align(args: &[String]) {
         let logged = inputs[k].0.round().max(0.0) as u32;
         let visible = count(&keys[k], &keys[k + 1]) > 600;
         let start = floor.max(inputs[k].0.floor().max(0.0) as u32);
+        // A frame that matches no key frame, on or after the press, also counts
+        // once the original has left state k: the original can show something
+        // the remake never draws while a step lands (an in-between frame, or a
+        // screen held while it stalls loading graphics after a load, as in the
+        // cave segment). Without this, inputs pressed during such a stall were
+        // detected only when the original caught up, and the remake was
+        // replayed seconds late. The logged press times are accurate since the
+        // recorder reads x11grab's own start time.
         let reached = |t: u32| {
             let o = orig[t as usize];
             let next = count(o, &keys[k + 1]);
-            state_at[t as usize].is_some_and(|s| s > k) || (next < MATCH && next < count(o, &keys[k]))
+            let left = state_at[t as usize].is_none() && count(o, &keys[k]) >= MATCH;
+            state_at[t as usize].is_some_and(|s| s > k) || (next < MATCH && next < count(o, &keys[k])) || left
         };
         let found = visible.then(|| (start..end).find(|&t| reached(t))).flatten();
         let t = found.unwrap_or(logged.max(floor)).min(last);
@@ -583,7 +597,12 @@ fn align(args: &[String]) {
     while k < n {
         let group_end = (k..n).take_while(|&j| detected[j] == detected[k]).last().unwrap() + 1;
         let size = (group_end - k) as u32;
-        let earliest = prev.map_or(0, |p| p + 1);
+        // An input can't take effect before it was pressed: the logged press
+        // tick (less one tick for timing jitter) bounds the search from below.
+        // Without it, noisy outdoor scores could pull a press several ticks
+        // early.
+        let pressed = (inputs[k].0.floor() as i64 - 1).max(0) as u32;
+        let earliest = prev.map_or(0, |p| p + 1).max(pressed);
         let lo = detected[k].saturating_sub(3 + size).max(earliest).min(last);
         let hi = (detected[k] + 2).max(lo).min(last);
         let win_end = detected.get(group_end).map_or(hi + size + 8, |&t| t.max(hi + size)).min(end);
