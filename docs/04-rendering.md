@@ -570,6 +570,64 @@ first that contains the point:
 | 4 | door buttons at positions 3 and 4 (0x530D1) | press the button (a wall click when the door lacks the button flag) |
 | 6 | wall ornaments in cells 1-3 (0x4F3DF) | the wall-click routine (0x4DDC0) |
 
+### Backdrops (0x54699, traced; implemented)
+
+After the ceiling and floor and before the cells, the view runs the map
+set's backdrop scripts. For graphics set *s*, every non-empty text entry
+(23, s, 5, n) with n below 100 whose image (23, s, 1, n) exists is a
+script: two-letter lower-case keys, each followed by an optional `=` and
+`-` and a decimal number (0x3F791; the last occurrence wins, a missing key
+reads 0). The keys used:
+
+| Key | Meaning |
+|-----|---------|
+| `cd` | Layout id to place image n at (drawn with bit 15 set, so the x offset below is a placement offset) |
+| `mv` | Mode: 0 = always drawn at full size, 1 = a landmark placed by world position |
+| `xl`, `yl` | Mode 1: the landmark's global position (map origin + square) |
+| `fd` | Mode 1: the distance at which it is drawn at full size |
+| `fw` | Mirroring kind: 8 or 0x40 follow the set's floor-flip mode, 2 or 0x20 its ceiling-flip mode (0x54874), using the same position parity as walls |
+
+Mode 1 (0x5439A with 0x542F6): rotate (landmark − party) into view space
+by the facing (forward, lateral). Nothing is drawn unless forward ≥ 1.
+The distance is the integer square root of forward² + lateral² (Newton's
+method; 1 when the sum is at most 2). The scale is `max(1, 64 −
+(distance − fd))` in 64ths, and the x offset `lateral × 210 / distance`
+screen pixels; the y offset is 0. Mode 0 uses scale 64 and no offset.
+
+The executor (0x544BE) draws through the lit drawer 0x4E502 with the
+mirror flag, the scale and the layout id, then adds the offsets. In a
+mid-step frame it shrinks the offsets and scale by 52/64 and adds the
+walking shift (not yet modelled). Outdoor sets use this for a horizon
+strip (always drawn) and several distant landmarks.
+
+### Outdoor weather and time of day (0x59F38, 0x5A073; traced, not implemented)
+
+Outdoor map sets run a weather and clock model that changes both the
+light and the colours:
+
+- **Clock:** an hour index advances every 0x555 (1365) ticks, 24 per day
+  (`(tick + offset) / 0x555 mod 24`, offset at 0x80434). The hour picks a
+  light adjustment from a 24-byte table at 0x760EC (0x80472).
+- **Light:** when the set's environment flag (0x8047B, from a per-state
+  table at 0x75BE2) is on, the darkness step (0x389C2) adds
+  `thresholds[clamp(0, 0x8047C + 0x80472, 5)]` to the light sum. A flag at
+  0x7F248 forces the step to 0 (full light) until the next update. The
+  step then drops by one when the light word at 0x7F972 exceeds 12.
+- **Colours:** category-23 images are drawn through a 16-entry colour map
+  chosen by the light index at 0x802CC (0x4E226), so the sky and horizon
+  are recoloured by time of day and weather. The remake draws them with
+  their stored colours, which is why its outdoor sky has the wrong tint.
+- **Weather:** a rain intensity (0x8047E, 0 = none) rises and falls at
+  random; its level (thresholds 0x10, 0x40, 0x80) and the wind direction
+  relative to the facing (0x8047F) pick the rain overlay among images
+  0x6D-0x74 of the set, drawn at a random offset each frame through
+  layout 702 with the game's RNG (0x4E79C). Cloud and storm backdrops use
+  images 0x67-0x6C (0x5A808), and storms can strike squares with
+  lightning (0xFFB0 explosions) and play thunder. Ornaments and objects
+  get a wet overlay while it rains (0x4E930).
+- **Save:** the load path (0x370D2) restores these globals, so a
+  comparison against the original needs the saved weather and clock.
+
 ## 4. Draw requests (traced)
 
 All viewport and most interface drawing goes through a 0x13A-byte request
@@ -758,6 +816,19 @@ Simplifications, still TODO:
 - The 'p'/'q' fill colours and ambient light sources are not modelled.
 
 ## 9. Open questions
+
+- Outdoor weather and time of day (section 3) are traced but not
+  implemented: the hour clock, the environment light term, the
+  time-of-day colour maps for category-23 images, rain overlays, clouds
+  and lightning. Until then outdoor views differ in brightness and tint
+  (map 1 view (2,9,N): 22,952 differing viewport pixels, down from
+  26,124 once backdrops were drawn).
+- Loading in the original a remake save whose party was moved onto map 2
+  or 3 stops with system error 71 (0x47, raised only by creature
+  activation 0x306A8 when no slot can be freed). Moving it onto map 1 works,
+  and the dungeon headers in both saves are identical. The pool is sized
+  `min(non-flagged creature records + 100, header word)` at 0x342F9; why
+  activation fails is not known.
 
 - Where the actuator-supplied phase for animated ornaments comes from, per
   actuator type.

@@ -56,7 +56,11 @@ fn pinned_views() {
         ((7, 12, 11, 1), 0x8a9dbdd9e46d85e9),
         ((0, 3, 4, 0), 0xc9631cee3dab9307),
         // Creature in cell 6 now offset by its descriptor shift byte (0x50DEE).
-        ((1, 2, 9, 0), 0xe2aebbcfc33ceec7),
+        // The outdoor set's backdrop scripts (horizon strip, landmarks) now
+        // draw (0x54699); against the original in DOSBox this view's diff
+        // fell from 26,124 to 22,952 pixels, the rest being time-of-day
+        // colour and light, which are not modelled yet.
+        ((1, 2, 9, 0), 0x7586a0ef0929a2f2),
         ((5, 12, 23, 0), 0x5ab19ad645935b17),
     ];
     let mut bad = Vec::new();

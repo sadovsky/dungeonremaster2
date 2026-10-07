@@ -3,6 +3,7 @@
 //! Every image is loaded at runtime from the user's own GRAPHICS.DAT; this
 //! module only holds the traversal and placement rules.
 
+pub mod backdrop;
 mod creature;
 pub mod hits;
 pub mod light;
@@ -555,6 +556,17 @@ pub fn render_full(a: &mut Assets, dg: &Dungeon, map: usize, px: i32, py: i32, d
         let r = Req { flip: fl, yoff, ambient_only: true, ..Req::new(8, set, sub, rid) };
         if let Some(s) = a.sprite(8, set, sub) {
             draw_sprite(a, &mut buf, &cx, &s, s.off, &r, 64, 64);
+        }
+    }
+    // Map-set backdrops: horizon strips and distant landmarks (0x54699).
+    let m = &dg.maps[map];
+    let (gx, gy) = (m.origin_x as i32 + px, m.origin_y as i32 + py);
+    for b in backdrop::plan(&a.gdat, set, gx, gy, dir) {
+        let flip = u8::from(backdrop::mirrored(b.flip_kind, set_flags, par, ex.tick));
+        let s = if b.scale == 64 { a.sprite(23, set, b.index) } else { a.sprite_scaled(23, set, b.index, b.scale, b.scale) };
+        if let Some(s) = s {
+            let r = Req { flip, ambient_only: true, post: (b.xoff, 0), xs: b.scale, ys: b.scale, ..Req::new(23, set, b.index, b.rid) };
+            draw_sprite(a, &mut buf, &cx, &s, s.off, &r, b.scale, b.scale);
         }
     }
     let floor_orn_default = a.gdat.lookup(Key::new(8, set, 11, 0x6B)).unwrap_or(0);
