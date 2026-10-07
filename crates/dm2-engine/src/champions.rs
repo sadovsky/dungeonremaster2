@@ -744,7 +744,10 @@ pub fn regenerate(champions: &mut [Champion], party: &mut PartyStatus, tick: u32
 
 /// Apply pending damage and wounds, and handle deaths (the screen update's
 /// part of 0x4722A; death is 0x46ECA).
-pub fn apply_pending(champions: &mut [Champion], party: &mut PartyStatus) {
+/// Returns the champions that took damage and survived, with the amount, in
+/// champion order: the caller starts their damage display (0x47113).
+pub fn apply_pending(champions: &mut [Champion], party: &mut PartyStatus) -> Vec<(usize, i16)> {
+    let mut hurt = Vec::new();
     for idx in 0..champions.len() {
         let dmg = std::mem::take(&mut party.pending_damage[idx]);
         let wounds = std::mem::take(&mut party.pending_wounds[idx]);
@@ -760,9 +763,37 @@ pub fn apply_pending(champions: &mut [Champion], party: &mut PartyStatus) {
                 party.notices.push(Notice::Died { champion: idx });
             } else {
                 c.set_health(hp as i16);
+                hurt.push((idx, dmg));
             }
             c.flag_redraw(0x0800);
         }
+    }
+    hurt
+}
+
+/// Start or extend a champion's damage display (0x47113): show the amount
+/// (+0x30), flag the box (+0x33 bit 3) and end the display with event 0x0C
+/// five ticks from now. The event's record is kept in +0x2E; while one is
+/// pending its time is moved instead of scheduling another.
+fn start_damage_display(g: &mut GameState, idx: usize, dmg: i16) {
+    let due = g.tick.wrapping_add(5);
+    let map = g.party.map as u8;
+    let c = &mut g.champions[idx];
+    c.set_u16(0x30, dmg as u16);
+    c.raw[0x33] |= 8;
+    let rec = c.u16_at(0x2E);
+    if rec == 0xFFFF {
+        let ev = crate::timeline::Event {
+            prio: idx as u8,
+            ..crate::timeline::Event::new(crate::party::EVENT_DAMAGE_DISPLAY, map, due)
+        };
+        let slot = g.schedule(ev).unwrap_or(0xFFFF);
+        g.champions[idx].set_u16(0x2E, slot);
+    } else {
+        g.timeline.modify(rec, |e| {
+            e.tick = due;
+            e.map = map;
+        });
     }
 }
 
@@ -843,7 +874,9 @@ pub fn tick(g: &mut GameState) {
         regenerate(&mut g.champions, &mut g.party_status, tick, &mut g.rng);
     }
     let seen = g.party_status.notices.len();
-    apply_pending(&mut g.champions, &mut g.party_status);
+    for (idx, dmg) in apply_pending(&mut g.champions, &mut g.party_status) {
+        start_damage_display(g, idx, dmg);
+    }
     let died: Vec<usize> = g.party_status.notices[seen..]
         .iter()
         .filter_map(|n| match n {

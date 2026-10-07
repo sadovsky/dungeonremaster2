@@ -282,20 +282,29 @@ pub fn prepare(g: &mut GameState) {
         }
     }
     g.creature_map_seen = None;
-    let moves = g.timeline.compact();
+    g.timeline.compact();
+    refresh_event_fields(g);
+}
+
+/// Refresh the stored timer indices (0x55F4F): every champion's damage
+/// display record (+0x2E) becomes 0xFFFF unless a type 0x0C event names that
+/// champion, and every missile's word 3 points at its flight event. The
+/// original runs this before saving and again on the load path (0x370D2),
+/// so a loaded champion with no pending display has no stale record.
+fn refresh_event_fields(g: &mut GameState) {
     for c in g.champions.iter_mut() {
         c.set_u16(CHAMPION_EVENT_FIELD, 0xFFFF);
     }
-    for (_, new) in moves {
-        let Some(ev) = g.timeline.get(new).copied() else { continue };
+    let events: Vec<(u16, Event)> = g.timeline.iter().map(|(s, e)| (s, *e)).collect();
+    for (slot, ev) in events {
         if EV_MISSILES.contains(&ev.kind) {
             let m = ThingRef(u16::from_le_bytes([ev.x, ev.y]));
             if m.is_thing() && m.kind() == ThingType::Missile {
-                g.dungeon.set_record_word(m, 3, new);
+                g.dungeon.set_record_word(m, 3, slot);
             }
         } else if ev.kind == EV_CHAMPION_ACTION {
             if let Some(c) = g.champions.get_mut(ev.prio as usize) {
-                c.set_u16(CHAMPION_EVENT_FIELD, new);
+                c.set_u16(CHAMPION_EVENT_FIELD, slot);
             }
         }
     }
@@ -981,6 +990,7 @@ pub fn from_bytes(b: &[u8], data: Rc<GameData>, creatures: Option<Rc<CreatureDat
         }
     }
     g.creature_map_seen = None;
+    refresh_event_fields(&mut g);
     // The original recomputes the outdoor flag and hour light on load.
     crate::weather::refresh(&mut g);
     // When play resumes, the per-map creature pass (0x34236) wakes the awake

@@ -30,6 +30,11 @@ fn main() {
     if let Some(v) = std::env::var("RNGSTATE").ok().and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()) {
         g.rng.state = v;
     }
+    if std::env::var_os("HP").is_some() {
+        for (i, c) in g.champions.iter().enumerate() {
+            eprintln!("champion {i} +0x2E after load: {:#06x}", c.u16_at(0x2E));
+        }
+    }
     if std::env::var_os("RNGSHOW").is_some() {
         eprintln!("rng state after load {:#010x}", g.rng.state);
     }
@@ -45,6 +50,13 @@ fn main() {
         })
         .collect();
     let _ = creatures::set_data;
+    // TLLOG=PATH writes the timeline's record traffic (op tick record type
+    // prio due) to compare with the original's T hook lines.
+    let tl = std::env::var_os("TLLOG").is_some();
+    let mut tl_out: Vec<String> = Vec::new();
+    if tl {
+        dm2_engine::timeline::trace_start();
+    }
     while g.tick < end {
         if step == Some(g.tick) {
             g.push_command(dm2_engine::state::Command::Move(dm2_engine::world::Move::Forward));
@@ -61,7 +73,31 @@ fn main() {
                 dm2_engine::hand::dispatch(&mut g, c);
             }
         }
+        // Commands run between ticks, after the counter moved on: file
+        // their record traffic under the tick they precede, as above.
+        if tl {
+            for (op, slot, kind, prio, due) in dm2_engine::timeline::trace_take() {
+                tl_out.push(format!("{op} {pre} {slot} {kind:x} {prio:x} {due}", pre = g.tick));
+            }
+        }
+        let hp_before: Vec<i16> = g.champions.iter().map(|c| c.health()).collect();
         g.advance();
+        // HP=1 prints every change in the champions' health (to stderr).
+        if std::env::var_os("HP").is_some() {
+            let hp: Vec<i16> = g.champions.iter().map(|c| c.health()).collect();
+            if hp != hp_before {
+                eprintln!("hp tick {} {:?} -> {:?}", g.tick - 1, hp_before, hp);
+            }
+        }
+        if tl {
+            for (op, slot, kind, prio, due) in dm2_engine::timeline::trace_take() {
+                tl_out.push(format!("{op} {pre} {slot} {kind:x} {prio:x} {due}", pre = g.tick - 1));
+            }
+        }
+    }
+    if tl {
+        let p = std::env::var("TLLOG").unwrap();
+        std::fs::write(&p, tl_out.join("\n") + "\n").expect("TLLOG");
     }
     let frames = rng::trace_seq_frames_take();
     for (i, (tick, file, line, cr)) in rng::trace_seq_take().into_iter().enumerate() {

@@ -618,8 +618,24 @@ fn set_dormant_state(g: &mut GameState, d: &CreatureData, c: ThingRef, ty: u8) {
 }
 
 /// (Re)schedule a slot's timeline event `delay` ticks from now.
+#[track_caller]
 pub fn reschedule(g: &mut GameState, si: usize, kind: u8, delay: u32) {
     let Some(s) = g.creature_slots.get(si).and_then(|s| s.as_ref()) else { return };
+    // DM2_SCHEDDBG=TICK prints each creature reschedule on that tick with its
+    // caller, to trace which path picked the event type.
+    if std::env::var("DM2_SCHEDDBG").ok().and_then(|v| v.parse::<u32>().ok()) == Some(g.tick) {
+        eprintln!(
+            "resched tick {} creature {:#06x} kind {:#x} delay {} action {:#x} seq {}/{} from {}",
+            g.tick,
+            s.thing.0 & 0x3FFF,
+            kind,
+            delay,
+            s.action,
+            s.seq_start,
+            s.seq_off,
+            std::panic::Location::caller()
+        );
+    }
     if let Some(old) = s.event {
         g.timeline.delete(old);
     }
@@ -925,7 +941,12 @@ fn drive(g: &mut GameState, d: &CreatureData, ctx: &Ctx, continuing: bool) {
         }
         let (start, mut off) = (s.seq_start, s.seq_off);
         match an.next(start, &mut off) {
-            Step::Stopped => break,
+            // 0x25420 picks the next event from the last step's result: only
+            // "playing" continues (0x21); "stopped" starts a new step (0x22).
+            Step::Stopped => {
+                more = false;
+                break;
+            }
             Step::Playing => more = true,
             Step::Ended => {
                 more = false;

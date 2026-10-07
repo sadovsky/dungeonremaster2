@@ -1,6 +1,6 @@
 --- a/src/cpu/core_normal.cpp
 +++ b/src/cpu/core_normal.cpp
-@@ -136,9 +136,127 @@
+@@ -136,9 +136,148 @@
  
  #define EALookupTable (core.ea_table)
  
@@ -49,11 +49,27 @@
 +					(Bit16s)LoadMw(0x7FBD0 + 0x46 + dm2_data_delta),
 +					reg_edx, reg_ecx, LoadMd(SegBase(ss) + reg_esp + 4),
 +					LoadMw(0x7F548 + dm2_data_delta), LoadMw(0x72244 + dm2_data_delta),
-+					/* "R": the caller's return address (flat, relative to
-+					 * the code object like the hook addresses) and the next
-+					 * stack word. */
 +					LoadMd(SegBase(ss) + reg_esp) - dm2_code_delta,
 +					LoadMd(SegBase(ss) + reg_esp + 8));
++			/* Timeline hooks (schedule 0x56390, pop 0x5643D, delete 0x562FF):
++			 * "T addr tick free_head heap_count heap0_record ev_type ev_prio
++			 * ev_tick" - the free head is the record a schedule takes, heap0
++			 * the record a pop frees; ev_* read the event at eax (schedule). */
++			for (int i = 0; i < dm2_nhooks; i++)
++				if (ip == dm2_hooks[i] + dm2_code_delta &&
++				    (dm2_hooks[i] == 0x56390 || dm2_hooks[i] == 0x5643D || dm2_hooks[i] == 0x562FF)) {
++					Bit32u d = dm2_data_delta;
++					Bit32u heap = LoadMd(0x80420 + d);
++					Bit32u cnt = LoadMw(0x8042A + d);
++					Bit32u h0 = (heap && cnt) ? LoadMw(SegBase(ds) + heap) : 0xffff;
++					Bit32u et = 0, ep = 0, ek = 0;
++					if (dm2_hooks[i] == 0x56390) {
++						PhysPt e = SegBase(ds) + reg_eax;
++						ek = LoadMd(e) & 0xffffff; et = LoadMb(e + 4); ep = LoadMb(e + 5);
++					}
++					fprintf(dm2_log, "T %x %u free %x cnt %x h0 %x ev %x %x %x\n", dm2_hooks[i],
++						LoadMd(0x7F22C + d), LoadMw(0x80426 + d), cnt, h0, et, ep, ek);
++				}
 +	}
 +	if (dm2_code_delta && ip == 0x3023F + dm2_code_delta) {
 +		Bit32u d = dm2_data_delta;

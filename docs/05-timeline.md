@@ -423,6 +423,42 @@ plays two ticks later) or another allocation between ticks 161 and 170. The
 field-by-field combat comparison is still open: the hooked build still writes
 no save.
 
+**Round 14: timeline records.** The hooked build now also logs the
+timeline's record traffic: at each call to schedule (0x56390), pop
+(0x5643D) and delete (0x562FF) it writes the free-list head (low word of
+0x80426), the heap count (0x8042A), the heap's first record and, for a
+schedule, the event's type, priority and due tick (`T` lines).
+`tools/tlcmp.py` compares that traffic with the remake's
+(`examples/rngseq` with `TLLOG=PATH`), operation by operation. The pop
+routine frees its record through the delete routine, so the tool folds that
+inner delete into the pop.
+
+- **Damage display (0x47113).** When pending damage is applied and the
+  champion survives, the original also stores the amount for the box
+  (+0x30), flags the box (+0x33 bit 3) and ends the display with event 0x0C
+  five ticks later, the champion's index as the event's priority. The
+  event's record is kept in +0x2E; while one is pending, a further hit only
+  moves its time (0x562CE) instead of scheduling another. The remake
+  scheduled nothing, so from the first champion hit (tick 146 of the new
+  combat run) every later record was one off: this was the free-list drift.
+- **Refresh on load.** The timer-index refresh (0x55F4F: every champion's
+  +0x2E set to 0xFFFF unless an event 0x0C names it, missile word 3 pointed
+  at its flight event) runs on the load path (0x370D2) as well as before
+  saving. The remake only ran it before saving, so a loaded champion kept a
+  stale +0x2E and the first hit moved some unrelated event.
+- **Next event type.** The animation driver (0x25420) picks the creature's
+  next event from the last sequence step's result: type 0x21 only for
+  "playing" (1), 0x22 otherwise, including "stopped" (2).
+
+**Result (round 14).** The new combat run's record traffic matches the
+original operation by operation through tick 153 (3,070 operations), and
+its draws through tick 157. Tick 153 is the next divergence: after the
+party's blow at tick 152 the original's creature 0x109C starts an action
+whose first frame has no duration (so it reschedules as a new step, 0x22),
+while the remake's starts action 0x8 at sequence 38, whose frame 1 has a
+duration (0x21). Both make nine draws that tick, so the choice of action
+after the hit differs, not the random stream.
+
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
 (5,13), from the pit probe's save), the original reached its game-over

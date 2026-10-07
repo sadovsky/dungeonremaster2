@@ -567,3 +567,29 @@ fn arriving_with_a_new_facing_rotates_the_champions() {
     assert_eq!(g.champions[0].raw[0x1C], 1, "champion facing must rotate with the party");
     assert_eq!(g.champions[0].raw[0x1D], 1, "champion cell must rotate with the party");
 }
+
+#[test]
+fn surviving_damage_schedules_and_moves_the_damage_display() {
+    // 0x47113: a champion who survives damage shows it for five ticks; the
+    // ending event (0x0C) is kept in +0x2E and moved by a further hit.
+    let Some(mut g) = game() else { return };
+    g.champions[0].set_u16(0x2E, 0xFFFF);
+    let dealt = crate::champions::add_pending_damage(&g.champions, &mut g.party_status, 0, 5);
+    assert!(dealt > 0);
+    let t0 = g.tick;
+    g.advance();
+    let rec = g.champions[0].u16_at(0x2E);
+    assert_ne!(rec, 0xFFFF, "a display event is scheduled");
+    let ev = *g.timeline.get(rec).expect("display event");
+    assert_eq!((ev.kind, ev.prio, ev.tick), (crate::party::EVENT_DAMAGE_DISPLAY, 0, t0 + 5));
+    assert_eq!(g.champions[0].u16_at(0x30), dealt as u16);
+    // A second hit before it ends moves the same record.
+    crate::champions::add_pending_damage(&g.champions, &mut g.party_status, 0, 3);
+    let t1 = g.tick;
+    g.advance();
+    assert_eq!(g.champions[0].u16_at(0x2E), rec, "no second display event");
+    assert_eq!(g.timeline.get(rec).expect("display event").tick, t1 + 5);
+    // When it runs, +0x2E is reset.
+    run(&mut g, 6);
+    assert_eq!(g.champions[0].u16_at(0x2E), 0xFFFF);
+}

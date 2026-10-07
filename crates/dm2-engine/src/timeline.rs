@@ -70,6 +70,30 @@ impl Event {
     }
 }
 
+thread_local! {
+    /// Optional record trace for comparisons with the original's timeline
+    /// hooks: (op, record, type, priority, due tick), op S/P/D.
+    static TRACE: std::cell::RefCell<Option<Vec<(char, u16, u8, u8, u32)>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Start recording schedule/pop/delete record traffic.
+pub fn trace_start() {
+    TRACE.with(|t| *t.borrow_mut() = Some(Vec::new()));
+}
+
+/// Take the recorded traffic (and keep recording).
+pub fn trace_take() -> Vec<(char, u16, u8, u8, u32)> {
+    TRACE.with(|t| t.borrow_mut().as_mut().map(std::mem::take).unwrap_or_default())
+}
+
+fn trace(op: char, slot: u16, ev: &Event) {
+    TRACE.with(|t| {
+        if let Some(v) = t.borrow_mut().as_mut() {
+            v.push((op, slot, ev.kind, ev.prio, ev.tick));
+        }
+    });
+}
+
 #[derive(Clone)]
 pub struct Timeline {
     slots: Vec<Event>,
@@ -162,6 +186,7 @@ impl Timeline {
         }
         let slot = self.free.pop().ok_or(TimelineError::Full)?;
         self.slots[slot as usize] = Event { tick: ev.tick & 0xFF_FFFF, ..ev };
+        trace('S', slot, &self.slots[slot as usize]);
         self.heap.push(slot);
         let n = self.heap.len() - 1;
         self.sift_up(n);
@@ -176,6 +201,7 @@ impl Timeline {
     /// Remove and return the earliest event (0x5643D).
     pub fn pop(&mut self) -> Option<Event> {
         let &slot = self.heap.first()?;
+        trace('P', slot, &self.slots[slot as usize]);
         self.remove_at(0);
         Some(self.release(slot))
     }
@@ -198,6 +224,7 @@ impl Timeline {
     /// Delete a scheduled record by index (0x562FF).
     pub fn delete(&mut self, slot: u16) -> Option<Event> {
         let pos = self.heap.iter().position(|&s| s == slot)?;
+        trace('D', slot, &self.slots[slot as usize]);
         self.remove_at(pos);
         Some(self.release(slot))
     }

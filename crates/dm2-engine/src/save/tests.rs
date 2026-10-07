@@ -260,3 +260,20 @@ fn without_trailer_keeps_exactly_the_dos_stream() {
     // A stream without a trailer is returned unchanged.
     assert_eq!(without_trailer(dos).len(), dos.len());
 }
+
+#[test]
+fn loading_refreshes_the_champions_display_records() {
+    // The load path (0x370D2) runs the timer-index refresh (0x55F4F): a
+    // champion with no pending damage display gets +0x2E = 0xFFFF, not a
+    // stale record that a later hit would move.
+    let Some((mut g, gd, cd)) = new_game() else { return };
+    for c in g.champions.iter_mut() {
+        c.set_u16(0x2E, 0);
+    }
+    let bytes = to_bytes(&g, "REFRESH").expect("save");
+    let h = from_bytes(&bytes, gd, cd).expect("load");
+    assert!(!h.champions.is_empty());
+    for c in &h.champions {
+        assert_eq!(c.u16_at(0x2E), 0xFFFF);
+    }
+}
