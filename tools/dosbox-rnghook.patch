@@ -1,6 +1,6 @@
 --- a/src/cpu/core_normal.cpp
 +++ b/src/cpu/core_normal.cpp
-@@ -136,9 +136,125 @@
+@@ -136,9 +136,127 @@
  
  #define EALookupTable (core.ea_table)
  
@@ -106,9 +106,10 @@
 +	/* 0x7F552: pointer to that creature's active slot (0x22 bytes); log its
 +	 * program (+0x12), step (+0x13), queued action (+0x17) and action (+0x1A). */
 +	Bit32u slot = LoadMd(0x7F552 + data_delta);
-+	Bit32u prog = 0xffff, step = 0xffff, queued = 0xffff, action = 0xffff;
++	Bit32u prog = 0xffff, step = 0xffff, queued = 0xffff, action = 0xffff, evrec = 0xffff;
 +	if (slot) {
 +		PhysPt s = SegBase(ds) + slot;
++		evrec = LoadMw(s + 2);
 +		prog = LoadMb(s + 0x12); step = LoadMb(s + 0x13);
 +		queued = LoadMb(s + 0x17); action = LoadMb(s + 0x1a);
 +	}
@@ -119,9 +120,10 @@
 +		PhysPt q = SegBase(ds) + seqp;
 +		seq_start = LoadMw(q); seq_off = LoadMw(q + 2);
 +	}
-+	fprintf(dm2_log, "%u %x %x %x %x %x %x %x %x %x %x %x %x %x\n", tick, ip, data_delta,
++	/* Last field: the loaded creature's slot +0x02, its timeline record. */
++	fprintf(dm2_log, "%u %x %x %x %x %x %x %x %x %x %x %x %x %x %x\n", tick, ip, data_delta,
 +		LoadMd(sp), LoadMd(sp + 4), LoadMd(sp + 8), LoadMd(sp + 12), creature,
-+		prog, step, queued, action, seq_start, seq_off);
++		prog, step, queued, action, seq_start, seq_off, evrec);
 +}
 +
  Bits CPU_Core_Normal_Run(void) {

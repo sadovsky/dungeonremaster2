@@ -187,6 +187,14 @@ pub fn attack_champion(g: &mut GameState, data: &CreatureData, info: &Info, idx:
         &data.tables,
         &mut g.rng,
     );
+    // A blow that hurts makes the champion cry out, two ticks later
+    // (0x18758: (0x16, portrait, 0x82) with fallback 0xFE, mode 2, extra
+    // byte 0x69, volume 200, at the party's square).
+    if dealt != 0 {
+        let portrait = g.champions[idx].portrait();
+        let (m, x, y) = (g.party.map, g.party.x, g.party.y);
+        crate::sound_queue::request_keyed(g, 0x16, portrait, 0x82, 200, m, x, y, 2, 0x69);
+    }
     if dealt != 0 && info.poison() != 0 && g.rng.bit() != 0 {
         let p = champions::stat_adjusted(&g.champions[idx], champions::stat::VITALITY, info.poison() as i16, &mut g.rng);
         if p > 0 {

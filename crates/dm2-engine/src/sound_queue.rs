@@ -34,6 +34,15 @@ pub struct DelayedSound {
 /// original does.
 #[allow(clippy::too_many_arguments)]
 pub fn request(g: &mut GameState, cat: u8, idx: u8, sub: u8, vol: u8, map: usize, x: i32, y: i32, mode: i8) {
+    request_keyed(g, cat, idx, sub, vol, map, x, y, mode, 0);
+}
+
+/// `request` with the play function's extra byte argument, which becomes a
+/// delayed sound's event priority (0x15CA9 stores it at event +5): it
+/// orders the event against others due on the same tick and, through the
+/// timeline's free list, which record later events receive.
+#[allow(clippy::too_many_arguments)]
+pub fn request_keyed(g: &mut GameState, cat: u8, idx: u8, sub: u8, vol: u8, map: usize, x: i32, y: i32, mode: i8, key: u8) {
     if mode < 2 {
         g.effects.push(Effect::SoundAt { cat, idx, sub, map, x, y, vol, mode });
         return;
@@ -41,6 +50,7 @@ pub fn request(g: &mut GameState, cat: u8, idx: u8, sub: u8, vol: u8, map: usize
     let Some(slot) = g.delayed_sounds.iter().position(Option::is_none) else { return };
     g.delayed_sounds[slot] = Some(DelayedSound { cat, idx, sub, vol, map, x, y });
     let mut ev = Event::new(EV_DELAYED_SOUND, map as u8, g.tick.wrapping_add(mode as u32 - 1));
+    ev.prio = key;
     let [lo, hi] = (slot as u16).to_le_bytes();
     ev.x = lo;
     ev.y = hi;
