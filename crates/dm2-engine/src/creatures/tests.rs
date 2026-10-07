@@ -484,3 +484,30 @@ fn planner_prefers_earlier_goals_over_nearer_ones() {
     let found = super::planner::search(&mut g, &s, &[goal(2, 0, 7, 2), goal(0, -1, 9, 0)]).unwrap();
     assert_eq!((found.goal, found.distance), (1, 0));
 }
+
+#[test]
+fn path_test_reads_the_search_square_on_the_partys_map() {
+    // The original runs the path test (0x2C404) with the party's map
+    // selected, whatever map the search square is on (checked in DOSBox on
+    // a pit fall from map 4 to map 7). Map 4 (5,12) is a wall but map 7
+    // (5,12) is open, so a reach-2 creature searching map 4 at (5,13) is in
+    // line with the party at map 7 (5,11) only when read on the party's map.
+    let Some((mut g, _)) = load() else { return };
+    assert_eq!(g.dungeon.square(4, 5, 12).0 >> 5, 0, "map 4 (5,12) is a wall");
+    assert_ne!(g.dungeon.square(7, 5, 12).0 >> 5, 0, "map 7 (5,12) is open");
+    g.party = crate::world::PartyPos { map: 7, x: 5, y: 11, dir: 0 };
+    let s = super::planner::Searcher {
+        map: 4,
+        x: 6,
+        y: 13,
+        mask: 0xFFFF,
+        size: 1,
+        group: ThingRef(0x3FFE),
+        attack_mask: 0x40,
+        range: 2,
+        info0: 0,
+        cflags: 0,
+    };
+    let goal = super::planner::Goal { kind: 7, arg: 0, program: 1, limit: 4, data: 0, mode: 0, value: 0xFFF };
+    assert!(super::planner::satisfies_on(&mut g, &s, &goal, 4, 5, 13, 1, 3));
+}

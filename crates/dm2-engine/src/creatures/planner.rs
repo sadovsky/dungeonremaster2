@@ -116,7 +116,12 @@ pub fn satisfies_on(g: &mut GameState, s: &Searcher, goal: &Goal, map: usize, x:
         5 => party_map && to_party > start_dist + 1,
         // A way to reach the party from here (0x2C404 with move flags 1 for
         // kind 6 and 0 for kind 7; both evaluate alike when not committing).
-        6 | 7 => party_map && path_to_party(g, s, goal.value, map, x, y),
+        // The original runs the test with the party's map selected, whatever
+        // map the search square is on: the square's x and y are read on the
+        // party's map (checked in DOSBox: every call ran there). So a party
+        // that fell to the layer below can still be in line with a creature
+        // searching the upper map.
+        6 | 7 => path_to_party(g, s, goal.value, g.party.map, x, y),
         8 | 9 => g.dungeon.things_at(map, x, y).iter().any(|t| {
             matches!(
                 t.kind(),
@@ -249,7 +254,9 @@ fn test_square(
         }
         if satisfies_on(g, s, &goals[i], map, x, y, d, start_dist) {
             // The goal's target: the party's square for kinds flagged 0x20.
-            let at = if pr.flags[i] & 0x30 == 0x20 && g.party.map == map {
+            // Like the path test, the original takes the party's x and y as
+            // they are, even when the party is on another map.
+            let at = if pr.flags[i] & 0x30 == 0x20 {
                 Found { goal: i, map, x: g.party.x, y: g.party.y, distance: d, via }
             } else {
                 Found { goal: i, map, x, y, distance: d, via }
@@ -270,6 +277,14 @@ pub fn search(g: &mut GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> 
     }
     let mut pr = Priority::new(g, s, goals);
     let start_dist = (s.x - g.party.x).abs() + (s.y - g.party.y).abs();
+    // DM2_PLANDBG=TICK traces the searches made on that tick (research aid).
+    static DBG: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+    let dbg = *DBG.get_or_init(|| std::env::var("DM2_PLANDBG").ok().and_then(|v| v.parse().ok())) == Some(g.tick);
+    if dbg {
+        eprintln!("PLAN tick {} searcher map {} ({},{}) group {:#x} goals {:?}", g.tick, s.map, s.x, s.y, s.group.0,
+            goals.iter().map(|gl| (gl.kind, gl.limit, gl.program)).collect::<Vec<_>>());
+    }
+    let mut last_map = s.map;
     let inside = |g: &GameState, map: usize, x: i32, y: i32| {
         let m = &g.dungeon.maps[map];
         x >= 0 && y >= 0 && x < m.width as i32 && y < m.height as i32
@@ -279,10 +294,17 @@ pub fn search(g: &mut GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> 
     q.push_back((s.map, s.x, s.y, 0, None));
     seen.insert((s.map, s.x, s.y));
     while let Some((map, x, y, d, via)) = q.pop_front() {
+        if dbg && map != last_map {
+            eprintln!("PLAN   map {} -> {} at ({},{}) d {}", last_map, map, x, y, d);
+            last_map = map;
+        }
         if d as i32 > pr.max_limit {
             continue;
         }
         if test_square(g, s, goals, &mut pr, start_dist, map, x, y, d, via) {
+            if dbg {
+                eprintln!("PLAN   found {:?}", pr.best);
+            }
             return pr.best;
         }
         if d as i32 >= pr.max_limit {
@@ -319,6 +341,9 @@ pub fn search(g: &mut GameState, s: &Searcher, goals: &[Goal]) -> Option<Found> 
                 q.push_back((map, nx, ny, d + 1, via));
             }
         }
+    }
+    if dbg {
+        eprintln!("PLAN   end {:?} max_limit {}", pr.best, pr.max_limit);
     }
     pr.best
 }

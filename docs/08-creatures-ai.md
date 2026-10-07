@@ -284,9 +284,17 @@ target found, +7 goal type, +8 spec word +4 (mode), +10 spec word +6
 become the default item kinds that `N` and `]` fall back to (globals
 0x7F7D8 and 0x7F7DA), and byte +7 and word +4 are kept for builder 8.
 
-**Spec conditions (0x26D16).** The "party" here is the party as projected
-onto the creature's map (0x2FE35 swaps in a projected position when the
-creature is elsewhere).
+**Spec conditions (0x26D16).** The "party" here is the projected party
+(0x7F8D2-0x7F8D6). 0x2FE35 selects a map (0x1C724, which also sets the
+party's position as seen from that map) and copies the party into the
+projection: the live party, or the seam position at 0x7F278/0x7F25C/
+0x7F25E/0x7F272 when the selected map is the seam map and flag 0x7F230 is
+set. The AI context load clears the current map first, so the projection is
+refreshed for every creature. In practice (checked in DOSBox) it equals the
+live party. The path test (0x2C404) for goal kinds 6 and 7 runs with the
+party's map selected, so it reads the search square's x and y on the
+party's map, and the goal's target is the party's x and y even when the
+party is on another map.
 
 | Code | True when |
 |------|-----------|

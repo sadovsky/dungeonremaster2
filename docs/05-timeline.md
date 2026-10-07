@@ -181,6 +181,28 @@ fall it may still name the pit square on the upper map. The remake uses
 the live party position. Confirming this needs the projected values read
 from the running original.
 
+**Round 8: the tick-1710 divergence explained.** The draw-logging DOSBox
+gained a word watch (`DM2_WATCH`, which logs `W tick addr value` whenever a
+watched word changes) and wider hook lines (edx, ecx, the first stack
+argument, the loaded creature and the current map 0x72244). On the pit run
+the projected party (0x7F8D2 map, 0x7F8D4 x, 0x7F8D0 y, 0x7F8D6 facing) simply
+follows the live party: it took map 7, y 11 at the first creature context
+load after the fall, while the seam position (0x7F278, 0x7F25C/0x7F25E,
+0x7F272) stayed empty (0xFFFF) and its flag 0x7F230 stayed 0. So the stale
+projection was not the cause. The cause is the path test (0x2C404): every
+call to its line test ran with the current map equal to the party's map,
+whatever map the planner was searching. The original therefore reads the
+search square's x and y on the party's map. At tick 1710 the creature on
+map 4 tested its square (5,13) against the party at map 7 (5,11); the line
+crosses (5,12), a wall on map 4 but open floor on map 7, so the test passed
+(the line routine 0x2BBAD returns the distance, 2, when nothing blocks).
+The goal's target is the party's x and y on any map, so the creature then
+side-stepped north (action 3) toward (5,11). The remake now evaluates kinds
+6 and 7 on the party's map and targets the party's x and y across maps. The
+pit run matches draw for draw through tick 1710 and parts at tick 1711
+(creature 0x1047 starts its program 0x36 with action 0xC in the original);
+the idle run still matches through tick 156 (6,151 draws each).
+
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
 (5,13), from the pit probe's save), the original reached its game-over

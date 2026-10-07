@@ -1,6 +1,6 @@
 --- a/src/cpu/core_normal.cpp
 +++ b/src/cpu/core_normal.cpp
-@@ -136,9 +136,98 @@
+@@ -136,9 +136,125 @@
  
  #define EALookupTable (core.ea_table)
  
@@ -42,11 +42,13 @@
 +			if (ip == dm2_hooks[i] + dm2_code_delta)
 +				/* Champion 0 (record at 0x7FBD0): stamina +0x3A, food +0x44,
 +				 * water +0x46. */
-+				fprintf(dm2_log, "H %x %u %x %x %d %d %d\n", dm2_hooks[i],
++				fprintf(dm2_log, "H %x %u %x %x %d %d %d %x %x %x %x %x\n", dm2_hooks[i],
 +					LoadMd(0x7F22C + dm2_data_delta), reg_eax, reg_ebx,
 +					(Bit16s)LoadMw(0x7FBD0 + 0x3A + dm2_data_delta),
 +					(Bit16s)LoadMw(0x7FBD0 + 0x44 + dm2_data_delta),
-+					(Bit16s)LoadMw(0x7FBD0 + 0x46 + dm2_data_delta));
++					(Bit16s)LoadMw(0x7FBD0 + 0x46 + dm2_data_delta),
++					reg_edx, reg_ecx, LoadMd(SegBase(ss) + reg_esp + 4),
++					LoadMw(0x7F548 + dm2_data_delta), LoadMw(0x72244 + dm2_data_delta));
 +	}
 +	if (dm2_code_delta && ip == 0x3023F + dm2_code_delta) {
 +		Bit32u d = dm2_data_delta;
@@ -68,6 +70,31 @@
 +		dm2_data_delta = data_delta;
 +	}
 +	Bit32u tick = LoadMd(0x7F22C + data_delta);
++	/* DM2_WATCH: comma-separated data addresses of 16-bit words; at each draw,
++	 * log "W tick addr value" for every watched word that changed since the
++	 * last check (e.g. the projected party 7f8d2,7f8d4,7f8d0,7f8d6). */
++	{
++		static Bit32u dm2_watch[24];
++		static Bit32u dm2_wval[24];
++		static int dm2_nwatch = -1;
++		if (dm2_nwatch < 0) {
++			dm2_nwatch = 0;
++			const char * w = getenv("DM2_WATCH");
++			while (w && *w && dm2_nwatch < 24) {
++				char * end;
++				dm2_watch[dm2_nwatch] = (Bit32u)strtoul(w, &end, 16);
++				dm2_wval[dm2_nwatch++] = 0xFFFFFFFFu;
++				w = (*end == ',') ? end + 1 : 0;
++			}
++		}
++		for (int i = 0; i < dm2_nwatch; i++) {
++			Bit32u v = LoadMw(dm2_watch[i] + data_delta);
++			if (v != dm2_wval[i]) {
++				fprintf(dm2_log, "W %u %x %x\n", LoadMd(0x7F22C + data_delta), dm2_watch[i], v);
++				dm2_wval[i] = v;
++			}
++		}
++	}
 +	PhysPt sp = SegBase(ss) + reg_esp;
 +	/* 0x7F548: the thing reference of the creature whose AI context is loaded. */
 +	Bit32u creature = LoadMw(0x7F548 + data_delta);
