@@ -567,3 +567,61 @@ fn step_tests_fail_on_the_party_square() {
     assert_eq!((ctx.slot(&g).action, ctx.slot(&g).queued), (act, queued), "and leaves the slot alone");
     assert!(ai::move_test(&mut g, &ctx, f, 5), "the plain test commits to the party");
 }
+
+/// Builders 2 and 3 (0x27663) gate on alertness like 6 and 7 (0x277FB):
+/// with the alertness flag clear none of them builds a goal; with it set,
+/// some of the behaviour entries that use them do.
+#[test]
+fn attack_builders_need_alertness() {
+    let Some((mut g, d)) = load() else { return };
+    let Some((m, x, y, c)) = groups(&g).into_iter().find(|t| {
+        type_info(&g, &d, creature_type(&g, t.3)).is_some_and(|(i, _)| i.raw[0x0E] | i.raw[0x0F] != 0)
+    }) else {
+        return;
+    };
+    let Some(si) = activate(&mut g, &d, c, m, x, y) else { return };
+    let Some(ctx) = Ctx::load(&g, &d, si) else { return };
+    let mut built = 0;
+    for class in 0..64u16 {
+        for (_, list) in d.behaviour_sets(class) {
+            for e in d.behaviour_list(list) {
+                let Some(row) = d.row(e.program, 0) else { continue };
+                if !matches!(row.goal_kind(), 2 | 3 | 6 | 7) {
+                    continue;
+                }
+                g.creature_alert_roll = 0;
+                let none = goals::build(&g, &d, &ctx, e.program, row.goal_kind(), row.goal_arg, e.goal_data);
+                assert!(none.is_empty(), "builder {} built a goal while not alert", row.goal_kind());
+                g.creature_alert_roll = 1;
+                built += goals::build(&g, &d, &ctx, e.program, row.goal_kind(), row.goal_arg, e.goal_data).len();
+            }
+        }
+    }
+    assert!(built > 0, "alert attack builders build goals");
+}
+
+/// Opcode Q (0x2923E) with its target on the next square, holding the party:
+/// done once the creature faces it (so a following R attacks at once), not
+/// done while the party stands to its side.
+#[test]
+fn q_is_done_facing_an_occupied_target() {
+    let Some((mut g, d)) = load() else { return };
+    if d.row(1, 0).map(|r| r.op as u8) != Some(b'Q') {
+        return;
+    }
+    let Some((m, x, y, c)) = groups(&g).into_iter().find(|t| {
+        type_info(&g, &d, creature_type(&g, t.3)).is_some_and(|(i, _)| !i.inanimate())
+    }) else {
+        return;
+    };
+    let Some(si) = activate(&mut g, &d, c, m, x, y) else { return };
+    let f = facing(&g, c);
+    for (dir, done) in [(f, true), ((f + 1) & 3, false)] {
+        let (tx, ty) = (x + crate::viewport::DX[dir as usize], y + crate::viewport::DY[dir as usize]);
+        g.party = crate::world::PartyPos { map: m, x: tx, y: ty, dir: 0 };
+        let Some(ctx) = Ctx::load(&g, &d, si) else { return };
+        ctx.slot_mut(&mut g).target = crate::creatures::slot::Packed::new(m, tx, ty);
+        let r = ai::run_row(&mut g, &d, &ctx, 1, 0);
+        assert_eq!(r == Some(ai::Res::Done), done, "party in direction {dir}, facing {f}");
+    }
+}

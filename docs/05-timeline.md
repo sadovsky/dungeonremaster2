@@ -469,6 +469,46 @@ not the random stream; that choice is the next thing to trace. The hooked
 build cannot yet write a save, so the field-by-field combat comparison is
 still open.
 
+**Round 15: attack builders and `Q`.** A hooked rerun of the new combat run
+with the picker, planner, path-test and program-start entries hooked, and
+the goal array (0x7F670-0x7F698) and alertness byte (0x7F589) watched,
+showed what the original does at tick 153: creature 0x109C builds only its
+kind-0x0D goal (program 14), never enters the attack builder, finds no
+goal and falls back to program 0x11, whose first row queues the action.
+Its alertness byte is still clear while the goals are built.
+
+- **Builders 2 and 3 are attack builders.** The goal-builder table
+  (0x75248) sends builders 2 and 3 to 0x276CD and 0x276E2, which call
+  0x27663 with spec tag 2 (analysis tag 1) and tag 4 (analysis tag 3), the
+  same pairs builders 6 and 7 pass to 0x277FB. 0x27663 builds nothing
+  unless the creature is alert this think; then it runs the distance
+  analysis and builds the tag's specs while the type has attack bits. The
+  remake had treated builders 2 and 3 as a plain tag rule, so a creature
+  that was not alert still built an attack goal and attacked.
+- **`Q` faces an occupied target.** After the chance roll (the alertness
+  word's top nibble, quartered while status bit 0x2000 is set, only
+  setting a flag), `Q` with no path to follow turns to face its target and
+  is done once it faces it, so a following `R` attacks in the same think.
+  Seen with the target on the next square holding the party; an empty
+  target square is still approached along a path, as the pit run's draws
+  require. A target on the creature's own square is done before any draw.
+
+**Result (round 15).** The new combat run (c1, re-recorded with hooks as
+c4) matches the original draw for draw through tick 165 (draw 4692, up
+from 4383 at tick 158). The idle run stays identical through tick 154 and
+the pit run through 1711. The round 8 combat log still parts at tick 202:
+there the remake's 0x109C passes its alertness roll on the boundary
+(threshold 2, two ticks since its last action) and attacks, while the
+original's slot shows no action at all (action byte 0xFF) going into that
+think, so the two had already parted on the creature's last action or its
+timing before tick 202 without a draw showing it. The roll itself was
+checked against the disassembly (0x24CB4-0x24D20: the same signed byte
+difference, n/4 plus `random(n + 1)`, an at-most comparison). Next: a
+hooked rerun with round 8's timing that watches 0x109C's slot +4 and +0x1A.
+The hooked build still writes no save, so the field-by-field combat
+comparison remains open. `DM2_PLANDBG=TICK` now also prints each goal's
+mode, value and tag, the alertness rolls and the attack builders' view.
+
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
 (5,13), from the pit probe's save), the original reached its game-over

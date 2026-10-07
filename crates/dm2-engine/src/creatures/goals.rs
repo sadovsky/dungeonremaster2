@@ -246,6 +246,9 @@ pub fn build(g: &GameState, d: &CreatureData, ctx: &Ctx, program: u8, builder: u
 /// or 4 become goals, with a zero distance limit when the row's argument is
 /// non-zero.
 fn attack_goals(g: &GameState, d: &CreatureData, ctx: &Ctx, program: u8, builder: u8, arg: i8, data: u32) -> Vec<Goal> {
+    if std::env::var("DM2_PLANDBG").ok().and_then(|t| t.parse::<u32>().ok()) == Some(g.tick) {
+        eprintln!("ATTACK tick {} thing {:#x} builder {} alert {} rolled {}", g.tick, ctx.thing.0 & 0x3FFF, builder, g.creature_alert_roll, g.creature_ctx_rolled);
+    }
     if data == 0 || g.creature_alert_roll == 0 {
         return Vec::new();
     }

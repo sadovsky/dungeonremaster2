@@ -400,6 +400,9 @@ pub fn context_roll(g: &mut GameState, ctx: &Ctx) {
     };
     let threshold = (n as i16 >> 2) + g.rng.random(n + 1) as i16;
     g.creature_alert_roll = u16::from(threshold <= elapsed);
+    if std::env::var("DM2_PLANDBG").ok().and_then(|t| t.parse::<u32>().ok()) == Some(g.tick) {
+        eprintln!("ROLL tick {} thing {:#x} n {} elapsed {} threshold {} alert {}", g.tick, ctx.thing.0 & 0x3FFF, n, elapsed, threshold, g.creature_alert_roll);
+    }
 }
 
 /// Does the scan stop at (x, y) (0x2B9FC)? Walls, closing or closed doors
@@ -669,6 +672,13 @@ pub fn think(g: &mut GameState, d: &CreatureData, ctx: &Ctx) {
         }
     }
     run_program(g, d, ctx);
+}
+
+/// Run one program row's opcode (tests only).
+#[cfg(test)]
+pub(super) fn run_row(g: &mut GameState, d: &CreatureData, ctx: &Ctx, program: u8, step: i8) -> Option<Res> {
+    let row = d.row(program, step)?;
+    Some(opcode(g, d, ctx, &row))
 }
 
 /// Run program steps until one queues an action (0x261B3 / 0x27CD2 /
