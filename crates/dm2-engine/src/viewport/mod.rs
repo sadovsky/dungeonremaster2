@@ -1362,7 +1362,9 @@ fn draw_item(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, t: ThingRef, c: usi
     }
     let (cat, idx) = item_key(cx.dg, t);
     let sc = ITEM_SCALE[depth * 4 + 4 - row];
-    let key = key_attr(a, cat, idx, Some(10), false);
+    // 0x51EB7 passes the drawer a constant colour key of 10 for floor
+    // items; attribute 4 is not consulted here.
+    let key = Some(10u8);
     let post = cx.ex.stack_nudges.map_or((0, 0), |t| (NUDGE[(t[2 * stack] & 7) as usize], NUDGE[(t[2 * stack + 1] & 7) as usize]));
     let r = Req { xs: sc, ys: sc, depth: Some(depth), key, post, ..Req::new(cat, idx, 0, 5000 + 25 * c as u16 + slot as u16) };
     let placed = draw(a, buf, cx, r);

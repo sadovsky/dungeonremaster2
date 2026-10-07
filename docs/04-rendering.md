@@ -305,10 +305,13 @@ Cells 9 and 10 (the far side cells at depth 2) have no contents pass
   to the request's screen position after scaling (0x4E502); the y nudge
   is skipped for alcove items (0x51EB7's fifth argument).
 - The per-category offset attribute (cat, 0xFE, 12, sub) is added.
-- Colour key: attribute (cat, index, 11, 4) when present, else 10. The
-  attribute can be 0x8000; the request's key field is 16 bits, so that
-  value never matches a pixel and the item is drawn fully opaque
-  (verified: treating it as key 0 punches holes in container images).
+- Colour key: always 10 on this path. 0x51EB7 passes the drawer
+  (0x4E502) a constant 10 as its ninth argument, which the drawer stores
+  at 0x801BA and hands to the light and key setup (0x4E3D5); attribute
+  (cat, index, 11, 4) is not read here. (An earlier note used attribute 4,
+  treating 0x8000 as "opaque"; that was checked against the Python
+  reference renderer, not the original. Against the original, map 3's
+  misc item 63, whose attribute 4 is 0x320, is drawn keyed.)
 
 ### Missiles and spell effects (0x518B0)
 
