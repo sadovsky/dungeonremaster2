@@ -433,7 +433,12 @@ Drawing, for cells 0, 3-8 and 11-15 (table 0x75F48):
   862, 861, 863, 859, 858, 860, 856, 855, 857, –, –, 853, 852, 854,
   850, 851. Right-hand cells are mirrored (0x75C8C); the party cell
   mirrors by the floor parity. Cells 11 and up are drawn only when slot 3
-  is 0.
+  is 0. Pit images are keyed with the map set's default colour
+  (attribute 100) and lit by the cell's depth, like other cell contents;
+  the same holds for ceiling holes and stairs. (The remake drew all three
+  unkeyed and unlit, giving a solid box behind them and art that was too
+  bright; fixed, and verified pixel-exact against the original for a pit
+  view and a front-on stairs view.)
 - **Ceiling hole** (0x507AB, cells 0-8, only when the set's flag word
   bit 0 is set): when the square directly above, on the map one layer up,
   is an open pit. Subs 153, 154, 154, 156, 157, 157, 159, 160, 160 at
@@ -634,6 +639,62 @@ separate time-of-day palette.
   adds nothing; daytime (index 1) adds a large amount, so the step drops
   by about three. A lightning flash (0x7F248) forces the step to 0 for
   one update. The step then feeds the ambient level (step × 10).
+- **Loading:** the original recomputes the outdoor flag, the hour offset
+  and the hour light when a game is loaded, before the first frame. The
+  hour offset is never saved state: it always comes from attribute
+  (3,0,11,0). (The remake missed this after loading, rendering daytime
+  saves at night; `weather::refresh` now runs on load.)
+
+#### Darkness step and light sources (0x389C2, 0x38C46)
+
+The darkness step (0-5, word 0x7F282) is worked out as follows. If the
+map descriptor's level nibble (byte 0x0D, high four bits) is 0, the step
+is 1. Otherwise a light sum is built from:
+
+1. light-giving items in the leader's hand and the champions' hands
+   (flags attribute bit 0x10), sorted once and weighted by a halving
+   shift through the table at 0x756FA;
+2. the light-scan word at 0x7F970 (below);
+3. the light-spell counter at 0x7FFEC (rebuilt from pending event-0x46
+   records; not saved);
+4. map set attribute 0x67, and outdoors the daylight term above.
+
+The step is the number of thresholds (0x7570E: 99, 75, 50, 25, 1, 0) the
+sum doesn't exceed, raised to at least map set attribute 0x68, forced to 0
+by a lightning flash, then lowered by one when the word at 0x7F972 is
+above 12, and clamped to 0-5.
+
+**Light scan (0x7F970).** Run when the party's surroundings change: the
+planner (0x3188A) searches breadth-first from the party, in mode 7 with
+goal type 0x17, out to the radius in map set attribute 0x6D (at most 8).
+For each open square reached it calls 0x38C46 with flags 3; for each wall
+it runs into it calls 0x38C46 with flag 4, once per sighting (a wall next
+to several open squares counts several times, each at its own distance).
+0x38C46 classifies the square with the cell summary (0x1E908, called with
+the search direction, so a wall's ornament is the one on the face looking
+back along the path) and adds:
+
+- **wall ornament** (flag 4): light attribute 0xF8 of (9, ornament). If
+  ornament attribute 99 is set the light follows daylight: it is scaled
+  by the percentage at 0x7570E (indexed like the daylight term) and
+  attenuated with max(3, light − table 0x75727[d]) for d < 9. Otherwise
+  it counts only when bit 15 is clear, or when the ornament's animation
+  frame (0x1E3DA, kept × 10 in the summary slot's high byte) is non-zero,
+  which is how flickering torches give light on all but frame 0;
+- **floor ornament** (flag 1): light attribute 0xF8 of (10, ornament), same
+  bit-15 rule;
+- **creature group** (flag 2): light attribute 0xF8 of the creature type;
+- ordinary sources add max(2, light − table 0x75739[min(d, 5)]).
+
+Explosions (type 15, kinds 0, 2, 0x30: word 1 >> 9) and fireball
+missiles (0xFF80: energy/2 minus a constant) on open squares go to a
+separate accumulator at 0x7F974, not into the darkness sum.
+
+The remake implements all of this in `crates/dm2-engine/src/light.rs`.
+Against DOSBox captures of the original, every gallery view now renders
+at the same step as the original. Before, every non-starting map rendered
+at step 5, because the scan term was missing and the daylight term read
+night.
 - **Colours:** the "time-of-day colour map" (0x4E226) is the image's own
   16-entry map run through the ordinary lighting shader at the ambient
   level, the word at 0x802CE (the high half of the dword at 0x802CC).
@@ -671,8 +732,9 @@ separate time-of-day palette.
   floor; the original's square test, its party-distance thunder rule and
   the fixed strike square of attribute (8, set, 11, 0x6C) are not
   modelled. Thunder plays as global sound 0x40 at the party.
-- The extra light term at 0x7FFEC and the step adjustment for the word at
-  0x7F972 are not modelled.
+- The step adjustment for the word at 0x7F972 is not modelled. Bit-15
+  floor-ornament sources next to map-edge links (0x1D113 test) are treated
+  like ordinary bit-15 sources.
 - Saves written by the remake carry the weather in the trailer. A save
   written by the DOS game restores these globals in its own stream, which
   the remake doesn't read yet; it rederives the clock from the dungeon
