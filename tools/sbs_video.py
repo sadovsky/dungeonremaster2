@@ -225,22 +225,25 @@ def compose(orig, remake_input, out, remake_wav=None):
     inputs += ['-i', str(remake_wav)]
     aenc = ['-c:a', 'aac', '-b:a', '192k', '-ar', '44100']
     run('ffmpeg', '-y', '-loglevel', 'error', *inputs, '-filter_complex',
-        graph + ';[0:a]aresample=44100,aformat=channel_layouts=stereo[oa];'
-        '[2:a]aformat=channel_layouts=stereo[ra]',
+        graph + ';[0:a]aresample=44100,aformat=channel_layouts=stereo,loudnorm=I=-20:TP=-1.5:LRA=11,aresample=44100,aformat=channel_layouts=stereo[oa];'
+        '[2:a]aresample=44100,aformat=channel_layouts=stereo,loudnorm=I=-20:TP=-1.5:LRA=11,aresample=44100,aformat=channel_layouts=stereo[ra]',
         '-map', '[v]', '-map', '[oa]', '-map', '[ra]', '-shortest', *venc, *aenc,
         '-metadata:s:a:0', 'title=Original (DOSBox)', '-metadata:s:a:1', 'title=Remake',
         '-disposition:a:0', 'default', '-disposition:a:1', '0', out)
     mix = out.with_name(out.stem + '_mixdown.mp4')
     run('ffmpeg', '-y', '-loglevel', 'error', *inputs, '-filter_complex',
-        graph + ';[0:a]aresample=44100,pan=mono|c0=0.5*c0+0.5*c1[l];'
-        '[2:a]pan=mono|c0=0.5*c0+0.5*c1[r];[l][r]amerge=inputs=2[m]',
+        graph + ';[0:a]aresample=44100,pan=mono|c0=0.5*c0+0.5*c1,loudnorm=I=-20:TP=-1.5:LRA=11,aresample=44100,'
+        'aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=mono[l];'
+        '[2:a]aresample=44100,pan=mono|c0=0.5*c0+0.5*c1,loudnorm=I=-20:TP=-1.5:LRA=11,aresample=44100,'
+        'aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=mono[r];[l][r]amerge=inputs=2[m]',
         '-map', '[v]', '-map', '[m]', '-shortest', *venc, *aenc, mix)
 
 
 def concat(parts, out):
     lst = out.with_suffix('.txt')
     lst.write_text(''.join(f"file '{p}'\n" for p in parts))
-    run('ffmpeg', '-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', lst, '-c', 'copy', out)
+    # -map 0 keeps every stream; without it ffmpeg copies only the first audio track.
+    run('ffmpeg', '-y', '-loglevel', 'error', '-f', 'concat', '-safe', '0', '-i', lst, '-map', '0', '-c', 'copy', out)
 
 
 def compose_test():
@@ -262,13 +265,20 @@ def main():
     if sys.argv[1:] == ['--compose-test']:
         compose_test()
         return
-    names = sys.argv[1:] or list(SEGMENTS)
+    args = sys.argv[1:]
+    compose_only = '--compose-only' in args
+    names = [a for a in args if a != '--compose-only'] or list(SEGMENTS)
     work = OUT / 'work'
     work.mkdir(parents=True, exist_ok=True)
     parts = []
     try:
         for name in names:
-            orig, frames, wav = record_segment(name, SEGMENTS[name], work)
+            if compose_only:
+                # Reuse the recording and replay from an earlier run.
+                orig, frames, wav = (work / f'{name}_orig.mkv', work / f'{name}_frames',
+                                     work / f'{name}_remake.wav')
+            else:
+                orig, frames, wav = record_segment(name, SEGMENTS[name], work)
             part = work / f'{name}.mp4'
             # Remake frame N shows the state after tick N, at N * 133 ms.
             compose(orig, ['-framerate', str(1 / TICK), '-i', str(frames / '%05d.png')], part,
