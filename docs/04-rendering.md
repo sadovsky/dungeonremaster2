@@ -828,6 +828,14 @@ Simplifications, still TODO:
 
 ## 9. Open questions
 
+- Far side walls (cells 17/18): the start view's remaining 29 differing
+  pixels are one 2-pixel stripe at x 91-92, rows 29-58: the inner edge of
+  the left depth-4 wall. Image (8, 2, 1, 50) is 50×32 with no drawing
+  offset, and layout 719 (kind 18 → anchor 8 at (43, 45) in rect 3)
+  places it at x 43-92. The original's pixels stop at x 90. The set's
+  'n'/'o' wall clip attributes (0x53C7B → 0x19AC4) are 0 here, and the
+  original also uses sub 50 for every far cell, so neither explains it.
+
 - Outdoor weather and time of day (section 3) are traced but not
   implemented: the hour clock, the environment light term, the
   time-of-day colour maps for category-23 images, rain overlays, clouds
