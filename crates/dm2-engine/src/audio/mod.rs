@@ -268,7 +268,7 @@ mod tests {
         };
         let rec = a.gdat.records.iter().find(|r| r.key.kind == 2).unwrap().key;
         let party = PartyPos { map: 0, x: 2, y: 2, dir: 0 };
-        let req = SoundRequest { cat: rec.cat, idx: rec.idx, sub: rec.sub, map: 0, x: 2, y: 1 };
+        let req = SoundRequest { vol: sfx::DEFAULT_VOL, cat: rec.cat, idx: rec.idx, sub: rec.sub, map: 0, x: 2, y: 1 };
         a.play_sounds(&dg, &party, &[req, req]);
         assert_eq!(a.sfx.active(), 1, "duplicate request from the same spot is dropped");
         let mut buf = vec![0f32; 1024];
