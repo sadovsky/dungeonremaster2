@@ -181,6 +181,16 @@ fall it may still name the pit square on the upper map. The remake uses
 the live party position. Confirming this needs the projected values read
 from the running original.
 
+**Combat probe (round 7).** With the party moved next to the awake
+creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
+(5,13), from the pit probe's save), the original reached its game-over
+screen within the 10 seconds it took to load the save and confirm. The
+remake agrees: Torham drops from 82 to 62 health at tick 1705 and to 11 at
+1711, and dies at tick 1735 (`examples/hpwatch`). A field-by-field combat
+comparison therefore needs a weaker opponent, or the draw-logging build
+recording the fight from the load, since no save can be taken before the
+party dies.
+
 **Result (round 4).** Idle new game, original against remake: 663 against
 666 thinks over ticks 2-157, 36.2 against 35.9 draws per tick, and ticks 0-1
 draw 420 against 419.
