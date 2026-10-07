@@ -277,3 +277,24 @@ fn loading_refreshes_the_champions_display_records() {
         assert_eq!(c.u16_at(0x2E), 0xFFFF);
     }
 }
+
+/// The view's light must be right from the first frame after a load: the
+/// darkness step computed straight from the loaded state equals the one
+/// after the first tick when nothing changes in between (no weather or
+/// light event due).
+#[test]
+fn darkness_is_settled_right_after_a_load() {
+    let Some((data, cd, _)) = data() else { return };
+    let Some(cd) = cd else { return };
+    let path = default_data_dir().join("SKSAVE0.DAT");
+    if !path.exists() {
+        return;
+    }
+    let mut g = read_as_original(&path, data, Some(cd.clone())).expect("load the original's save");
+    let before = creatures::fight::darkness_level(&g, &cd);
+    let weather = g.weather.clone();
+    g.advance();
+    assert_eq!(creatures::fight::darkness_level(&g, &cd), before, "darkness step changed on the first tick");
+    assert_eq!(g.weather.env, weather.env);
+    assert_eq!(g.weather.hour_light, weather.hour_light);
+}
