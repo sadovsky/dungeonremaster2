@@ -28,6 +28,7 @@ pub mod hooks;
 pub mod input;
 pub mod items;
 pub mod layout;
+pub mod light;
 pub mod magic;
 pub mod map_entry;
 pub mod missiles;

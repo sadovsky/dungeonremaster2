@@ -969,6 +969,8 @@ pub fn from_bytes(b: &[u8], data: Rc<GameData>, creatures: Option<Rc<CreatureDat
         }
     }
     g.creature_map_seen = None;
+    // The original recomputes the outdoor flag and hour light on load.
+    crate::weather::refresh(&mut g);
     Ok(g)
 }
 

@@ -112,6 +112,27 @@ pub fn enter_map(g: &mut GameState) {
     w.map_seen = Some(g.party.map);
 }
 
+/// Recompute the derived weather state for the party's map without drawing
+/// random numbers: the map set's features, the outdoor flag and the hour
+/// light. The original does this when a game is loaded, before the first
+/// frame; the remake also calls it after loading a save.
+pub fn refresh(g: &mut GameState) {
+    if g.data.is_none() {
+        return;
+    }
+    // The hour offset isn't game state: the dungeon loader recomputes it
+    // from attribute (3,0,11,0) on every load (0x36909 path, x 0x555).
+    let hour = g.data.as_ref().and_then(|d| d.gdat.lookup(Key::new(3, 0, 11, 0))).unwrap_or(0).min(23) as u32;
+    g.weather.hour_offset = hour * HOUR_TICKS;
+    if !g.weather.ready {
+        g.weather.next_hour = g.tick.wrapping_add(HOUR_TICKS);
+        g.weather.ready = true;
+    }
+    enter_map(g);
+    g.weather.env = table(g, ENV_STATES + g.weather.state as u32 * 4, 1).is_some_and(|b| b[0] != 0);
+    g.weather.hour_light = hour_light_now(g);
+}
+
 /// New-game setup from the dungeon (0x36909): the hour offset, then the
 /// first weather cycle.
 pub fn new_game(g: &mut GameState) {

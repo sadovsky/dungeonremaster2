@@ -781,13 +781,19 @@ fn draw_wall_ornament(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cel
 /// indexed by the tick, digits giving frames 0-9 and letters
 /// `char − 0x4B`. Frames keep 6 bits, as in the cell summary word.
 fn ornament_frame(a: &Assets, cat: u8, orn: u8, tick: u32, phase: u32) -> u32 {
-    let n = attr(a, cat, orn, 0x0D) as u32;
+    ornament_frame_at(&a.gdat, cat, orn, tick, phase)
+}
+
+/// `ornament_frame` from the archive alone (also used by the light scan,
+/// where a non-zero frame switches bit-15 light sources on).
+pub fn ornament_frame_at(g: &dm2_formats::gdat::Gdat, cat: u8, orn: u8, tick: u32, phase: u32) -> u32 {
+    let n = g.lookup(Key::new(cat, orn, 11, 0x0D)).unwrap_or(0) as u32;
     let t = tick.wrapping_add(phase);
     if n != 0 {
         let (count, base) = (n & 0x7FFF, (n >> 15) & 1);
         return if count == 0 { 0 } else { (t % count + base) & 0x3F };
     }
-    let Some(seq) = crate::font::text(&a.gdat, cat, orn, 0x0D, &crate::font::TextContext::default()) else { return 0 };
+    let Some(seq) = crate::font::text(g, cat, orn, 0x0D, &crate::font::TextContext::default()) else { return 0 };
     if seq.is_empty() {
         return 0;
     }
