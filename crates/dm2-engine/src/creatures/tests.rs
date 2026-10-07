@@ -475,7 +475,7 @@ fn planner_prefers_earlier_goals_over_nearer_ones() {
         info0: 0,
         cflags: 0,
     };
-    let goal = |kind: u8, arg: i8, program: u8, limit: u8| super::planner::Goal { kind, arg, program, limit, data: 0, mode: 0, value: 0 };
+    let goal = |kind: u8, arg: i8, program: u8, limit: u8| super::planner::Goal { kind, arg, program, limit, data: 0, mode: 0, value: 0, tag: 0 };
     // Goal 0: the party's square, three steps up the start corridor; goal 1:
     // stay put. The party's square wins although the fallback is nearer.
     let found = super::planner::search(&mut g, &s, &[goal(2, 0, 7, 10), goal(0, -1, 9, 0)]).unwrap();
@@ -508,7 +508,7 @@ fn path_test_reads_the_search_square_on_the_partys_map() {
         info0: 0,
         cflags: 0,
     };
-    let goal = super::planner::Goal { kind: 7, arg: 0, program: 1, limit: 4, data: 0, mode: 0, value: 0xFFF };
+    let goal = super::planner::Goal { kind: 7, arg: 0, program: 1, limit: 4, data: 0, mode: 0, value: 0xFFF, tag: 0 };
     assert!(super::planner::satisfies_on(&mut g, &s, &goal, 4, 5, 13, 1, 3));
 }
 

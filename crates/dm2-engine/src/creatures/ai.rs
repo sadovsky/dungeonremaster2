@@ -371,6 +371,8 @@ fn pick_behaviour(g: &mut GameState, d: &CreatureData, ctx: &Ctx, list: u32) -> 
     s.kind_a = gl.mode;
     s.kind_b = gl.value;
     s.goal_kind = gl.kind;
+    s.goal_data = gl.data;
+    s.goal_tag = gl.tag;
     // A goal on another layer is approached through the stairs leading there.
     let (tx, ty) = if found.map != ctx.map { found.via.unwrap_or((found.x, found.y)) } else { (found.x, found.y) };
     ctx.slot_mut(g).target = Packed::new(ctx.map, tx, ty);
@@ -1268,10 +1270,27 @@ fn act_on_target(g: &mut GameState, ctx: &Ctx) -> Res {
     ctx.slot_mut(g).arg = mode as u8;
     let sr = searcher(ctx);
     let (tx, ty) = (t.x(), t.y());
-    let Some(ok) = planner::path_filter(g, &sr, sr.attack_mask & value, flags, ctx.map, ctx.x, ctx.y, tx, ty) else {
+    // The distance analysis (0x26A67) counts what the creature carries of
+    // the behaviour's item kinds; with nothing to throw, the throw attack
+    // (mask value 8) is dropped before the goal value narrows the mask.
+    let mut mask = sr.attack_mask;
+    if mask & 8 != 0 && carried_for_goal(g, ctx) < 1 {
+        mask &= !8;
+    }
+    let Some(ok) = planner::path_filter(g, &sr, mask & value, flags, ctx.map, ctx.x, ctx.y, tx, ty) else {
         return Res::Failed;
     };
     commit_attack(g, ctx, flags, tx, ty, ok, None)
+}
+
+/// R's distance analysis (0x26A67 with the chosen goal's data and tag).
+fn carried_for_goal(g: &GameState, ctx: &Ctx) -> i32 {
+    let s = ctx.slot(g);
+    let (data, tag) = (s.goal_data, s.goal_tag);
+    match g.creature_data.clone() {
+        Some(d) => goals::carried_count(g, &d, ctx.thing, data, tag),
+        None => 0,
+    }
 }
 
 /// The committing half of the path test (0x2C898-0x2CC1A). Face the target

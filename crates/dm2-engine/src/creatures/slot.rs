@@ -82,6 +82,10 @@ pub struct Slot {
     pub kind_b: u16,
     /// Type of the chosen goal (global 0x7F7D7); 0xFF = none.
     pub goal_kind: u8,
+    /// The chosen behaviour's goal data and the tag its goal was built from
+    /// (globals 0x7F7DE and 0x7F7D6), for the distance analysis (0x26A67).
+    pub goal_data: u32,
+    pub goal_tag: u8,
     /// Where the group currently stands (the original finds this from the
     /// event's square; kept here for convenience).
     pub pos: Packed,
@@ -116,6 +120,8 @@ impl Slot {
             kind_a: 0xFFFF,
             kind_b: 0xFFFF,
             goal_kind: 0xFF,
+            goal_data: 0,
+            goal_tag: 0,
             pos: Packed::new(map, x, y),
         }
     }

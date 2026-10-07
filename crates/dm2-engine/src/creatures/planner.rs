@@ -29,6 +29,8 @@ pub struct Goal {
     /// Spec words +4 and +6: goal mode and value (meaning per goal type).
     pub mode: u16,
     pub value: u16,
+    /// Tag the goal's builder selected its specs on (spec byte +0x0C).
+    pub tag: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
