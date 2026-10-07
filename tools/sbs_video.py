@@ -4,6 +4,9 @@ by side, as one MP4. Run it yourself on your own copy of the game; the
 output stays under re/video/ (gitignored) and is for your own viewing.
 
   sbs_video.py [SEGMENT ...]        default: every segment in SEGMENTS
+  sbs_video.py --realign [SEG ...]  redo input alignment and replay from the
+                                    recordings in re/video/work (no DOSBox)
+  sbs_video.py --compose-only [SEG ...]  only rebuild the video from work files
   sbs_video.py --compose-test       check the ffmpeg layout with test patterns
 
 Per segment:
@@ -149,41 +152,49 @@ def record_segment(name, seg, work):
     finally:
         p.kill()
         p.wait()
+    json.dump({'log': log, 'rec_start': rec_start}, open(work / f'{name}.json', 'w'))
+    return align_segment(name, work)
+
+
+def align_segment(name, work):
+    """Place every logged input at the tick whose remake frames best match the
+    original recording (`dm2 --align`), then render the remake's frames and
+    audio with that schedule. Works from the files a recording left in `work`,
+    so it can be rerun without DOSBox (--realign).
+
+    Every input is kept. The original queues commands it can't act on yet, so
+    a press with no visible effect for a while still happens later; dropping
+    such inputs left the remake a square behind."""
+    info = json.load(open(work / f'{name}.json'))
     orig = work / f'{name}_orig.mkv'
     frames = work / f'{name}_frames'
-    ticks = int(duration / TICK) + 1
-    changes = change_times(['-i', str(orig)], FPS)
-    # Each input is tied to the first view change the original showed after it
-    # (recording timebase); an input with no visible effect within 1 s was
-    # dropped by the original and is left out of the remake's script too.
-    matched = []
-    for t, c in log:
-        t_rec = t - rec_start
-        hit = next((ct for ct in changes if t_rec - 0.05 <= ct <= t_rec + 1.0), None)
-        if hit is not None:
-            matched.append((hit, c))
-    lag = 0
-    for _ in range(4):                     # converge the remake's reaction delay
-        script = '\n'.join(f'{max(0, round(ct / TICK) - lag)} {c:#x}' for ct, c in matched)
-        (work / f'{name}.replay').write_text(script + f'\nend {ticks}\n')
-        if frames.exists():
-            for f in frames.glob('*.png'):
-                f.unlink()
-        run(ROOT / 'target/release/dm2', '--replay', work / f'{name}.replay', '--frames', frames,
-            '--load', save, '--audio', work / f'{name}_remake.wav', stdout=subprocess.DEVNULL)
-        if not matched:
-            break
-        rchanges = change_times(['-framerate', str(1 / TICK), '-i', str(frames / '%05d.png')], 1 / TICK)
-        want = matched[0][0]
-        first_r = next((rc for rc in rchanges if rc >= want - 3 * TICK), None)
-        if first_r is None:
-            break
-        err = round((first_r - want) / TICK)
-        if err == 0:
-            break
-        lag += err
-    json.dump({'log': log, 'rec_start': rec_start, 'changes': changes, 'matched': matched,
-               'lag': lag}, open(work / f'{name}.json', 'w'))
+    save = work / f'{name}.DAT'
+    rgb = work / f'{name}_orig.rgb'
+    # The original decoded to one 320x200 frame per remake tick, in the
+    # recording's timebase (frame N at N * 133 ms).
+    with open(rgb, 'wb') as f:
+        run('ffmpeg', '-loglevel', 'error', '-i', orig, '-vf',
+            f'fps={1 / TICK},scale=320:200:flags=neighbor', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-',
+            stdout=f)
+    ticks = rgb.stat().st_size // (320 * 200 * 3)
+    logged = [((t - info['rec_start']) / TICK, c) for t, c in info['log']]
+    inputs = work / f'{name}.inputs'
+    inputs.write_text(''.join(f'{t:.3f} {c:#x}\n' for t, c in logged) + f'end {ticks}\n')
+    report = run(ROOT / 'target/release/dm2', '--align', inputs, '--orig', rgb, '--load', save,
+                 '--out', work / f'{name}.replay', capture_output=True, text=True).stdout
+    schedule = []
+    for line in (work / f'{name}.replay').read_text().splitlines():
+        a, b = line.split()
+        if a != 'end':
+            schedule.append((int(a), int(b, 16)))
+    if frames.exists():
+        for f in frames.glob('*.png'):
+            f.unlink()
+    run(ROOT / 'target/release/dm2', '--replay', work / f'{name}.replay', '--frames', frames,
+        '--load', save, '--audio', work / f'{name}_remake.wav', stdout=subprocess.DEVNULL)
+    info.update(logged_ticks=logged, schedule=schedule, align_report=report.splitlines())
+    json.dump(info, open(work / f'{name}.json', 'w'))
+    rgb.unlink()
     return orig, frames, work / f'{name}_remake.wav'
 
 
@@ -267,7 +278,8 @@ def main():
         return
     args = sys.argv[1:]
     compose_only = '--compose-only' in args
-    names = [a for a in args if a != '--compose-only'] or list(SEGMENTS)
+    realign = '--realign' in args
+    names = [a for a in args if a not in ('--compose-only', '--realign')] or list(SEGMENTS)
     work = OUT / 'work'
     work.mkdir(parents=True, exist_ok=True)
     parts = []
@@ -277,6 +289,9 @@ def main():
                 # Reuse the recording and replay from an earlier run.
                 orig, frames, wav = (work / f'{name}_orig.mkv', work / f'{name}_frames',
                                      work / f'{name}_remake.wav')
+            elif realign:
+                # Reuse the recording; redo the input alignment and the replay.
+                orig, frames, wav = align_segment(name, work)
             else:
                 orig, frames, wav = record_segment(name, SEGMENTS[name], work)
             part = work / f'{name}.mp4'

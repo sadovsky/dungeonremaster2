@@ -406,6 +406,215 @@ fn parse_replay(text: &str) -> (Vec<(u32, u16)>, u32) {
     (cmds, end.max(last))
 }
 
+/// `dm2 --align INPUTS --orig RAW --load SAVE --out REPLAY`: choose the tick of
+/// each logged input so the remake's frames best match the original's.
+///
+/// INPUTS has one `LOGGED_TICK CODE` line per input (the tick may be
+/// fractional) and `end N`. RAW holds the original recording decoded to one
+/// 320x200 RGB24 frame per tick. Every input is kept: the original queues
+/// commands it can't act on yet, so a press without an immediate visible
+/// effect still happens, sometimes well after the press.
+///
+/// 1. Key frames: the remake's settled screen before any input and after
+///    each one in turn.
+/// 2. Detection: for input k, the first tick (after input k-1's) at which the
+///    original's frame is closer to key frame k than to key frame k-1, for
+///    two frames in a row.
+/// 3. Refinement: candidate ticks a few either side of that are simulated
+///    exactly from a clone of the state, scored against the original until
+///    the next input's detected change; the best one is kept.
+fn align(args: &[String]) {
+    let opt = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1));
+    let text = std::fs::read_to_string(&args[0]).expect("read inputs");
+    let raw = std::fs::read(opt("--orig").expect("--orig RAW")).expect("read original frames");
+    let out = opt("--out").expect("--out REPLAY");
+    const FRAME: usize = SCREEN_W * SCREEN_H * 3;
+    let orig: Vec<&[u8]> = raw.chunks_exact(FRAME).collect();
+    let mut inputs: Vec<(f64, u16)> = Vec::new();
+    let mut end = 0u32;
+    for line in text.lines() {
+        let mut f = line.split_whitespace();
+        match (f.next(), f.next()) {
+            (Some("end"), Some(t)) => end = t.parse().expect("end"),
+            (Some(t), Some(c)) => {
+                let c = c.strip_prefix("0x").map_or_else(|| c.parse(), |h| u16::from_str_radix(h, 16));
+                inputs.push((t.parse().expect("tick"), c.expect("code")));
+            }
+            _ => {}
+        }
+    }
+    let end = end.min(orig.len() as u32);
+    let mut d = load(&data_dir(None));
+    let gd = d.game_data.clone().expect("SKULL.EXE is needed to load saves");
+    let save_path = std::path::Path::new(opt("--load").expect("--load SAVE"));
+    let mut state = save::read(save_path, gd, d.creature_data.clone()).expect("load save");
+    let mut paused = false;
+    let apply = |g: &mut GameState, paused: &mut bool, c: u16| match c {
+        0x90 => *paused = true,
+        0x91 => *paused = false,
+        _ => {
+            if let Some(gc) = input::game_command(c) {
+                g.push_command(gc);
+            }
+        }
+    };
+    let render = |d: &mut Data, g: &GameState, paused: bool| -> Vec<u8> {
+        let mut view = ui_view(g, false);
+        view.paused = paused;
+        let frame = game_frame(d, g, &view);
+        to_rgb(&d.assets.palette, &frame)
+    };
+    let count = |a: &[u8], b: &[u8]| -> u64 {
+        a.chunks_exact(3)
+            .zip(b.chunks_exact(3))
+            .filter(|(a, b)| (0..3).any(|k| (a[k] as i32 - b[k] as i32).abs() > 24))
+            .count() as u64
+    };
+    let last = end.saturating_sub(1);
+    let n = inputs.len();
+
+    // 1. Key frames: the settled screen before any input and after each one,
+    // applying the inputs back to back with time for each to finish.
+    const SETTLE: u32 = 10;
+    let mut keys = Vec::with_capacity(n + 1);
+    {
+        let mut g = state.clone();
+        let mut p = paused;
+        keys.push(render(&mut d, &g, p));
+        for &(_, code) in &inputs {
+            apply(&mut g, &mut p, code);
+            for _ in 0..SETTLE {
+                if !p {
+                    g.advance();
+                }
+            }
+            keys.push(render(&mut d, &g, p));
+        }
+    }
+
+    if std::env::var_os("DM2_ALIGN_DEBUG").is_some() {
+        // For each tick of the original: the closest key frame and its distance.
+        for t in 0..end {
+            let (k, dist) = keys
+                .iter()
+                .enumerate()
+                .map(|(k, key)| (k, count(orig[t as usize], key)))
+                .min_by_key(|&(_, dist)| dist)
+                .unwrap();
+            eprintln!("tick {t:3} key {k:2} diff {dist}");
+        }
+    }
+
+    // 2. Detection: the first tick at which the original looks more like the
+    // state after input k than before it (two frames in a row). The original
+    // queues inputs it can't act on yet, so this can be well after the press;
+    // an input with no visible effect of its own keeps its logged tick.
+    // The original's state at each tick: its closest key frame, counted only
+    // when the match is close (in-between walking frames match nothing well).
+    const MATCH: u64 = 8000;
+    let state_at: Vec<Option<usize>> = (0..end)
+        .map(|t| {
+            let (k, dist) = keys
+                .iter()
+                .enumerate()
+                .map(|(k, key)| (k, count(orig[t as usize], key)))
+                .min_by_key(|&(_, dist)| dist)
+                .unwrap();
+            (dist < MATCH).then_some(k)
+        })
+        .collect();
+    // Input k (1-based key k+1) is detected at the first tick, not before its
+    // press or the previous input's detection, at which the original has
+    // reached state k+1 or beyond. Queued inputs can land on the same tick: the
+    // original may show two moves done at once. A state can look like an
+    // earlier one (closing the inventory returns to the first screen), so a
+    // close match to key k+1 that beats key k also counts. An input whose
+    // effect can't be seen keeps its logged tick.
+    let mut detected = Vec::with_capacity(n);
+    let mut floor = 0u32;
+    for k in 0..n {
+        let logged = inputs[k].0.round().max(0.0) as u32;
+        let visible = count(&keys[k], &keys[k + 1]) > 600;
+        let start = floor.max(inputs[k].0.floor().max(0.0) as u32);
+        let reached = |t: u32| {
+            let o = orig[t as usize];
+            let next = count(o, &keys[k + 1]);
+            state_at[t as usize].is_some_and(|s| s > k) || (next < MATCH && next < count(o, &keys[k]))
+        };
+        let found = visible.then(|| (start..end).find(|&t| reached(t))).flatten();
+        let t = found.unwrap_or(logged.max(floor)).min(last);
+        detected.push(t);
+        floor = t;
+    }
+
+    // 3. Refinement: an exact search a few ticks around each detected change,
+    // simulated from the committed state and scored until the next distinct
+    // detected change. Inputs detected on the same tick form a group, applied
+    // on consecutive ticks from the candidate start: the original showed them
+    // done together, so placing one alone would favour a late tick.
+    // `state` has simulated ticks 0..next_tick.
+    let mut next_tick = 0u32;
+    let mut schedule = Vec::new();
+    let mut prev: Option<u32> = None;
+    let mut k = 0;
+    while k < n {
+        let group_end = (k..n).take_while(|&j| detected[j] == detected[k]).last().unwrap() + 1;
+        let size = (group_end - k) as u32;
+        let earliest = prev.map_or(0, |p| p + 1);
+        let lo = detected[k].saturating_sub(3 + size).max(earliest).min(last);
+        let hi = (detected[k] + 2).max(lo).min(last);
+        let win_end = detected.get(group_end).map_or(hi + size + 8, |&t| t.max(hi + size)).min(end);
+        while next_tick < lo {
+            if !paused {
+                state.advance();
+            }
+            next_tick += 1;
+        }
+        let mut best = (u64::MAX, lo);
+        for cand in lo..=hi {
+            let mut g = state.clone();
+            let mut p = paused;
+            let mut score = 0u64;
+            for tick in lo..win_end {
+                if tick >= cand && tick < cand + size {
+                    apply(&mut g, &mut p, inputs[k + (tick - cand) as usize].1);
+                }
+                if !p {
+                    g.advance();
+                }
+                score += count(&render(&mut d, &g, p), orig[tick as usize]);
+            }
+            if score < best.0 {
+                best = (score, cand);
+            }
+        }
+        let chosen = best.1;
+        while next_tick < chosen + size {
+            if next_tick >= chosen {
+                apply(&mut state, &mut paused, inputs[k + (next_tick - chosen) as usize].1);
+            }
+            if !paused {
+                state.advance();
+            }
+            next_tick += 1;
+        }
+        for (i, j) in (k..group_end).enumerate() {
+            let (logged, code) = inputs[j];
+            let tick = chosen + i as u32;
+            println!(
+                "input {code:#x} logged {logged:.2} detected {} -> tick {tick} (search {lo}..={hi}, group {size}, score {})",
+                detected[j], best.0
+            );
+            schedule.push((tick, code));
+            prev = Some(tick);
+        }
+        k = group_end;
+    }
+    let mut script: String = schedule.iter().map(|(t, c)| format!("{t} {c:#x}\n")).collect();
+    script += &format!("end {end}\n");
+    std::fs::write(out, script).expect("write replay script");
+}
+
 /// Headless replay: load a save (or start a new game), apply the script's
 /// commands at their ticks and write frame NNNNN.png for every tick, so a
 /// recording of the original can be put next to the remake tick for tick.
@@ -557,6 +766,7 @@ fn main() {
         Some("--screenshot") => screenshot(&args[1..], false),
         Some("--screenshot-title") => screenshot(&args[1..], true),
         Some("--replay") => replay(&args[1..]),
+        Some("--align") => align(&args[1..]),
         _ => macroquad::Window::from_config(window_conf(), play(args)),
     }
 }
