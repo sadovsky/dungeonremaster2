@@ -452,12 +452,22 @@ inner delete into the pop.
 
 **Result (round 14).** The new combat run's record traffic matches the
 original operation by operation through tick 153 (3,070 operations), and
-its draws through tick 157. Tick 153 is the next divergence: after the
-party's blow at tick 152 the original's creature 0x109C starts an action
-whose first frame has no duration (so it reschedules as a new step, 0x22),
-while the remake's starts action 0x8 at sequence 38, whose frame 1 has a
-duration (0x21). Both make nine draws that tick, so the choice of action
-after the hit differs, not the random stream.
+its draws through tick 157; the idle run stays identical through tick 155,
+the pit run through 1711 and the round 8 combat log through 201. Tick 153
+is the next divergence. The party's blow at tick 152 misses 0x109C, but the
+hit handler's chance roll (flags 0x6002, chance 90) still sets status bit
+value 4, in both games. At the creature's next think the behaviour set
+changes in both games, from the default set (index 7, mask 0) to set 6
+(mask 0x0004, an exact match), so both drop the running program. The
+original's picker (0x26008) then dispatches a single opcode `C` with no
+program start (0x25C59), which queues an action whose first frame has no
+duration, so the creature reschedules as a new step (0x22). The remake's
+picker chooses a program whose rows run the planner and then `Q`, and its
+action 0x8 (sequence 38) has a frame with a duration (0x21). Both make
+nine draws that tick, so the picker's choice within set 6's list differs,
+not the random stream; that choice is the next thing to trace. The hooked
+build cannot yet write a save, so the field-by-field combat comparison is
+still open.
 
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
