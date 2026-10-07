@@ -21,7 +21,8 @@ import time
 from pathlib import Path
 
 MAIN = Path('/home/sadovsky/code/dungeonremaster2')
-CONF = MAIN / 're/dosbox/dm2.conf'
+import os
+CONF = Path(os.environ.get('DM2_DOSBOX_CONF', MAIN / 're/dosbox/dm2.conf'))
 DATA = MAIN / 'original/dumast2/DATA'
 
 
