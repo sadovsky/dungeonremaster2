@@ -124,6 +124,9 @@ pub fn move_test(g: &mut GameState, ctx: &Ctx, dir: u8, mode: u8) -> bool {
     if !super::terrain::can_enter(g, ctx.map, nx, ny, ctx.info.terrain(), ctx.info.door_size().max(1)) {
         return false;
     }
+    if destination_danger(g, ctx, nx, ny, mode, dir) {
+        return false;
+    }
     let a = if mode == 6 {
         action::BACK_OFF
     } else if f == dir {
@@ -274,10 +277,10 @@ fn pick_behaviour(g: &mut GameState, d: &CreatureData, ctx: &Ctx, list: u32) -> 
     Some(gl.program)
 }
 
-/// AI context setup (0x24BFC): once per creature event, roll alertness as
-/// `random((15 - (info word 0x16 & 15)) * 2 + 1)`. The original compares the
-/// roll with another value to set a flag (0x7F589); only the roll is kept
-/// here, so the random stream matches.
+/// AI context setup (0x24BFC): once per creature event, roll alertness. With
+/// n = (15 - (info word 0x16 & 15)) * 2, the creature is alert (0x7F589)
+/// when `n / 4 + random(n + 1)` is at most the ticks elapsed since its last
+/// completed action (slot +4, low byte of the tick, taken mod 256).
 pub fn context_roll(g: &mut GameState, ctx: &Ctx) {
     if g.creature_ctx_rolled {
         return;
@@ -285,7 +288,138 @@ pub fn context_roll(g: &mut GameState, ctx: &Ctx) {
     g.creature_ctx_rolled = true;
     g.creature_class_loaded = true;
     let n = (15 - (ctx.info.alertness_word() & 15)) * 2;
-    g.creature_alert_roll = g.rng.random(n + 1);
+    let elapsed = {
+        let d = (g.tick as u8).wrapping_sub(ctx.slot(g).act_tick) as i8 as i16;
+        if d < 0 { d + 256 } else { d }
+    };
+    let threshold = (n as i16 >> 2) + g.rng.random(n + 1) as i16;
+    g.creature_alert_roll = u16::from(threshold <= elapsed);
+}
+
+/// Does the scan stop at (x, y) (0x2B9FC)? Walls, closing or closed doors
+/// (a door type that passes missiles lets it through on a random bit),
+/// closed trick walls, kind-0xE clouds and solid creature groups block.
+fn blocks_scan(g: &mut GameState, map: usize, x: i32, y: i32) -> bool {
+    let sq = g.dungeon.square(map, x, y);
+    let e = sq.0 >> 5;
+    if e == 0 {
+        return true;
+    }
+    if e == 4 && matches!(sq.0 & 7, 3 | 4) {
+        let passes = crate::doors::door_at(g, map, x, y)
+            .map(|d| crate::doors::door_type(g, map, d))
+            .is_some_and(|t| g.attrs.get(14, t, 0x10) != 0);
+        if !passes || g.rng.bit() == 0 {
+            return true;
+        }
+    }
+    if e == 6 && sq.0 & 4 == 0 {
+        return true;
+    }
+    if sq.0 & 0x10 == 0 {
+        return false;
+    }
+    for t in g.dungeon.things_at(map, x, y) {
+        match t.kind() {
+            ThingType::Cloud => {
+                if g.dungeon.record_word(t, 1).unwrap_or(0) & 0x7F == 0x0E {
+                    return true;
+                }
+            }
+            ThingType::Creature => {
+                if let Some(c) = group_at(g, map, x, y) {
+                    let w = super::info_of(g, c).map_or(0, |i| u16::from_le_bytes([i.raw[0], i.raw[1]]));
+                    let solid = if w & 1 != 0 { (w >> 6) & 3 < 2 } else { w & 0x20 == 0 };
+                    if solid {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Direction a missile thing is flying: bits 10-11 of its timeline event's
+/// word at +8 (the event index is the missile's word 3).
+fn missile_dir(g: &GameState, m: ThingRef) -> Option<u8> {
+    let slot = g.dungeon.record_word(m, 3)?;
+    g.timeline.get(slot).map(|e| ((e.w8() >> 10) & 3) as u8)
+}
+
+/// Danger scan (0x2D52D): is a harmful missile flying toward (x, y)? For
+/// each direction it may first roll `rnd & 7` (always when record word +0xA
+/// bit 7 is set; otherwise only when (x, y) is the creature's own square and
+/// the direction is behind it, unless class flag 0x400 or info flag 4 rules
+/// the roll out) and skips the direction on a non-zero roll. It then looks up
+/// to three squares out for a missile heading back toward (x, y) whose
+/// impact would do damage, stopping at squares that block (0x2B9FC).
+pub(crate) fn danger_scan(g: &mut GameState, ctx: &Ctx, x: i32, y: i32) -> bool {
+    let behind = (facing(g, ctx.thing) + 2) & 3;
+    for dir in 0..4u8 {
+        let roll = if ctx.cflags & 0x400 != 0 {
+            false
+        } else if rec_u16(g, ctx.thing, 0x0A) & 0x80 != 0 {
+            true
+        } else {
+            ctx.info.raw[0] & 4 == 0 && x == ctx.x && y == ctx.y && dir == behind
+        };
+        if roll && g.rng.rnd() & 7 != 0 {
+            continue;
+        }
+        let (mut cx, mut cy) = (x, y);
+        for _ in 0..3 {
+            cx += DX[dir as usize];
+            cy += DY[dir as usize];
+            let m = &g.dungeon.maps[ctx.map];
+            if cx < 0 || cy < 0 || cx >= m.width as i32 || cy >= m.height as i32 {
+                break;
+            }
+            let back = (dir + 2) & 3;
+            for t in g.dungeon.things_at(ctx.map, cx, cy) {
+                if t.kind() == ThingType::Missile
+                    && missile_dir(g, t) == Some(back)
+                    && crate::missiles::threat_damage(g, t) != 0
+                {
+                    return true;
+                }
+            }
+            if (cx, cy) != (ctx.x, ctx.y) && blocks_scan(g, ctx.map, cx, cy) {
+                break;
+            }
+        }
+    }
+    false
+}
+
+/// The movement test's danger checks on a destination for modes 4 and 5
+/// (0x2D792): a missile there not already flying in the tested direction
+/// that would hurt refuses the move, and in mode 5 so does the danger scan,
+/// unless a kind-0xE cloud is on the square. Missiles on the creature's own
+/// square are ignored.
+fn destination_danger(g: &mut GameState, ctx: &Ctx, x: i32, y: i32, mode: u8, dir: u8) -> bool {
+    let m = mode & 0x1F;
+    if m != 4 && m != 5 {
+        return false;
+    }
+    let mut calm_cloud = false;
+    for t in g.dungeon.things_at(ctx.map, x, y) {
+        match t.kind() {
+            ThingType::Cloud => {
+                if g.dungeon.record_word(t, 1).unwrap_or(0) & 0x7F == 0x0E {
+                    calm_cloud = true;
+                }
+            }
+            ThingType::Missile if (x, y) != (ctx.x, ctx.y) => {
+                if missile_dir(g, t) != Some(dir) && crate::missiles::threat_damage(g, t) != 0 {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    m == 5 && !calm_cloud && danger_scan(g, ctx, x, y)
 }
 
 /// The wander list's think (0x262F7, list 0x73392, read from the
@@ -316,6 +450,77 @@ fn wander(g: &mut GameState, ctx: &Ctx) {
     set_action(g, ctx, if blocked { action::IDLE } else { action::WALK_NEAR });
 }
 
+/// Think's danger block (0x262F7 after the context setup, read from the
+/// disassembly). The creature first tests standing on its own square with
+/// the movement test (0x2D792 with the current square as destination), which
+/// in mode 5 runs the danger scan there. If it can't stay, it is in danger
+/// when, in mode 5, the scan finds a missile; otherwise when it is not
+/// alert, or (alert) when no path leads out (0x2C404, taken as available
+/// here) or `random((info word 0x18 >> 10 & 3) + 1) <= 1`. In danger it
+/// flags record word +0xA bit 13, may flee from a scanned missile (class
+/// flag 0x10, action 0x55), and otherwise tries four directions to step
+/// away, retrying once with mode 0 on a random bit. Returns true when an
+/// action was chosen.
+fn danger_block(g: &mut GameState, ctx: &Ctx, mode: u8, quarter: &mut u8) -> bool {
+    let can_stand = super::terrain::can_enter(g, ctx.map, ctx.x, ctx.y, ctx.info.terrain(), ctx.info.door_size().max(1))
+        && !destination_danger(g, ctx, ctx.x, ctx.y, mode, 0xFF);
+    if can_stand {
+        return false;
+    }
+    let danger = if mode == 5 && danger_scan(g, ctx, ctx.x, ctx.y) {
+        true
+    } else if g.creature_alert_roll != 0 {
+        // TODO(0x2C404): the path test is taken as finding a way out.
+        let n = ((ctx.info.word18() >> 8) & 0xF) >> 2;
+        g.rng.random(n + 1) <= 1
+    } else {
+        true
+    };
+    if !danger {
+        return false;
+    }
+    let w = rec_u16(g, ctx.thing, 0x0A);
+    set_rec_u16(g, ctx.thing, 0x0A, w | 0x2000);
+    loop {
+        if ctx.cflags & 0x10 != 0 {
+            let w = rec_u16(g, ctx.thing, 0x0A);
+            let scan = if w & 8 != 0 && g.rng.rand4() != 0 {
+                true
+            } else if w & 0x40 != 0 && g.rng.bit() != 0 {
+                true
+            } else {
+                g.rng.rand4() == 0
+            };
+            if scan && danger_scan(g, ctx, ctx.x, ctx.y) {
+                let s = ctx.slot_mut(g);
+                s.program = -1;
+                s.step = 0;
+                set_action(g, ctx, 0x55);
+                return true;
+            }
+        }
+        // TODO(0x33E61): the planner's escape direction (slot +0x1B) is not
+        // modelled; the original falls back to these draws when it finds none.
+        let mut dir = if g.rng.bit() != 0 { (facing(g, ctx.thing) + 2) & 3 } else { g.rng.rand4() as u8 };
+        let turn: u8 = if g.rng.bit() != 0 { 1 } else { 3 };
+        let m = if *quarter != 0 { 0 } else { mode };
+        for _ in 0..4 {
+            if move_test(g, ctx, dir, m | 0x80) {
+                let s = ctx.slot_mut(g);
+                s.program = -1;
+                s.step = 0;
+                return true;
+            }
+            dir = (dir + turn) & 3;
+        }
+        *quarter += 1;
+        if *quarter == 1 && g.rng.bit() != 0 {
+            continue;
+        }
+        return false;
+    }
+}
+
 /// Think (0x262F7): choose and start the next action.
 pub fn think(g: &mut GameState, d: &CreatureData, ctx: &Ctx) {
     let list = select_set(g, d, ctx);
@@ -333,39 +538,28 @@ pub fn think(g: &mut GameState, d: &CreatureData, ctx: &Ctx) {
     // (0x1C6F6) whose zero test 0x262F7 keeps for later; both happen here in
     // the original, before the move tests.
     context_roll(g, ctx);
-    let _quarter = g.rng.rand4() == 0;
-    // A creature that can't stay where it is tries to step away.
-    if mode != 0 && !super::terrain::can_enter(g, ctx.map, ctx.x, ctx.y, ctx.info.terrain(), ctx.info.door_size().max(1)) {
-        let mut dir = if g.rng.bit() != 0 { (facing(g, ctx.thing) + 2) & 3 } else { g.rng.rand4() as u8 };
-        let turn: u8 = if g.rng.bit() != 0 { 1 } else { 3 };
-        for _ in 0..4 {
-            if move_test(g, ctx, dir, mode | 0x80) {
-                let s = ctx.slot_mut(g);
-                s.program = -1;
-                s.step = 0;
-                return;
-            }
-            dir = (dir + turn) & 3;
-        }
+    let mut quarter = u8::from(g.rng.rand4() == 0);
+    if mode != 0 && danger_block(g, ctx, mode, &mut quarter) {
+        return;
     }
-    // Re-plan when idle, or now and then unless the class is single-minded.
-    let replan = ctx.slot(g).program < 0 || (ctx.cflags & 1 == 0 && g.rng.random(4) == 0);
-    if replan {
-        match pick_behaviour(g, d, ctx, list) {
-            Some(p) => {
-                if ctx.slot(g).program != p as i8 {
-                    let s = ctx.slot_mut(g);
-                    s.program = p as i8;
-                    s.step = 0;
-                }
-            }
-            None if ctx.slot(g).program < 0 => {
-                // Nothing matched: the default program (0x11).
+    // The behaviour picker (0x26008) runs on every think. Its two-bit "keep
+    // the current plan" roll only applies while the event's path cache is in
+    // use (0x25D49: globals 0x7F7D4/D5/D7, reset by the context setup), which
+    // it never is at this point, so think plans without a draw. The same
+    // program keeps its step; a different one starts at step 0; no match
+    // restarts the default program 0x11.
+    match pick_behaviour(g, d, ctx, list) {
+        Some(p) => {
+            if ctx.slot(g).program != p as i8 {
                 let s = ctx.slot_mut(g);
-                s.program = 0x11;
+                s.program = p as i8;
                 s.step = 0;
             }
-            None => {}
+        }
+        None => {
+            let s = ctx.slot_mut(g);
+            s.program = 0x11;
+            s.step = 0;
         }
     }
     run_program(g, d, ctx);

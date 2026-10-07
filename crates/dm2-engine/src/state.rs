@@ -201,6 +201,7 @@ impl GameState {
 
     /// Run one game tick (0x24691), minus rendering.
     pub fn advance(&mut self) {
+        crate::rng::trace_context(Some(self.tick), Some(0));
         self.walk = self.walk.and_then(|(p, n)| (n > 1).then_some((p, n - 1)));
         if let Some(p) = self.pending_map.take() {
             movement::arrive(self, p);

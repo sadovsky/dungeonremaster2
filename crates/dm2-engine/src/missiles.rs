@@ -74,6 +74,16 @@ fn read(g: &GameState, m: ThingRef) -> Option<Missile> {
     Some(Missile { what: u16::from_le_bytes([r[2], r[3]]), energy: r[4], attack: r[5] })
 }
 
+/// Damage the missile thing `m` would do on impact (0x16D72 on its record),
+/// as creatures weigh incoming missiles in the danger scan (0x2D52D) and the
+/// movement test (0x2D792). Draws random numbers like a real impact.
+pub(crate) fn threat_damage(g: &mut GameState, m: ThingRef) -> i16 {
+    match read(g, m) {
+        Some(ms) => impact_damage(g, ms.what, ms.energy, ms.attack).0,
+        None => 0,
+    }
+}
+
 /// Create a missile (0x16457) flying `dir` from cell `cell` of (x, y).
 /// `by_dungeon` marks shooter launches, whose first step skips nothing.
 /// Without a free missile record a thrown item just drops on the square.

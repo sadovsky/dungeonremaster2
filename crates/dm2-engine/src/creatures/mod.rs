@@ -108,6 +108,7 @@ pub struct Ctx {
 impl Ctx {
     pub fn load(g: &GameState, d: &CreatureData, si: usize) -> Option<Ctx> {
         let s = g.creature_slots.get(si)?.as_ref()?;
+        crate::rng::trace_context(None, Some((s.thing.0 & 0x3FFF) as u32));
         let ty = creature_type(g, s.thing);
         let (info, class) = type_info(g, d, ty)?;
         Some(Ctx {
@@ -438,6 +439,9 @@ pub fn reschedule(g: &mut GameState, si: usize, kind: u8, delay: u32) {
     }
     let pos = s.pos;
     let mut ev = Event::new(kind, pos.map() as u8, g.tick.wrapping_add(delay));
+    // The priority byte is the creature's type (record byte +4, 0x3059D), so
+    // same-tick creature events run higher types first.
+    ev.prio = creature_type(g, s.thing);
     ev.x = pos.x() as u8;
     ev.y = pos.y() as u8;
     ev.w10 = SLOT_TAG | si as u16;
