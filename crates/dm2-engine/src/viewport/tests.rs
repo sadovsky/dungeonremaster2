@@ -68,7 +68,10 @@ fn pinned_views() {
         // draw (0x54699); against the original in DOSBox this view's diff
         // fell from 26,124 to 22,952 pixels, the rest being time-of-day
         // colour and light, which are not modelled yet.
-        ((1, 2, 9, 0), 0x7586a0ef0929a2f2),
+        // Backdrops now use the map set's colour key (0x544BE): the brown
+        // box around the castle silhouettes is gone (gallery view 04, same
+        // square: 9,957 -> 1,695 differing pixels with the save's weather).
+        ((1, 2, 9, 0), 0xe3ec12f8202fd6b9),
         // four open pits in view: pits are now keyed and lit by depth (pit view verified
         // pixel-exact against the original at (4, 5, 6, N)).
         ((5, 12, 23, 0), 0x3c7b5b0bdb0b5a81),

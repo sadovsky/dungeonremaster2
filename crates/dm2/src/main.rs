@@ -297,6 +297,20 @@ fn view_extras(g: &GameState) -> viewport::ViewExtras {
         ex.ambient = ex.darkness_step * 10;
         ex.weather = dm2_engine::weather::view(g);
     }
+    // Diagnostics for comparing against the original layer by layer:
+    // DM2_LAYERS (viewport::layers mask, hex), DM2_NO_WEATHER, DM2_AMBIENT.
+    if let Some(m) = std::env::var("DM2_LAYERS").ok().and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()) {
+        ex.layers = m;
+    }
+    if std::env::var_os("DM2_NO_WEATHER").is_some() {
+        ex.weather = Default::default();
+    }
+    if let Some(a) = std::env::var("DM2_AMBIENT").ok().and_then(|v| v.parse().ok()) {
+        ex.ambient = a;
+    }
+    if std::env::var_os("DM2_DEBUG_VIEW").is_some() {
+        eprintln!("darkness_step {} ambient {} weather {:?} tick {}", ex.darkness_step, ex.ambient, ex.weather, g.tick);
+    }
     ex
 }
 

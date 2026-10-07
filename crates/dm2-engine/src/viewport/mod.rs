@@ -566,11 +566,16 @@ pub fn render_full(a: &mut Assets, dg: &Dungeon, map: usize, px: i32, py: i32, d
     let (gx, gy) = (m.origin_x as i32 + px, m.origin_y as i32 + py);
     let weather_backdrops: Vec<backdrop::Backdrop> =
         ex.weather.backdrops.iter().filter_map(|&n| backdrop::plan_one(&a.gdat, set, n, gx, gy, dir)).collect();
-    for b in backdrop::plan(&a.gdat, set, gx, gy, dir).into_iter().chain(weather_backdrops) {
+    // Backdrops use the map set's colour key (0x544BE passes 0x75BFA's high
+    // word, attribute (8, set, 11, 100), to the drawer).
+    let set_key = a.gdat.lookup(Key::new(8, set, 11, 100)).map(|k| k as u8);
+    // Weather backdrops (clouds, storm) are the far layer: the map set's
+    // landmarks are drawn over them, as in the original's captures.
+    for b in weather_backdrops.into_iter().chain(backdrop::plan(&a.gdat, set, gx, gy, dir)) {
         let flip = u8::from(backdrop::mirrored(b.flip_kind, set_flags, par, ex.tick));
         let s = if b.scale == 64 { a.sprite(23, set, b.index) } else { a.sprite_scaled(23, set, b.index, b.scale, b.scale) };
         if let Some(s) = s {
-            let r = Req { flip, ambient_only: true, post: (b.xoff, 0), xs: b.scale, ys: b.scale, ..Req::new(23, set, b.index, b.rid) };
+            let r = Req { flip, ambient_only: true, key: set_key, post: (b.xoff, 0), xs: b.scale, ys: b.scale, ..Req::new(23, set, b.index, b.rid) };
             draw_sprite(a, &mut buf, &cx, &s, s.off, &r, b.scale, b.scale);
         }
     }

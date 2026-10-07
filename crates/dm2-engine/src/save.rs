@@ -453,6 +453,7 @@ fn globals_record(g: &GameState, timers: usize) -> [u8; GLOBALS_LEN] {
     r[0x04..0x08].copy_from_slice(&g.rng.state.to_le_bytes());
     r[0x16..0x1A].copy_from_slice(&g.party_status.last_attacked.to_le_bytes());
     r[0x1A..0x1E].copy_from_slice(&g.party_status.last_moved.to_le_bytes());
+    crate::weather::write_globals(&g.weather, &mut r);
     r
 }
 
@@ -893,6 +894,9 @@ pub fn from_bytes(b: &[u8], data: Rc<GameData>, creatures: Option<Rc<CreatureDat
     let mut globals = [0u8; GLOBALS_LEN];
     r.get(&mut globals, &t.globals)?;
     g.legacy.globals = globals;
+    // Weather and clock state (bytes 0x2A-0x3B); a remake trailer, if
+    // present, later replaces it with the exact state.
+    crate::weather::read_globals(&mut g.weather, &globals);
     for f in g.legacy.flags.iter_mut() {
         let mut v = [0u8];
         r.get(&mut v, &t.all[..1])?;
