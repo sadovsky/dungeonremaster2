@@ -12,8 +12,9 @@ use super::midi::Driver;
 /// HMI loop-start / loop-end controllers.
 const CC_LOOP_START: u8 = 110;
 const CC_LOOP_END: u8 = 111;
-/// Fade-out length in seconds (tentative; the original's isn't documented).
-pub const FADE_SECS: f64 = 1.0;
+/// Starting value of the music fade counter (0x704C6): the music volume
+/// out of 127, stepped down once per game tick.
+pub const FADE_START: u8 = 0x7F;
 
 struct Track {
     /// Next event index.

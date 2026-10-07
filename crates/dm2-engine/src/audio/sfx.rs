@@ -55,7 +55,12 @@ pub struct SoundRequest {
     pub map: usize,
     pub x: i32,
     pub y: i32,
+    /// Volume as passed to the original's play function (200 is usual).
+    pub vol: u8,
 }
+
+/// The original's usual sound volume argument.
+pub const DEFAULT_VOL: u8 = 200;
 
 /// Remove the sound requests from the effect queue (presentation-only
 /// effects otherwise stay queued for the frontend).
@@ -63,7 +68,11 @@ pub fn drain_sounds(effects: &mut Vec<Effect>) -> Vec<SoundRequest> {
     let mut out = Vec::new();
     effects.retain(|e| match *e {
         Effect::Sound { cat, idx, sub, map, x, y } => {
-            out.push(SoundRequest { cat, idx, sub, map, x, y });
+            out.push(SoundRequest { cat, idx, sub, map, x, y, vol: DEFAULT_VOL });
+            false
+        }
+        Effect::SoundAt { cat, idx, sub, map, x, y, vol } => {
+            out.push(SoundRequest { cat, idx, sub, map, x, y, vol });
             false
         }
         _ => true,
@@ -150,7 +159,7 @@ impl Sfx {
             if self.playing.len() >= MAX_VOICES {
                 self.playing.remove(0);
             }
-            let g = gain * self.volume;
+            let g = gain * self.volume * r.vol as f32 / DEFAULT_VOL as f32;
             self.playing.push(Playing {
                 sample,
                 pos: 0.0,

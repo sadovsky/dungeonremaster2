@@ -339,6 +339,13 @@ pub fn viewport_click(g: &mut GameState, r: ViewRegion) -> bool {
             if let Some(t) = res.take {
                 g.hand.held = t.0 & 0x3FFF;
             }
+            // Pressing with an empty hand clicks (3, 0, 0x88) at the party's
+            // square (0x22A68). Tentative: the original keys this on flag
+            // 0x40 of the square ahead, which isn't traced; the remake plays
+            // it when the press fires something.
+            if item.is_none() && res.fired {
+                g.effects.push(Effect::Sound { cat: 3, idx: 0, sub: 0x88, map: p.map, x: p.x, y: p.y });
+            }
             res.fired
         }
         (Some(t), _) if near || (ahead && ahead_open(g)) => {

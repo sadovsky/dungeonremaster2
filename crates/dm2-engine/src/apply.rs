@@ -118,6 +118,10 @@ fn apply_one(g: &mut GameState, champion: usize, e: Action) {
             let (m, x, y) = ahead(g);
             if let Some(c) = creatures::group_at(g, m, x, y) {
                 if amount > 0 {
+                    // A blow that lands plays (15, creature type, 0x8D) at
+                    // the creature's square (0x414A5).
+                    let ty = creatures::creature_type(g, c);
+                    g.effects.push(crate::effects::Effect::Sound { cat: 15, idx: ty, sub: 0x8D, map: m, x, y });
                     creatures::damage(g, c, m, x, y, amount as u16);
                 }
             }

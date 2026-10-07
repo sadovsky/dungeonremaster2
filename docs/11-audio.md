@@ -65,6 +65,40 @@ Behaviour of the play function:
 - At most 20 positional sounds can be pending per tick.
 - Volume 200 and 0x80 are common literal volumes; 0x18,0,0x89 is a
   frequent interface sound.
+- Only registered keys play: 0x15C10 searches the per-map table that
+  0x161D9 fills while the resource manager loads a map's entries, and a
+  key that isn't registered returns 0 and plays nothing. Which keys a map
+  registers isn't traced yet.
+- Positional sounds more than one square away are also dropped when the
+  line-of-sight test 0x2FACC fails. The remake doesn't model this test.
+
+### Sound events (callers of 0x15CA9)
+
+| Caller | Event | Sound (cat, idx, sub) | Volume |
+|--------|-------|------------------------|--------|
+| 0x3023F | Creature animation frame with a sound field other than 0x7F | (15, type, field) | 0x80 |
+| 0x31348 | Creature hurt but alive (see below) | (15, type, 9 or 10) | |
+| 0x414A5 | A champion's blow lands on a creature | (15, type, 0x8D) | 200 |
+| 0x2B35D | Creature transform: changed / not changed | (3, 0, 0x81 / 0x8B) | 200 |
+| 0x22A68 | Empty-hand press on the square ahead when its flag 0x40 is set | (3, 0, 0x88) | 0x80 |
+| 0x39B3F | Eating or drinking | (9, 0x5B, 0xFB) | 200 |
+| 0x4A34A, 0x58FC2 | Teleporting | (0x18, 0, 0x89) / (3, 0, 0x89) | 0x80 |
+| 0x4CDCC | Floor sensors | (10, ornament, 0x88) | |
+| 0x57476, 0x58304 | Wall actuator sounds | (3, map + 1, record word 1 >> 3) | 200 |
+| 0x5A073 | Thunder, 1-15 ticks after the flash | (0x17, map set, 0) | 0x40 |
+| 0x15B4A | Volume control click | (3, 0, 0x8B) | 200 |
+| 0x160DB | Plays the delayed-sound queue that mode ≥ 2 requests fill | | |
+
+0x3F422/0x3F49D, listed earlier as sound functions, fetch and release
+images in the drawing code; they aren't sound calls.
+
+**Pain cry (0x31348).** When owed damage leaves a creature alive and its
+type flag 0x01 is clear and its AI class has flag 0x8000, the game draws
+a random number; one time in eight the creature cries out at once.
+Otherwise, if the blow exceeds 3% of the type's info byte 2 or 5% of its
+remaining hit points, a coin flip (only when its status word has bit 3)
+and then a one-in-four roll decide it. The cry picks sub 9 or 10 with a
+further random bit. These draws happen whether or not a sound plays.
 
 ## Music (GRAPHICS.DAT type 3)
 
@@ -74,9 +108,20 @@ Behaviour of the play function:
   party's **current map number**, holding song numbers. It has 46 valid
   entries (the dungeon has 44 maps), padded with 0xFF to 63 bytes, and
   the game reads at most 63. Song 0 means silence (the loader returns
-  early when the song is 0). When the party changes map and the song
-  differs from the one playing, the old song fades out and the new one
-  starts (functions at 0x10AF6 and 0x1095D).
+  early when the song is 0).
+- **Music update (0x10AF6), once per game tick** from the main loop
+  (0x24691) with the party's map. If the map's song differs from the last
+  one chosen, it starts at once when nothing is playing or a fade is
+  already running; otherwise a fade counter is set to 127. Each tick the
+  counter becomes the music volume and steps down by one, so the fade
+  lasts 126 ticks (about 17 s); at 1 the waiting song starts (0x1095D)
+  at volume 127. A song 0 leaves the music at the faded volume.
+- **Nothing else changes songs.** The title loop (0x386F5) makes no music
+  calls, so the title screen is silent after the intro movie. Pausing
+  stops the main loop but not the sound driver, so music keeps playing
+  while paused. The options volume control (0x10736, via 0x15B4A) sets
+  the music level 0-7 (5 at startup); 0 stops the music and raising it
+  again restarts the last song.
 - The game loads a song with a plain copy of the entry into a
   preallocated buffer, then hands it to the HMI SOS MIDI driver.
 - `TEST.HMP` in the game directory is the setup program's test tune, not
@@ -171,7 +216,17 @@ Not from the original (tentative):
   110 value as a repeat count (0 or 127 means forever). Finished songs restart.
 - **Song numbering:** SONGLIST values are used directly as the song index,
   with 0 as silence.
-- **Fade length:** the fade between songs is 1 s.
+- **Music update:** `Audio::music_tick` reproduces 0x10AF6 (126-tick
+  fade, counter as volume), driven once per game tick by the frontend and
+  by `dm2 --replay --audio`. The title screen is silent, as in the
+  original.
 - **Sound effects:** attenuation is linear with distance over an 8-square
-  range, and each level of map difference counts as 2 squares. Effects
-  carry no volume, so all play at one level.
+  range, and each level of map difference counts as 2 squares. A request's
+  volume scales its gain relative to 200 (`Effect::SoundAt` carries the
+  original's value where it differs, e.g. 0x80 for creature frames). Not
+  modelled: the per-map registration of playable keys and the
+  line-of-sight drop, so the remake can play sounds the original
+  wouldn't. At the outdoor spot map 1 (2,9), creature frame sounds made
+  the remake's track about 20 dB louder than the original's.
+- **Live check:** `DM2_AUDIO_DUMP=path.wav` writes everything the live
+  game plays to a WAV file.

@@ -238,12 +238,13 @@ pub fn init(g: &mut GameState, reset: bool) {
     g.weather.first = false;
 }
 
-/// Thunder (0x1512E with 0x40, 0, 6). Tentative mapping: the original's
-/// sound call arguments aren't traced, so it plays global sound 0x40 at the
-/// party's square.
+/// Thunder (0x5A073): sound (0x17, map set, 0) at the party's square. The
+/// original plays it through the delayed-sound queue, 1-15 ticks after the
+/// flash depending on distance; the remake plays it at once.
 fn thunder(g: &mut GameState) {
     let p = g.party;
-    g.effects.push(crate::effects::Effect::Sound { cat: 3, idx: 0, sub: 0x40, map: p.map, x: p.x, y: p.y });
+    let set = g.dungeon.maps[p.map].tileset;
+    g.effects.push(crate::effects::Effect::Sound { cat: 0x17, idx: set, sub: 0, map: p.map, x: p.x, y: p.y });
 }
 
 fn schedule(g: &mut GameState, delay: u32) {
@@ -477,6 +478,17 @@ mod tests {
         let bytes = std::fs::read(crate::assets::default_data_dir().join("DUNGEON.DAT")).ok()?;
         let dg = dm2_formats::dungeon::Dungeon::parse(&bytes).ok()?;
         Some(GameState::new_game_with(&dg, gd))
+    }
+
+    #[test]
+    fn thunder_plays_the_map_sets_sound_at_the_party() {
+        let Some(mut g) = game() else { return };
+        g.effects.clear();
+        thunder(&mut g);
+        let set = g.dungeon.maps[g.party.map].tileset;
+        let p = g.party;
+        assert!(g.effects.iter().any(|e| matches!(e,
+            crate::effects::Effect::Sound { cat: 0x17, idx, sub: 0, x, y, .. } if *idx == set && *x == p.x && *y == p.y)));
     }
 
     #[test]
