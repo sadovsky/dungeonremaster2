@@ -2,7 +2,7 @@
 """Compare the original's draw log (tools/dosbox-rnghook.patch output) with the
 remake's ordered draws (examples/rngseq), draw by draw (docs/05, "Draw log").
 
-  rngcmp.py ORIGINAL_LOG REMAKE_SEQ
+  rngcmp.py ORIGINAL_LOG REMAKE_SEQ [START_TICK]
 
 Both streams are reduced to (tick, creature) per draw; the first draw where
 they part is printed with the surrounding context, plus per-tick counts.
@@ -36,6 +36,11 @@ def remake(path):
 
 def main():
     o, r = original(sys.argv[1]), remake(sys.argv[2])
+    # Optional START: compare from that tick on (a loaded save's first tick;
+    # the original's log also holds its title screen's ticks).
+    start = int(sys.argv[3]) if len(sys.argv) > 3 else 0
+    o = [x for x in o if x[0] >= start]
+    r = [x for x in r if x[0] >= start]
     end = min(o[-1][0], r[-1][0])
     o = [x for x in o if x[0] < end]
     r = [x for x in r if x[0] < end]

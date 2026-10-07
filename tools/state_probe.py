@@ -70,7 +70,10 @@ def prepare_copy():
 
 
 def start(load=False):
-    p = subprocess.Popen(['dosbox', '-conf', str(PROBE_CONF)], cwd=MAIN / 're/dosbox',
+    # DM2_DOSBOX_BIN selects another build, e.g. the draw-logging one
+    # (tools/dosbox-rnghook.patch, which logs to $DM2_RNGLOG).
+    p = subprocess.Popen([os.environ.get('DM2_DOSBOX_BIN', 'dosbox'), '-conf', str(PROBE_CONF)],
+                         cwd=MAIN / 're/dosbox',
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     w = None
     for _ in range(60):

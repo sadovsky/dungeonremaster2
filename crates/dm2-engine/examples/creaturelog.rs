@@ -3,7 +3,7 @@
 //! of the square ahead. Used to find where a creature's state parts from the
 //! original's draw log (docs/05, "Draw log").
 //!
-//! Usage: creaturelog THING_HEX [END_TICK]   (thing reference & 0x3FFF)
+//! Usage: [LOAD=SAVE] creaturelog THING_HEX [END_TICK]   (thing reference & 0x3FFF)
 use std::rc::Rc;
 
 use dm2_engine::{assets, creatures, creatures::data::CreatureData, data::GameData, state::GameState};
@@ -21,7 +21,11 @@ fn main() {
     let exe = std::fs::read(dm2_engine::exe_tables::default_exe_path()).expect("SKULL.EXE");
     let gdat = Rc::new(Gdat::open(assets::default_data_dir().join("GRAPHICS.DAT")).expect("GRAPHICS.DAT"));
     let cd = Rc::new(CreatureData::load(gdat, &exe).expect("creature data"));
-    let mut g = GameState::new_game_full(&a.dungeon, gd, Some(cd));
+    // LOAD=SAVE follows the creature from a save instead of a new game.
+    let mut g = match std::env::var("LOAD") {
+        Ok(path) => dm2_engine::save::read(std::path::Path::new(&path), gd, Some(cd)).expect("load"),
+        Err(_) => GameState::new_game_full(&a.dungeon, gd, Some(cd)),
+    };
     let mut last = String::new();
     while g.tick < end {
         let tick = g.tick;

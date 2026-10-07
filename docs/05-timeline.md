@@ -147,6 +147,17 @@ recorded log: 6,255 draws on both sides, the same tick and creature for
 every one. `tools/rngcmp.py` compares the original's log with the
 remake's ordered draws from `examples/rngseq`.
 
+**Resuming after a load (round 6).** The original's first tick after
+loading runs one weather step before the per-map creature pass, then the
+usual weather step at the end of the tick: two weather draws around the
+activations. The remake does the same when play resumes after a load
+(and after a save, which takes the loaded state's flags). Compare a save
+written by the remake with its trailer stripped, since the original reads
+only the 16 low bits of the random state from the save stream. From the
+pit probe's save, the draw stream then matches the original's for the
+whole first tick (90 draws) and parts at tick 1702, where the planner
+chooses differently (docs/08, goal kinds 6 and 7).
+
 **Result (round 4).** Idle new game, original against remake: 663 against
 666 thinks over ticks 2-157, 36.2 against 35.9 draws per tick, and ticks 0-1
 draw 420 against 419.
@@ -809,10 +820,13 @@ On landing:
 - **Damage path:** the fall damage goes through the champion damage routine
   (0x4722A) with parts mask 0x30 (legs and feet) and attack type 2 (0x4AAE7).
   The remake used type 0. Checked in DOSBox with a positioned save stepping
-  into the pit on map 4 at (5,5): both land on map 7 at (5,11) facing north;
-  the original took 31 damage, the remake now 37 (19 with type 0). The
-  remaining gap is in random values after loading (the random state already
-  differs a few ticks in); open.
+  into the pit on map 4: both land on map 7 at (5,11) facing north. The
+  apparent 31-against-37 difference was the step landing on different
+  ticks: the original's draw log puts its fall roll at tick 1707. With the
+  remake's step on that tick, both roll a base of 17 and deal 32 damage to
+  the legs and feet (defence 7: leg armour 9, foot armour 12, ninja level
+  2), and both show 51/83 health after a point of regeneration, with the
+  same food and water.
 
 - **Normal fall:** every living champion takes `(min(max health / 4,
   17) + rand4()) × levels fallen` damage through 0x4722A, to the legs and

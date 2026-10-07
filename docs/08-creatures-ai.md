@@ -724,7 +724,7 @@ opcode `T` and by two other AI helpers.
 | 3 | The square is the slot's home (+0x0C), or its map-edge alias |
 | 4 | Two squares from the party |
 | 5 | Flee: keeps the square farthest from the party (distances on other layers doubled), optionally gated by a 16-bit LFSR at 0x752E8 |
-| 6, 7 | A path toward the party exists (0x2C404, move flags 1 and 0), filtered by the item mask |
+| 6, 7 | A path toward the party exists (0x2C404, move flags 1 and 0), filtered by the item mask. This can hold on the start square itself, so a creature on the party's map with the party in reach picks this goal ahead of a type-0 fallback later in the list. The remake still approximates it as "next to the party" (0x2C404 is not ported), so such a creature idles instead of setting off; this is where a draw stream recorded with the party near creatures first parts from the original |
 | 8, 9 | A thing search (0x2C0A2) finds a matching item or object at the square, filtered by the item mask at 0x7F574; it also records where |
 | 0x0A | On the party's map, when the current action allows it: a path in the creature's own facing (0x2C404) |
 | 0x0B | A square remembered in the search's scratch record, or its map-edge alias |

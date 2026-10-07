@@ -208,6 +208,11 @@ impl GameState {
         crate::rng::trace_context(Some(self.tick), Some(0));
         if self.play_start_pending {
             self.play_start_pending = false;
+            // Resuming play after a load runs one weather step before the
+            // per-map creature pass: the original's draw log shows a weather
+            // draw ahead of the activations on the first tick, as well as
+            // the usual one at the end of the tick.
+            crate::weather::tick(self);
             crate::creatures::pass_all_maps(self);
         }
         self.walk = self.walk.and_then(|(p, n)| (n > 1).then_some((p, n - 1)));

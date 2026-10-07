@@ -19,9 +19,18 @@ fn main() {
     // Start before the new game so its setup draws (creature pass,
     // activations, recruit) are logged under tick 0, as in the original.
     rng::trace_seq_start();
-    let mut g = GameState::new_game_full(&a.dungeon, gd, Some(cd.clone()));
+    // LOAD=SAVE starts from a save instead of a new game; STEP=F@TICK issues a
+    // forward step at that tick (to replay a probe of the original).
+    let mut g = match std::env::var("LOAD") {
+        Ok(path) => dm2_engine::save::read(std::path::Path::new(&path), gd, Some(cd.clone())).expect("load"),
+        Err(_) => GameState::new_game_full(&a.dungeon, gd, Some(cd.clone())),
+    };
+    let step: Option<u32> = std::env::var("STEP").ok().and_then(|s| s.strip_prefix("F@").and_then(|t| t.parse().ok()));
     let _ = creatures::set_data;
     while g.tick < end {
+        if step == Some(g.tick) {
+            g.push_command(dm2_engine::state::Command::Move(dm2_engine::world::Move::Forward));
+        }
         g.advance();
     }
     let frames = rng::trace_seq_frames_take();
