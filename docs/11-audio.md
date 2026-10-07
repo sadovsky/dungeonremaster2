@@ -422,6 +422,16 @@ copy as C:. The user's install and save files are never written.
 `tools/sfx_bump.sh`, `tools/sfx_bump_cap.sh` and `tools/sfx_env.py` repeat
 the wall-bump measurement.
 
+**Effects level.** The remake played samples at full digital scale
+against FM music scaled by its calibrated gain, so its effects sat about
+18 dB too loud. Samples now get their own gain (`SFX_GAIN`, 0.127, which
+is -17.9 dB) on top of the digital master volume. With it the remake's
+wall-bump cry peaks at -27.2 dB effects-only, against -27.4 dB for the
+original, and with music on it sits about 5 dB below the music level, as
+the original's does. Absolute peaks differ between DOSBox's own wave
+capture and the PulseAudio monitor, so compare balances within one
+recording rather than peaks across capture paths.
+
 **Sample fallback (0x15BAA).** The play wrapper 0x15BAA takes a fallback
 index (0xFE in every traced call). When the requested index has no sample,
 it substitutes the fallback before the play function's checks, so a

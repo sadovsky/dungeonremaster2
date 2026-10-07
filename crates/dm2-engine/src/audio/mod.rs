@@ -31,6 +31,10 @@ use sfx::{Sfx, SoundRequest};
 /// FM output scale at the default music level, calibrated so map 0's song
 /// matches the original's level in DOSBox (docs/11, "Mixer levels").
 const MUSIC_GAIN: f32 = 0.18;
+/// Sample playback gain relative to the FM music scale. Calibrated on the
+/// wall-bump cry recorded from the original in DOSBox (docs/11): at full
+/// digital master the remake's cry peaked 17.9 dB above the original's.
+const SFX_GAIN: f32 = 0.127;
 /// Loudness exponent of the song volume during a fade (amplitude goes as
 /// (volume / 127)^FADE_EXP); fitted to the original's stairs fade.
 pub const FADE_EXP: f32 = 2.5;
@@ -249,7 +253,7 @@ impl Audio {
             }
         }
         // Samples play at the digital master volume (0x7FFF = full scale).
-        self.sfx.volume = digital_master(self.digital_level) as f32 / 32767.0 * self.sfx_volume;
+        self.sfx.volume = SFX_GAIN * digital_master(self.digital_level) as f32 / 32767.0 * self.sfx_volume;
         self.sfx.mix(out, self.sample_rate);
         for s in out.iter_mut() {
             *s = s.clamp(-1.0, 1.0);
