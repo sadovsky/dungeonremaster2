@@ -883,7 +883,8 @@ fn draw_ceiling_hole(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell
         return;
     }
     let flip = if c == 0 { cx.par } else { HOLE_FLIP[c] };
-    let r = Req { flip, ..Req::new(8, cx.set, HOLE_SUB[c], HOLE_LAYOUT[c]) };
+    let key = Some(attr(a, 8, cx.set, 100) as u8);
+    let r = Req { flip, key, depth: Some(DEPTH[c]), ..Req::new(8, cx.set, HOLE_SUB[c], HOLE_LAYOUT[c]) };
     draw(a, buf, cx, r);
 }
 
@@ -898,7 +899,9 @@ fn draw_pit(a: &mut Assets, buf: &mut Bitmap, cx: &mut Ctx, cell: &Cell, c: usiz
     }
     let sub = if alt { PIT_SUB_ALT[c] } else { PIT_SUB[c] };
     let flip = if c == 0 { cx.par } else { PIT_FLIP[c] };
-    let r = Req { flip, ..Req::new(8, cx.set, sub as u8, PIT_LAYOUT[c] as u16) };
+    // Keyed with the set's default colour and lit by depth, like stairs.
+    let key = Some(attr(a, 8, cx.set, 100) as u8);
+    let r = Req { flip, key, depth: Some(DEPTH[c]), ..Req::new(8, cx.set, sub as u8, PIT_LAYOUT[c] as u16) };
     draw(a, buf, cx, r);
 }
 

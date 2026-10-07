@@ -51,7 +51,9 @@ fn pinned_views() {
         ((3, 10, 9, 0), 0x8cea3120aed4479b),
         ((6, 8, 8, 1), 0x53566c2c295f1b8f),
         // A depth-4 front-face ornament is now drawn (cells 16-20 show ornaments).
-        ((4, 6, 11, 2), 0x50fac760491539ff),
+        // two open pits in view: pits are now keyed and lit by depth (pit view verified
+        // pixel-exact against the original at (4, 5, 6, N)).
+        ((4, 6, 11, 2), 0x97a23aa9bbe135b2),
         // Stairs ahead: keyed with the set's default colour and lit by depth,
         // verified pixel-exact against the original at (8, 12, 2, N).
         ((8, 12, 3, 0), 0x66acb89dc0519ff1),
@@ -67,7 +69,9 @@ fn pinned_views() {
         // fell from 26,124 to 22,952 pixels, the rest being time-of-day
         // colour and light, which are not modelled yet.
         ((1, 2, 9, 0), 0x7586a0ef0929a2f2),
-        ((5, 12, 23, 0), 0x5ab19ad645935b17),
+        // four open pits in view: pits are now keyed and lit by depth (pit view verified
+        // pixel-exact against the original at (4, 5, 6, N)).
+        ((5, 12, 23, 0), 0x3c7b5b0bdb0b5a81),
     ];
     let mut bad = Vec::new();
     for ((m, x, y, d), want) in views {
