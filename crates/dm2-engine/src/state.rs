@@ -131,8 +131,12 @@ impl GameState {
         let mut g = GameState::new_game(dungeon);
         g.attrs = Attributes::from_gdat(&data.gdat);
         g.data = Some(data);
-        crate::party::recruit_starting_champion(&mut g);
+        // The original's order: the loader starts the weather (0x59F38), then
+        // walks every creature (0x3624F), and only then is the starting
+        // champion recruited; each step draws random numbers.
         crate::weather::new_game(&mut g);
+        crate::new_game::init_creatures(&mut g);
+        crate::party::recruit_starting_champion(&mut g);
         g
     }
 

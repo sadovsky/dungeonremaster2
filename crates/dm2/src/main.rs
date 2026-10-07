@@ -1001,7 +1001,11 @@ mod screen_tests {
     fn pinned_interface_screens() {
         let cases: [(&str, &[u16], u64); 5] = [
             ("start", &[], 0x5419f7d0883bebfb),
-            ("inventory", &[7], 0xd54bfe305cc1b708),
+            // The food/water bars depend on the starting champion's random
+            // food and water, drawn after the weather and creature passes
+            // as in the original (new_game.rs); the values still differ
+            // from the original's until its per-tick draws are modelled.
+            ("inventory", &[7], 0xc888e6df95b3a919),
             ("action menu", &[0x75], 0xb1c79885b597f7c3),
             ("paused", &[0x90], 0xf6498d891cf26ca8),
             ("eye, empty hand", &[7, 0x47], 0xe6d8a3c85198e6ad),

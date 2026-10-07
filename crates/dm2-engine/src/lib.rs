@@ -33,6 +33,7 @@ pub mod magic;
 pub mod map_entry;
 pub mod missiles;
 pub mod movement;
+pub mod new_game;
 pub mod party;
 pub mod potions;
 pub mod rng;

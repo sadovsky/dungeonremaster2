@@ -39,8 +39,34 @@ Seeding: the state starts at 0 in the executable's data. The only other
 writer is the load path (0x370D2), which restores it from offset +4 of the
 60-byte game header block read with the saved game. It is also written into
 saves (0x3502B). There is no time-based seeding, so a new game is
-deterministic given identical input timing. Open: confirm whether starting
-a new game from DUNGEON.DAT reads a header block (and so a seed) or keeps 0.
+deterministic given identical input timing.
+
+**Measured against the original (DOSBox).** A new game starts from seed 0.
+Three separate new games saved at ticks 57, 92 and 158 stored generator
+states whose low 16 bits each match exactly one plausible draw count from
+seed 0: about 2,422, 3,728 and 6,309 draws. All three runs started with
+the same food and water, which from seed 0 are draws 121 and 122. So:
+
+- before the starting champion is recruited the original makes 120 draws;
+- after that it draws about 37-39 times per tick, even with the party
+  idle in the starting cave.
+
+The remake now follows the original's new-game order (weather start 0x59F38,
+then the creature pass of 0x3624F, then the recruit), but makes 32 draws
+before the recruit and about 1 per tick while idle. The remaining startup
+draws and the per-tick source (not yet identified; rendering-time draws,
+off-map creature updates and periodic sensors are candidates) are open, so
+the remake's random results do not yet line up with the original's.
+
+**New-game creature pass (0x3624F, creature case).** While the dungeon
+loads for a new game, every creature group on every map (in map, column,
+row and list order) gets its type's base hit points (info word +4) in
+record word +6. If the type's info byte 0 bit 0 is clear, word +10 is
+cleared and word +0xC records the group's home square (x in bits 0-4, y in
+bits 5-9, map in bits 10-15). If it is set, words +8 and +10 are cleared
+and, unless record byte +0xE bit 7 is set, each link of the possession
+chain gets a random cell from a 2-bit draw (0x1C6F6), starting with the
+group's own possession word.
 
 Every call site advances the shared state, so the order of calls matters if
 the remake wants identical behaviour. The `random(n)` helper only advances
@@ -796,7 +822,7 @@ that cell:
 
 ## Open questions
 
-- New-game RNG seed: confirm it stays 0, or comes from a header.
+- The original's per-tick random draws (about 37-39 per tick when idle) and the 88 startup draws the remake still lacks before recruiting.
 
 - The charges that alcove 0x1A gives a newly
   created item (the engine leaves them at the default).

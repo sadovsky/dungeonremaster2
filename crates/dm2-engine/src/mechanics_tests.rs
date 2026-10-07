@@ -514,3 +514,40 @@ fn move_attempts_cost_stamina() {
     movement::party_command(&mut g, Move::Forward);
     assert_eq!(before - g.champions[0].stamina() as i32, 2 * cost);
 }
+
+/// The new-game creature pass (0x3624F): every creature group starts at its
+/// type's base hit points, and types whose info flag bit 0 is clear record
+/// their home square in word +0xC.
+#[test]
+fn new_game_initialises_creatures() {
+    let Some(gd) = crate::data::GameData::load_default() else { return };
+    let Ok(bytes) = std::fs::read(default_data_dir().join("DUNGEON.DAT")) else { return };
+    let dg = Dungeon::parse(&bytes).unwrap();
+    let gd = std::rc::Rc::new(gd);
+    let g = GameState::new_game_with(&dg, gd.clone());
+    let info = |ty: u8, off: u32| {
+        let idx = g.attrs.get(15, ty, 5) as u32;
+        gd.exe.u8_at(0x71968 + 36 * idx + off).unwrap()
+    };
+    let mut checked = 0;
+    for (m, md) in g.dungeon.maps.iter().enumerate() {
+        for x in 0..md.width as i32 {
+            for y in 0..md.height as i32 {
+                for t in g.dungeon.things_at(m, x, y) {
+                    if t.kind() != ThingType::Creature {
+                        continue;
+                    }
+                    let ty = g.dungeon.record(t).unwrap()[4];
+                    let base = u16::from_le_bytes([info(ty, 4), info(ty, 5)]);
+                    assert_eq!(g.dungeon.record_word(t, 3), Some(base), "hp of type {ty}");
+                    if info(ty, 0) & 1 == 0 {
+                        let home = (x as u16) | (y as u16) << 5 | (m as u16) << 10;
+                        assert_eq!(g.dungeon.record_word(t, 6), Some(home));
+                    }
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert!(checked > 100, "checked {checked} creature groups");
+}

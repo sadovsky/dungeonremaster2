@@ -467,7 +467,10 @@ mod tests {
     // Backdrops are keyed with the map set's colour key and weather layers
     // draw behind the landmarks (checked against the original's outdoor
     // captures in DOSBox).
-    const PINNED_OUTDOOR: (u64, u64, u64) = (0x6d709e3cb00e2ea7, 0xe25ac480f2385f8d, 0x3bffddab2fc9c966);
+    // The rain hash moves whenever the new-game random sequence does: streak
+    // placement is seeded from it (it changed when the weather and creature
+    // passes were moved ahead of recruiting, as in the original).
+    const PINNED_OUTDOOR: (u64, u64, u64) = (0x6d709e3cb00e2ea7, 0xe25ac480f2385f8d, 0x7bf5c5f843b10a62);
 
     fn game() -> Option<GameState> {
         let gd = Rc::new(GameData::load_default()?);
