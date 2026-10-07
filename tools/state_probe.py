@@ -112,12 +112,31 @@ def start(load=False):
     return p, w
 
 
+# DM2_PROBE_SHOTS=DIR captures the window after each save-dialog click, to
+# see where a save sequence goes wrong.
+SHOTS = os.environ.get('DM2_PROBE_SHOTS')
+# DM2_PROBE_SAVE_WAIT: seconds (times SLOW) to keep DOSBox running after the
+# final Save click, so a slow build finishes writing the file.
+SAVE_WAIT = float(os.environ.get('DM2_PROBE_SAVE_WAIT', '5'))
+
+
+def shot(w, name):
+    if SHOTS:
+        Path(SHOTS).mkdir(parents=True, exist_ok=True)
+        subprocess.run(['import', '-window', str(w), str(Path(SHOTS) / f'{name}.png')], check=False)
+
+
 def save(w, slot):
     click(w, 20, 5, wait=1.5)              # champion box: open inventory
+    shot(w, '1_inventory')
     click(w, 178, 47, wait=2)              # save disk
+    shot(w, '2_save_menu')
     click(w, 57, 114, wait=3)              # Save
-    click(w, 90, 53 + 8 * slot, wait=1)    # slot row (save list: slot n at y = 53 + 8n)
-    click(w, 57, 151, wait=5)              # Save
+    shot(w, '3_slot_list')
+    click(w, 90, 55 + 7 * slot, wait=1)    # slot row (save list: slot n's name at y = 55 + 7n)
+    shot(w, '4_slot_chosen')
+    click(w, 57, 151, wait=SAVE_WAIT)      # Save
+    shot(w, '5_after_save')
 
 
 def stamps(data):
@@ -164,6 +183,7 @@ def main():
         sys.exit('ERROR: the install\'s save files changed')
     out = DATA / f'SKSAVE{slot}.DAT'
     print('save:', out if out.exists() else 'NOT WRITTEN')
+    print('saves in the copy:', sorted(f.name for f in DATA.glob('SKSAVE*')))
     print('inputs', log)
 
 
