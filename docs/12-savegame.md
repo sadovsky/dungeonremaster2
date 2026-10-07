@@ -216,9 +216,26 @@ has the higher index.
    0x1D/0x1E flight timer; 0x594A1 refreshes clock actuators. Then
    0x4AE20 places the party on (x, y, map). The .BAK rename happens if
    the .BAK was used.
-6. The game-start initialisation 0x551D4 calls 0x342A3, which frees every
-   creature slot and sets byte +5 of every creature record to 0xFF
-   (inactive).
+6. Back in 0x55310, 0x342F9 sizes the active-creature slot pool:
+   min(in-use creature records whose type has info flag bit 0 clear +
+   100, the creature record count). The slots are not cleared yet.
+7. The game-start initialisation 0x551D4 first runs the map-change routine
+   0x24629 for the party's map (leave/enter pass and creature activation,
+   `05-timeline.md` "Map transitions"), and only then calls 0x342A3, which
+   frees every creature slot, sets byte +5 of every creature record to
+   0xFF (inactive) and activates every map's creatures through 0x34236.
+
+**SYSTEM ERROR 71.** Step 7's order matters. If the party's map still
+has a first-entry spawn text that hasn't fired, the enter pass creates
+that creature and places it, placing activates it (0x306A8), and no slot
+can be found or freed before 0x342A3 has run, so the game stops with
+error 0x47 while the "Loading game" box is still up. Normal play never
+saves that state, because arriving on a map runs its spawns. A save made
+by moving the party some other way does: the remake's `posave` example
+did this until it moved the party through `movement::arrive`. The
+remake models the hazard as `save::original_load_hazard` (the pending
+spawns on the party's map), and its own map changes run the pass, so its
+saves don't carry it.
 
 ### Rebuilding the dynamic objects (0x35B97)
 
@@ -280,7 +297,11 @@ and writing them back reproduces their bit stream exactly
 (`examples/savediff.rs` names the first diverging field; the test
 `original_saves_rewrite_with_identical_streams` checks any trailer-less
 `SKSAVEn.DAT` in the data directory). The original also loads a save
-written by the remake and plays on from the same view.
+written by the remake and plays on from the same view. Saves written by
+the remake with the party placed on maps 2, 3 and 5 (each with a
+first-entry spawn, moved there through the arrival path) load in the
+original and reach the game screen; before the map-entry pass existed,
+the same placements stopped with SYSTEM ERROR 71.
 
 For the snapshot, the remake writes its post-load state. Compared with
 the original's save made 92 ticks after loading the same file, every
