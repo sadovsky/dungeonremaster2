@@ -221,6 +221,45 @@ probe's save at the end of a run, even with waits stretched 2.5 times
 (`DM2_PROBE_SLOW`), so a field-by-field save comparison needs the plain
 build with a separately timed run.
 
+**Round 9: status refresh in set selection.** The tick-58 divergence on map
+22 was set selection, not scheduling. 0x259CC's opening raw draw is not
+discarded: the disassembly (the decompile drops the block) uses it to refresh
+several status bits before a set is chosen, and the first of them clears bit
+15 for a creature on the party's map. The remake kept bit 15 from activation,
+so creature 0x109C chose the 0x8000 set (the one-entry wander list) instead
+of the default set. With the refresh ported (`refresh_status`, see docs/08)
+the combat probe matches the original draw for draw through tick 59, the pit
+run through tick 1711, and the idle run stays identical through tick 156.
+
+Next divergence, at tick 60 of the combat probe, traced with the hooked build
+(`DM2_HOOKADDRS=26008,25C59,27CD2,2923E`, `DM2_WATCH=752E8`):
+
+- Creature 0x109C's default list has a kind 0x0D goal (program 14, argument
+  2, limit 4). Planner case 0x0D tests a square at distance 1 or more; with a
+  positive argument it passes only when a private 16-bit shift register at
+  0x752E8 comes up 1 in 8 (shift right, XOR 0xB400 when the outgoing bit was
+  set). The register is separate from the game's random number generator,
+  starts at 1 (the executable's value), is not saved, and in the original had
+  taken 28 steps by tick 57 of the probe and exactly one at 0x109C's tick-58
+  search, which passed (0x9BD8).
+- Yet the original does not start program 14: on thinks at ticks 58, 65 and
+  74 it enters the picker (0x26008) and dispatches opcode `C` without calling
+  the program start (0x25C59), and only starts a program at tick 80. Program
+  14 begins `Q`, `A`, `C`, and `Q` would have rolled (type 9's chance is 9),
+  so the original is running a `C` row it already holds. The remake's slot
+  holds no program after the load. The likely mechanism is the think's
+  "keep the current program" path reading the program table at index -1 when
+  the slot has none, as the class-flag lookup does (round 4); not confirmed.
+- Planner kind 0x0A (case `\n`): on the party's map, for creature types whose
+  flag byte at 0x75136 has bits 0-1 clear, it runs the path test (0x2C404)
+  with no target square and the creature's facing (record word +0x0E bits
+  8-9) as direction, so it matches when the party stands on the square ahead.
+
+Porting kind 0x0D alone made the remake start program 14 and roll `Q`, which
+shortened the combat match to tick 58, so kinds 0x0A and 0x0D are documented
+here but not yet ported; they need the picker's "keep" result and the
+think's continuation path traced first. Combat itself has not been compared.
+
 **Combat probe (round 7).** With the party moved next to the awake
 creature 0x1023 on map 4 (party at (5,14) facing north, the creature at
 (5,13), from the pit probe's save), the original reached its game-over

@@ -219,7 +219,15 @@ Each class has a list of 7-byte entries (pointer at 0x7F584 + 2):
 **Choosing the list (0x25962, 0x259CC).** The class's entry in the
 pointer table at 0x7518C leads to a list of 6-byte *behaviour sets*: a
 16-bit condition mask and a pointer to a behaviour list, ending with a
-zero mask (whose list is the default). Before choosing, status bit 3
+zero mask (whose list is the default). First, the selection's opening
+raw draw r refreshes status bits (read from the disassembly; the decompile
+drops this block): bit 15 is cleared when the creature is on the party's
+map, and otherwise set (clearing bit 14) when r has no bits in common with
+0x70 while a program runs, or 0x30 when none does; while bit 15 is clear,
+bit 14 toggles when r misses 0x380 (badly hurt) or 0xF80; bit 5 is cleared
+when r modulo (16 minus info word 0x16 bits 4-7) is 0; bit 13 is set for
+classes with flag byte 1 bit 2 and otherwise cleared when r misses 0x38;
+bits 4, 6 and 12 are cleared when r misses 0x3000, 3 and 0x8008. Then status bit 3
 ("badly hurt") is refreshed with probability 1/n, where n is 2 when the
 class has flag 0x02 and otherwise depends on the low two bits of the
 creature's thing index: the bit is set when HP is under 25% of the base
