@@ -38,7 +38,7 @@ Helpers used everywhere: 0x1C67E = min (signed 16-bit), 0x1C687 = max,
 | 0x7F234 | Party asleep. Skill levels read as 1, dexterity is halved, regen rates double |
 | 0x7F23C | When set, champions take no damage (cheat/scripted invulnerability) |
 | 0x7F22C | Game time (ticks) |
-| 0x7F19C | Time of the party's last move; used for resting bonuses |
+| 0x7F19C | Tick the party formed: stamped by the recruit routine (0x49A17) when the first champion joins, and never updated by moving. Upkeep's stamina rate gains +1 once 0x50 ticks have passed since, and +1 more after 0xFA. (Earlier notes called this the last move; a 22-step walk measured in DOSBox left it at 0.) |
 | 0x716A0 | Time a creature last attacked the party; gates combat experience |
 | 0x7F26A/0x7F26E | Party map X / Y; 0x7F252 (high byte) party facing |
 | 0x7FBAC | Pending damage per champion (applied by the screen update, not immediately) |

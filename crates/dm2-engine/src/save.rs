@@ -452,7 +452,7 @@ fn globals_record(g: &GameState, timers: usize) -> [u8; GLOBALS_LEN] {
     r[0x00..0x04].copy_from_slice(&g.tick.to_le_bytes());
     r[0x04..0x08].copy_from_slice(&g.rng.state.to_le_bytes());
     r[0x16..0x1A].copy_from_slice(&g.party_status.last_attacked.to_le_bytes());
-    r[0x1A..0x1E].copy_from_slice(&g.party_status.last_moved.to_le_bytes());
+    r[0x1A..0x1E].copy_from_slice(&g.party_status.party_formed.to_le_bytes());
     crate::weather::write_globals(&g.weather, &mut r);
     r
 }
@@ -791,7 +791,7 @@ fn engine_trailer(g: &GameState, events: &[(u16, Event)]) -> Vec<u8> {
     o.u8(p.invulnerable as u8);
     o.u16(p.recruiting.map_or(0xFFFF, |r| r as u16));
     o.u32(p.last_attacked);
-    o.u32(p.last_moved);
+    o.u32(p.party_formed);
     o.u16(p.regen_counter);
     for i in 0..MAX_CHAMPIONS {
         o.u16(p.pending_damage[i] as u16);
@@ -837,7 +837,7 @@ fn apply_trailer(g: &mut GameState, b: &[u8]) -> Result<(), SaveError> {
     p.invulnerable = i.u8()? != 0;
     p.recruiting = Some(i.u16()?).filter(|&r| r != 0xFFFF).map(usize::from);
     p.last_attacked = i.u32()?;
-    p.last_moved = i.u32()?;
+    p.party_formed = i.u32()?;
     p.regen_counter = i.u16()?;
     for k in 0..MAX_CHAMPIONS {
         p.pending_damage[k] = i.u16()? as i16;
@@ -941,7 +941,7 @@ pub fn from_bytes(b: &[u8], data: Rc<GameData>, creatures: Option<Rc<CreatureDat
     let leader = g16(0x12);
     g.leader = (leader != 0xFFFF && (leader as usize) < g.champions.len()).then_some(leader as usize);
     g.party_status.last_attacked = g32(0x16);
-    g.party_status.last_moved = g32(0x1A);
+    g.party_status.party_formed = g32(0x1A);
     // Rebuild the dynamic objects from the stream, as the original does.
     rebuild::run(&mut g, &mut r, &t, header_marker)?;
 

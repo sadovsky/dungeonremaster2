@@ -106,6 +106,35 @@ fn first_ticks_draw_like_the_original() {
 }
 
 #[test]
+fn walk_upkeep_matches_the_original() {
+    // Measured in DOSBox: a new game walking a 22-step loop of map 0 (moves
+    // logged at these ticks by the hooked build, turns about 5 ticks after
+    // the move before them) saves at tick 217 with food 1683 and water 1679.
+    // Upkeep's rest bonus counts from the party's formation (0x7F19C), not
+    // from the last move, which is what the 4 food and 2 water at tick 128
+    // depend on.
+    use crate::state::Command;
+    use crate::world::Move;
+    let Some((g0, d)) = load() else { return };
+    let Some(gd) = crate::data::GameData::load_default() else { return };
+    let mut g = GameState::new_game_full(&g0.dungeon, Rc::new(gd), Some(d));
+    let moves = [34, 41, 47, 53, 60, 66, 73, 84, 90, 97, 103, 114, 121, 127, 133, 139, 146, 152, 164, 170, 176, 183];
+    let turns = [78, 108, 157];
+    while g.tick < 217 {
+        if moves.contains(&g.tick) {
+            g.push_command(Command::Move(Move::Forward));
+        }
+        if turns.contains(&g.tick) {
+            g.push_command(Command::TurnRight);
+        }
+        g.advance();
+    }
+    let c = &g.champions[0];
+    assert_eq!((g.party.map, g.party.x, g.party.y, g.party.dir), (0, 1, 8, 3));
+    assert_eq!((c.stamina(), c.food(), c.water()), (770, 1683, 1679));
+}
+
+#[test]
 fn idle_creatures_think_as_often_as_the_original() {
     // Original, ticks 2-157 of an idle new game: 663 thinks and 36.2 draws
     // per tick. The off-map slowdown applies only on frames that loaded the

@@ -257,7 +257,6 @@ impl GameState {
                     let t = champions::party_move_time(&self.champions, &self.party_status, &mut self.rng);
                     self.walk = (t > 1).then_some((from, (t >> 1) as u16));
                     self.move_ready = self.tick + t as u32;
-                    self.party_status.last_moved = self.tick;
                 }
             }
         }
