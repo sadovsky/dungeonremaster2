@@ -181,6 +181,9 @@ pub fn script_condition(g: &GameState, n: u16) -> bool {
 /// (0x25962 / 0x259CC). Returns the behaviour list address.
 fn select_set(g: &mut GameState, d: &CreatureData, ctx: &Ctx) -> u32 {
     let c = ctx.thing;
+    // Set selection loads the AI class index, even for the cheap wander
+    // lists that skip the context setup.
+    g.creature_class_loaded = true;
     // 0x259CC starts with a raw draw whose value it doesn't use; it still
     // advances the random stream.
     g.rng.rnd();
@@ -280,23 +283,50 @@ pub fn context_roll(g: &mut GameState, ctx: &Ctx) {
         return;
     }
     g.creature_ctx_rolled = true;
+    g.creature_class_loaded = true;
     let n = (15 - (ctx.info.alertness_word() & 15)) * 2;
     g.creature_alert_roll = g.rng.random(n + 1);
+}
+
+/// The wander list's think (0x262F7, list 0x73392, read from the
+/// disassembly): one raw draw r = rnd & 7. r 4-7 stands still; r 0 turns to
+/// face (tick & 3) through 0x2C005; r 1-3 looks at the square ahead in the
+/// current facing, records it as the target, and walks there (action 2)
+/// unless it is a wall or solid rock, or a map-edge link (0x1D113) to a map
+/// whose creature list lacks this type (0x1F9FF).
+fn wander(g: &mut GameState, ctx: &Ctx) {
+    let r = g.rng.rnd() & 7;
+    if r > 3 {
+        set_action(g, ctx, action::IDLE);
+        return;
+    }
+    if r == 0 {
+        queue_turn(g, ctx, (g.tick & 3) as u8);
+        return;
+    }
+    let f = facing(g, ctx.thing) as usize;
+    let (tx, ty) = (ctx.x + DX[f], ctx.y + DY[f]);
+    ctx.slot_mut(g).target = super::slot::Packed::new(ctx.map, tx, ty);
+    let blocked = match g.dungeon.square(ctx.map, tx, ty).element() {
+        Element::Wall | Element::Rock => true,
+        Element::Teleporter => crate::movement::edge_link(g, ctx.map, tx, ty)
+            .is_some_and(|link| !g.dungeon.map_lists(link.map).creature_types.contains(&ctx.ty)),
+        _ => false,
+    };
+    set_action(g, ctx, if blocked { action::IDLE } else { action::WALK_NEAR });
 }
 
 /// Think (0x262F7): choose and start the next action.
 pub fn think(g: &mut GameState, d: &CreatureData, ctx: &Ctx) {
     let list = select_set(g, d, ctx);
     let mode: u8 = if ctx.cflags & 0x40 != 0 { 0 } else if ctx.cflags & 0x20 == 0 { 5 } else { 4 };
-    if WANDER_LISTS.contains(&list) {
-        // Cheap random wander.
-        let r = g.rng.rnd() & 0x7F;
-        if r < 4 {
-            let dir = if r == 0 { (g.tick & 3) as u8 } else { g.rng.rand4() as u8 };
-            if !move_test(g, ctx, dir, mode) {
-                queue_turn(g, ctx, dir);
-            }
-        }
+    if list == WANDER_LISTS[0] {
+        // 0x262F7, list 0x73399: stand still, no draws.
+        set_action(g, ctx, action::IDLE);
+        return;
+    }
+    if list == WANDER_LISTS[1] {
+        wander(g, ctx);
         return;
     }
     // Context setup with its alertness roll (0x24BFC), then a two-bit draw
@@ -768,6 +798,7 @@ pub fn frame_delay(g: &mut GameState, ctx: &Ctx, an: &Anim) -> u16 {
 /// its draw log shows the extra-tick and jitter draws there but no
 /// off-map bit, which appears on every later step.
 pub fn frame_delay_ex(g: &mut GameState, ctx: &Ctx, an: &Anim, allow_off_map: bool) -> u16 {
+    crate::rng::trace_tag("frame", (ctx.thing.0 & 0x3FF) as u32);
     let s = ctx.slot(g).clone();
     let off = if s.seq_off == NO_FRAME { 0 } else { s.seq_off };
     let f = an.frame(s.seq_start, off);
@@ -803,7 +834,17 @@ pub fn frame_delay_ex(g: &mut GameState, ctx: &Ctx, an: &Anim, allow_off_map: bo
     }
     let extra = if f.extra_ticks() != 0 { g.rng.random(f.extra_ticks()) } else { 0 };
     let mut delay = extra + f.base_ticks();
-    let off_map = allow_off_map && ctx.map != g.party.map && ctx.cflags >> 16 & 1 == 0;
+    // 0x3023F reads the class flags through the loaded class index, which is
+    // -1 unless this event loaded the context (think or a frame event), so a
+    // plain frame step sees the entry before the table. In the shipped data
+    // that entry has the bit set, so plain steps never take the off-map
+    // slowdown: only the frames that loaded the context run four times slower.
+    let cflags = if g.creature_class_loaded {
+        ctx.cflags
+    } else {
+        g.creature_data.as_ref().map_or(ctx.cflags, |d| d.class_flags_unloaded())
+    };
+    let off_map = allow_off_map && ctx.map != g.party.map && cflags >> 16 & 1 == 0;
     if s.action == ACTION_DIE && g.party_status.counter_0b != 0 && ctx.info.flags1() & 0x10 == 0 {
         delay *= 3;
     } else if off_map && st & 0x8000 != 0 && st & 2 == 0 {

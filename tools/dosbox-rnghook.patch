@@ -1,6 +1,6 @@
 --- a/src/cpu/core_normal.cpp
 +++ b/src/cpu/core_normal.cpp
-@@ -136,9 +136,36 @@
+@@ -136,9 +136,98 @@
  
  #define EALookupTable (core.ea_table)
  
@@ -19,15 +19,77 @@
 +	}
 +	if (!dm2_log) return;
 +	PhysPt ip = core.cseip;
++	/* Once the code and data offsets are known (from the first random draw),
++	 * also log every entry to the frame-timing routine 0x3023F, draw or not:
++	 * "F tick creature seq_off status(+0x0A) armed(+0x21)". */
++	static Bit32u dm2_code_delta = 0, dm2_data_delta = 0;
++	/* DM2_HOOKADDRS: comma-separated flat code addresses; each entry is
++	 * logged as "H addr tick eax ebx" (e.g. 4b108 for the thing-move routine,
++	 * whose eax is the thing; 0xFFFF is the party). */
++	static Bit32u dm2_hooks[16];
++	static int dm2_nhooks = -1;
++	if (dm2_nhooks < 0) {
++		dm2_nhooks = 0;
++		const char * h = getenv("DM2_HOOKADDRS");
++		while (h && *h && dm2_nhooks < 16) {
++			char * end;
++			dm2_hooks[dm2_nhooks++] = (Bit32u)strtoul(h, &end, 16);
++			h = (*end == ',') ? end + 1 : 0;
++		}
++	}
++	if (dm2_code_delta) {
++		for (int i = 0; i < dm2_nhooks; i++)
++			if (ip == dm2_hooks[i] + dm2_code_delta)
++				/* Champion 0 (record at 0x7FBD0): stamina +0x3A, food +0x44,
++				 * water +0x46. */
++				fprintf(dm2_log, "H %x %u %x %x %d %d %d\n", dm2_hooks[i],
++					LoadMd(0x7F22C + dm2_data_delta), reg_eax, reg_ebx,
++					(Bit16s)LoadMw(0x7FBD0 + 0x3A + dm2_data_delta),
++					(Bit16s)LoadMw(0x7FBD0 + 0x44 + dm2_data_delta),
++					(Bit16s)LoadMw(0x7FBD0 + 0x46 + dm2_data_delta));
++	}
++	if (dm2_code_delta && ip == 0x3023F + dm2_code_delta) {
++		Bit32u d = dm2_data_delta;
++		Bit32u cr = LoadMw(0x7F548 + d);
++		Bit32u rec = LoadMd(0x7F54A + d), sl = LoadMd(0x7F552 + d), sq = LoadMd(0x7F55A + d);
++		Bit32u status = rec ? LoadMw(SegBase(ds) + rec + 10) : 0xffff;
++		Bit32u armed = sl ? LoadMb(SegBase(ds) + sl + 0x21) : 0xff;
++		Bit32u off = sq ? LoadMw(SegBase(ds) + sq + 2) : 0xffff;
++		fprintf(dm2_log, "F %u %x %x %x %x\n", LoadMd(0x7F22C + d), cr, off, status, armed);
++		return;
++	}
 +	if (LoadMb(ip) != 0x69 || LoadMb(ip + 1) != 0x05) return;
 +	if (LoadMd(ip + 6) != 0xBB40E62DU) return;
 +	Bit32u data_delta = LoadMd(ip + 2) - 0x70518;
++	if (!dm2_code_delta) {
++		static const Bit32u sites[3] = { 0x1C6A1, 0x1C6DC, 0x1C6F6 };
++		for (int i = 0; i < 3; i++)
++			if (((ip - sites[i]) & 0xfff) == 0) dm2_code_delta = ip - sites[i];
++		dm2_data_delta = data_delta;
++	}
 +	Bit32u tick = LoadMd(0x7F22C + data_delta);
 +	PhysPt sp = SegBase(ss) + reg_esp;
 +	/* 0x7F548: the thing reference of the creature whose AI context is loaded. */
 +	Bit32u creature = LoadMw(0x7F548 + data_delta);
-+	fprintf(dm2_log, "%u %x %x %x %x %x %x %x\n", tick, ip, data_delta,
-+		LoadMd(sp), LoadMd(sp + 4), LoadMd(sp + 8), LoadMd(sp + 12), creature);
++	/* 0x7F552: pointer to that creature's active slot (0x22 bytes); log its
++	 * program (+0x12), step (+0x13), queued action (+0x17) and action (+0x1A). */
++	Bit32u slot = LoadMd(0x7F552 + data_delta);
++	Bit32u prog = 0xffff, step = 0xffff, queued = 0xffff, action = 0xffff;
++	if (slot) {
++		PhysPt s = SegBase(ds) + slot;
++		prog = LoadMb(s + 0x12); step = LoadMb(s + 0x13);
++		queued = LoadMb(s + 0x17); action = LoadMb(s + 0x1a);
++	}
++	/* 0x7F55A: pointer to the loaded creature's (sequence start, offset) words. */
++	Bit32u seqp = LoadMd(0x7F55A + data_delta);
++	Bit32u seq_start = 0xffff, seq_off = 0xffff;
++	if (seqp) {
++		PhysPt q = SegBase(ds) + seqp;
++		seq_start = LoadMw(q); seq_off = LoadMw(q + 2);
++	}
++	fprintf(dm2_log, "%u %x %x %x %x %x %x %x %x %x %x %x %x %x\n", tick, ip, data_delta,
++		LoadMd(sp), LoadMd(sp + 4), LoadMd(sp + 8), LoadMd(sp + 12), creature,
++		prog, step, queued, action, seq_start, seq_off);
 +}
 +
  Bits CPU_Core_Normal_Run(void) {

@@ -198,6 +198,24 @@ impl CreatureData {
         self.u16_at(a) as u32 | (self.u16_at(a + 2) as u32) << 16
     }
 
+    /// The flags the original reads while no AI class is loaded: its class
+    /// index is reset to -1 at the start of every creature event (0x24A88)
+    /// and loaded only with the context (0x24BFC), so lookups made before
+    /// that read the table entry just before index 0.
+    ///
+    /// That entry is not flags at all but a 32-bit pointer that the loader
+    /// relocates (a fixup in SKULL.EXE): the file stores its offset into the
+    /// data object, and at run time the object's base is added. The test
+    /// reads bit 16 of the relocated value, which is set both at the
+    /// object's link address and at the load address measured in DOSBox,
+    /// so the relocation is applied here with the link-time base.
+    pub fn class_flags_unloaded(&self) -> u32 {
+        const DATA_OBJECT_BASE: u32 = 0x70000;
+        let a = CLASS_FLAGS - 4;
+        let stored = self.u16_at(a) as u32 | (self.u16_at(a + 2) as u32) << 16;
+        stored.wrapping_add(DATA_OBJECT_BASE)
+    }
+
     /// The class's behaviour sets: (condition mask, list address), ending
     /// with the zero-mask entry (included).
     pub fn behaviour_sets(&self, class: u16) -> Vec<(u16, u32)> {

@@ -268,8 +268,10 @@ pub struct PartyStatus {
     pub recruiting: Option<usize>,
     /// Tick a creature last attacked the party (0x716A0).
     pub last_attacked: u32,
-    /// Tick of the party's last move (0x7F19C).
-    pub last_moved: u32,
+    /// Tick the party formed (0x7F19C): set by the recruit routine (0x49A17)
+    /// when the first champion joins, and not touched by moving. Upkeep
+    /// regenerates faster once 0x50 and again 0xFA ticks have passed since.
+    pub party_formed: u32,
     /// Shared regeneration threshold (0x7FFF4).
     pub regen_counter: u16,
     /// Damage and wounds waiting for the screen update (0x7FBAC, 0x7FBA4).
@@ -666,7 +668,7 @@ pub fn regenerate(champions: &mut [Champion], party: &mut PartyStatus, tick: u32
             }
         }
         let mut rate = ((c.max_stamina() as i32 >> 8) - 1).clamp(1, 6);
-        let rested = tick.wrapping_sub(party.last_moved) as u16;
+        let rested = tick.wrapping_sub(party.party_formed) as u16;
         if rested > 0x50 {
             rate += 1;
             if rested > 0xFA {

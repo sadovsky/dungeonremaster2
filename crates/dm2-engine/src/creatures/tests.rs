@@ -81,6 +81,72 @@ fn new_game_draw_order_matches_the_original() {
     assert_eq!((c.food(), c.water()), (1697, 1686));
 }
 
+/// Random draws and thinks counted over `ticks` ticks of an idle new game.
+fn idle_counts(ticks: u32) -> Option<(u32, u32)> {
+    let (g0, d) = load()?;
+    let gd = crate::data::GameData::load_default()?;
+    let mut g = GameState::new_game_full(&g0.dungeon, Rc::new(gd), Some(d));
+    crate::rng::trace_start();
+    for _ in 0..ticks {
+        g.advance();
+    }
+    let m = crate::rng::trace_take();
+    let draws = m.iter().filter(|(k, _)| k.0 != "think" && k.0 != "frame").map(|(_, &v)| v).sum();
+    let thinks = m.iter().filter(|(k, _)| k.0 == "think").map(|(_, &v)| v).sum();
+    Some((draws, thinks))
+}
+
+#[test]
+fn first_ticks_draw_like_the_original() {
+    // Measured with the hooked DOSBox (docs/05): ticks 0 and 1 after the
+    // recruit draw 3 + 417 = 420 times, mostly every awake creature's first
+    // think and frame.
+    let Some((draws, _)) = idle_counts(2) else { return };
+    assert!((416..=424).contains(&draws), "ticks 0-1 drew {draws}, original 420");
+}
+
+#[test]
+fn walk_upkeep_matches_the_original() {
+    // Measured in DOSBox: a new game walking a 22-step loop of map 0 (moves
+    // logged at these ticks by the hooked build, turns about 5 ticks after
+    // the move before them) saves at tick 217 with food 1683 and water 1679.
+    // Upkeep's rest bonus counts from the party's formation (0x7F19C), not
+    // from the last move, which is what the 4 food and 2 water at tick 128
+    // depend on.
+    use crate::state::Command;
+    use crate::world::Move;
+    let Some((g0, d)) = load() else { return };
+    let Some(gd) = crate::data::GameData::load_default() else { return };
+    let mut g = GameState::new_game_full(&g0.dungeon, Rc::new(gd), Some(d));
+    let moves = [34, 41, 47, 53, 60, 66, 73, 84, 90, 97, 103, 114, 121, 127, 133, 139, 146, 152, 164, 170, 176, 183];
+    let turns = [78, 108, 157];
+    while g.tick < 217 {
+        if moves.contains(&g.tick) {
+            g.push_command(Command::Move(Move::Forward));
+        }
+        if turns.contains(&g.tick) {
+            g.push_command(Command::TurnRight);
+        }
+        g.advance();
+    }
+    let c = &g.champions[0];
+    assert_eq!((g.party.map, g.party.x, g.party.y, g.party.dir), (0, 1, 8, 3));
+    assert_eq!((c.stamina(), c.food(), c.water()), (770, 1683, 1679));
+}
+
+#[test]
+fn idle_creatures_think_as_often_as_the_original() {
+    // Original, ticks 2-157 of an idle new game: 663 thinks and 36.2 draws
+    // per tick. The off-map slowdown applies only on frames that loaded the
+    // creature's class; the wander list draws once per think.
+    let Some((d0, t0)) = idle_counts(2) else { return };
+    let Some((d1, t1)) = idle_counts(158) else { return };
+    let (draws, thinks) = (d1 - d0, t1 - t0);
+    let per_tick = draws as f64 / 156.0;
+    assert!((600..=730).contains(&thinks), "{thinks} thinks, original 663");
+    assert!((32.5..=40.0).contains(&per_tick), "{per_tick:.1} draws per tick, original 36.2");
+}
+
 #[test]
 fn play_start_activates_every_map_by_info_bit() {
     // 0x34236 at play start: on every map, groups whose type has info bit 0

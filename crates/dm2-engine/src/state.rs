@@ -83,6 +83,12 @@ pub struct GameState {
     /// Set once the current creature event has run its context setup and
     /// alertness roll (0x24BFC's once-per-load guard, 0x7F7E7). Transient.
     pub creature_ctx_rolled: bool,
+    /// Set once the current creature event has loaded the creature's AI
+    /// class index (0x7F57E high word, reset to -1 by 0x24A88): by set
+    /// selection in think or by the context setup. Lookups made before that
+    /// read the table entry before index 0 (see the off-map slowdown in
+    /// 0x3023F). Transient.
+    pub creature_class_loaded: bool,
     /// Result of the last alertness roll (0x7F589). Transient; tentative.
     pub creature_alert_roll: u16,
     /// Save-game fields the engine does not model yet (script variables,
@@ -126,6 +132,7 @@ impl GameState {
             creature_data: None,
             creature_map_seen: None,
             creature_ctx_rolled: false,
+            creature_class_loaded: false,
             creature_alert_roll: 0,
             legacy: Default::default(),
             hand: Default::default(),
@@ -250,7 +257,6 @@ impl GameState {
                     let t = champions::party_move_time(&self.champions, &self.party_status, &mut self.rng);
                     self.walk = (t > 1).then_some((from, (t >> 1) as u16));
                     self.move_ready = self.tick + t as u32;
-                    self.party_status.last_moved = self.tick;
                 }
             }
         }

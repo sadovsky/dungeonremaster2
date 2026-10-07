@@ -109,7 +109,7 @@ The 60-byte globals record:
 | 0x12 | u16 | 0x759A2 (high) | Leader index |
 | 0x14 | u16 | 0x8042A | Timer count |
 | 0x16 | u32 | 0x716A0 | Unknown |
-| 0x1A | u32 | 0x7F19C | Unknown |
+| 0x1A | u32 | 0x7F19C | Tick the party formed (set when the first champion joins) |
 | 0x1E | u16 | 0x7F26A (low) | Movement state |
 | 0x20 | u16 | 0x7F25A | Movement state |
 | 0x22 | u16 | 0x7F270 | Unknown |
@@ -140,7 +140,7 @@ from the table:
 - champion count 3 bits, x and y 5 bits, facing 2 bits, map 6 bits,
   leader 2 bits, timer count 9 bits;
 - 0x16 and 0x1A are kept in full. They are the tick of the last creature
-  attack on the party (0x716A0) and of the party's last move (0x7F19C),
+  attack on the party (0x716A0) and of the party's formation (0x7F19C),
   see `06-champions.md`.
 
 The timer mask keeps the tick (24 bits), the map (6 bits), the type

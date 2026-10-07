@@ -47,6 +47,10 @@ pub fn recruit_starting_champion(g: &mut GameState) {
     c.raw[0x1C] = g.party.dir;
     c.raw[0x1D] = g.party.dir;
     g.champions.push(c);
+    // 0x49A17: the first champion to join stamps the party's formation tick.
+    if g.champions.len() == 1 {
+        g.party_status.party_formed = g.tick;
+    }
     g.leader = Some(0);
     // Belongings: items in the cell opposite the recruiting direction
     // (north, so cell 2) of the portrait square.

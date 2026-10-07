@@ -17,6 +17,7 @@ fn main() {
                 println!("champion {:?} hp {}/{} st {}/{} mana {}/{} food {} water {}", c.name(), c.health(), c.max_health(), c.stamina(), c.max_stamina(), c.mana(), c.max_mana(), c.food(), c.water());
             }
             println!("leader {:?}  timers {}", g.leader, g.timeline.len());
+            println!("party formed (globals +0x1A) {}", g.party_status.party_formed);
             for _ in 0..200 { g.advance(); }
             println!("ran 200 ticks ok: tick {}", g.tick);
         }

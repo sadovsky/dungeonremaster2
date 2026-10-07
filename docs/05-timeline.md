@@ -117,8 +117,34 @@ group only when the bit is clear.
 types: it starts the current action's sequence (0x14E42 → 0x14F1B, a draw
 per branching frame) and rolls jitter, flip and extra ticks. The off-map
 slowdown branch (×4 plus a random bit) is not taken here: the log shows the
-extra-tick and jitter draws at activation but no off-map bit, which then
-appears on every later step. The first step is due on the next tick.
+extra-tick and jitter draws at activation but no off-map bit. The first step
+is due on the next tick.
+
+**When the off-map slowdown applies (round 4).** A hook on every entry to
+0x3023F (not just on draws) showed that an idle creature's six-frame
+sequence is slowed ×4 on only two of its frames: the one after think and
+the one whose frame event ran. Its status word stays 0x8000 throughout. The
+deciding term is the class-flags test: 0x3023F reads the flags through the
+loaded AI class index, and 0x24A88 resets that index to −1 at the start of
+every creature event; set selection in think and the context setup before a
+frame event load it. With −1 the lookup lands on the 4-byte entry before the
+class table, which is a relocated pointer whose third byte has bit 0 set, so
+plain frame steps skip the slowdown. The remake reproduces this with a
+per-event "class loaded" flag (`GameState::creature_class_loaded`).
+
+**The wander list (0x73392).** Think's opening, read from the disassembly
+because the decompile garbles it: list 0x73399 sets the idle action with no
+draw; list 0x73392 makes one draw r = rnd & 7 and then stands still
+(r 4-7), turns to face tick & 3 (r 0), or walks to the square ahead (action
+2, r 1-3) unless it is a wall, rock, or an edge link to a map whose
+creature list lacks the type (0x1F9FF). Only other lists run the context
+setup and its alertness roll.
+
+**Result.** Idle new game, original against remake: 663 against 666 thinks
+over ticks 2-157, 36.2 against 35.9 draws per tick, and ticks 0-1 draw 420
+against 419. The first differing draw is on tick 1: think's move test
+(0x2D52D) draws 8 times in the original and not in the remake, offset by a
+few extra frame-branch, frame-timing and context draws; open.
 
 **Slot pool.** Sized at game start (0x342F9) as min(awake groups + 100,
 creature records): 180 for the shipped dungeon. The remake had a fixed 75,
