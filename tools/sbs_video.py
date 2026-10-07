@@ -43,6 +43,7 @@ SLOT_FILE = DATA / f'SKSAVE{SLOT}.DAT'
 TICK = 8 / 60                        # 133 ms (docs/05, measured in DOSBox)
 FPS = 30
 SCALE = 3
+HL_PERIOD = 6                      # seconds per side in the highlight video
 PULSE_SOURCE = 'RDPSink.monitor'     # WSLg's output sink; DOSBox plays into it
 CHANGE_PX = 600                      # pixels that must change to count as a view change (pointer ~320)
 
@@ -248,6 +249,25 @@ def compose(orig, remake_input, out, remake_wav=None):
         '[2:a]aresample=44100,pan=mono|c0=0.5*c0+0.5*c1,loudnorm=I=-20:TP=-1.5:LRA=11,aresample=44100,'
         'aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=mono[r];[l][r]amerge=inputs=2[m]',
         '-map', '[v]', '-map', '[m]', '-shortest', *venc, *aenc, mix)
+    # Highlight version: one audio track that alternates every HL_PERIOD
+    # seconds between the original and the remake, with a yellow border and a
+    # "SOUND" badge on whichever side is audible.
+    hi = out.with_name(out.stem + '_highlight.mp4')
+    on_left = f"lt(mod(t,{2 * HL_PERIOD}),{HL_PERIOD})"
+    on_right = f"gte(mod(t,{2 * HL_PERIOD}),{HL_PERIOD})"
+    badge = ("drawtext=text='\u266a SOUND':fontcolor=yellow:fontsize=26:"
+             "x={x}:y=10:enable='{e}'")
+    marks = (f"drawbox=x=0:y=0:w={w}:h={h + head}:color=yellow@0.9:t=6:enable='{on_left}',"
+             f"drawbox=x={w + gap}:y=0:w={w}:h={h + head}:color=yellow@0.9:t=6:enable='{on_right}',"
+             + badge.format(x=16, e=on_left) + ','
+             + badge.format(x=w + gap + 16, e=on_right))
+    norm = "loudnorm=I=-20:TP=-1.5:LRA=11,aresample=44100,aformat=sample_fmts=fltp:sample_rates=44100:channel_layouts=stereo"
+    run('ffmpeg', '-y', '-loglevel', 'error', *inputs, '-filter_complex',
+        graph.replace('format=yuv420p[v]', 'format=yuv420p,' + marks + '[v]')
+        + f";[0:a]aresample=44100,aformat=channel_layouts=stereo,{norm},volume='{on_left}':eval=frame[ho];"
+        f"[2:a]aresample=44100,aformat=channel_layouts=stereo,{norm},volume='{on_right}':eval=frame[hr];"
+        "[ho][hr]amix=inputs=2:normalize=0[h]",
+        '-map', '[v]', '-map', '[h]', '-shortest', *venc, *aenc, hi)
 
 
 def concat(parts, out):
@@ -306,6 +326,7 @@ def main():
     out = OUT / 'side_by_side.mp4'
     concat(parts, out)
     concat([p.with_name(p.stem + '_mixdown.mp4') for p in parts], OUT / 'side_by_side_mixdown.mp4')
+    concat([p.with_name(p.stem + '_highlight.mp4') for p in parts], OUT / 'side_by_side_highlight.mp4')
     print(out)
 
 
