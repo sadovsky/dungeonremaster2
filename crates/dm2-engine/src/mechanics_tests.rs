@@ -490,7 +490,7 @@ fn bump_queues_the_champion_cry() {
         g.effects.clear();
         movement::bump(&mut g, Move::Forward, (1, 0));
         let hurt = g.champions[0].health() < before || g.party_status.pending_damage[0] > 0;
-        let cry = g.effects.iter().any(|e| matches!(e, Effect::Sound { cat: 0x16, sub: 0x8A, .. }));
+        let cry = g.effects.iter().any(|e| matches!(e, Effect::SoundAt { cat: 0x16, sub: 0x8A, vol: 100, mode: 1, .. }));
         assert_eq!(hurt, cry, "a cry is queued exactly when the bump lands");
         cried |= cry;
     }
